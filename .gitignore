@@ -2,3 +2,6 @@
 *.pdb
 *.ent
 produccion_resultados/
+# Exclusiones del Pipeline de Células B
+data/
+tools/
