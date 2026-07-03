@@ -1,5 +1,3 @@
-"""Configuración centralizada del pipeline."""
-
 from pathlib import Path
 import torch
 from src.models import OrganismClass
