@@ -2,13 +2,19 @@
 
 import torch
 import numpy as np
-from transformers import AutoTokenizer, EsmModel
+import logging
+from transformers import AutoTokenizer, EsmModel, logging as hf_logging
 from typing import Sequence, List, Tuple
 from src.config.settings import Settings
 from src.engines.base_engine import BaseEngine
 from src.models import AntigenicityResult, EpitopeResidue, EpitopeResult
 from src.utils.exceptions import ModelLoadError, EngineExecutionError
 from src.utils.logger_config import setup_logger
+
+# --- FILTRADO DE RUIDO VISUAL ---
+# Evita que Hugging Face imprima tablas de "UNEXPECTED / MISSING keys" y alertas del Hub
+hf_logging.set_verbosity_error()
+# --------------------------------
 
 logger = setup_logger()
 

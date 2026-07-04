@@ -5,3 +5,5 @@ produccion_resultados/
 # Exclusiones del Pipeline de Células B
 data/
 tools/
+__pycache__/
+*.pyc
