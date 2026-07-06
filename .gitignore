@@ -1,9 +1,12 @@
 *.pt
+!models/antigenicity_cnn.pt
+!models/residue_classifier.pt
 *.pdb
 *.ent
 produccion_resultados/
 # Exclusiones del Pipeline de Células B
 data/
 tools/
+logs/
 __pycache__/
 *.pyc
