@@ -190,7 +190,6 @@ class AntigenicityCNNEngine(BaseEngine[SequenceRecord, AntigenicityResult]):
             try:
                 state_dict = torch.load(weights_path, map_location=self.device)
                 self.model.load_state_dict(state_dict)
-                logger.info("Pesos entrenados de la 1D-CNN cargados desde '%s'.", weights_path)
             except Exception as exc:
                 raise ModelLoadError(
                     f"Fallo al cargar pesos de la 1D-CNN desde '{weights_path}': {exc}"

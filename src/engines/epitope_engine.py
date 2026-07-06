@@ -29,6 +29,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 from scipy.signal import savgol_filter
+from huggingface_hub.utils import logging as hf_hub_logging
 from transformers import AutoTokenizer, EsmModel
 from transformers import logging as hf_logging
 
@@ -39,8 +40,11 @@ from src.utils.batching import dynamic_batches
 from src.utils.logger_config import setup_logger
 from src.utils.memory_profiler import log_memory_checkpoint, warn_if_over_budget
 
-# Silencia las tablas de "UNEXPECTED / MISSING keys" y avisos de Hub de HuggingFace.
+# Silencia las tablas de "UNEXPECTED / MISSING keys", el aviso de HF_TOKEN/Hub
+# no autenticado y la barra de progreso de descarga de pesos de HuggingFace.
 hf_logging.set_verbosity_error()
+hf_logging.disable_progress_bar()
+hf_hub_logging.set_verbosity_error()
 
 logger = setup_logger(__name__)
 
@@ -316,9 +320,7 @@ class NativeESM2Engine(BaseEpitopePredictor):
         """
         self.device = torch.device(Settings.DEVICE)
         logger.info(
-            "Inicializando NativeESM2Engine con modelo '%s' en dispositivo '%s'.",
-            Settings.ESM_MODEL_NAME,
-            self.device,
+            f"Cargando modelo ESM-2 '{Settings.ESM_MODEL_NAME}' en dispositivo '{self.device}'..."
         )
         try:
             self.tokenizer = AutoTokenizer.from_pretrained(Settings.ESM_MODEL_NAME)
@@ -350,7 +352,6 @@ class NativeESM2Engine(BaseEpitopePredictor):
             try:
                 state_dict = torch.load(weights_path, map_location=self.device)
                 self.residue_classifier.load_state_dict(state_dict)
-                logger.info("Pesos entrenados del ResidueClassifier cargados desde '%s'.", weights_path)
             except Exception as exc:
                 raise ModelLoadError(
                     f"Fallo al cargar pesos del ResidueClassifier desde '{weights_path}': {exc}"

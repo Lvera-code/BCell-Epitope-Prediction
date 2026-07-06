@@ -8,8 +8,11 @@ produciendo un reporte ejecutivo en consola y exportacion CSV trazable.
 
 import argparse
 import sys
+import warnings
 from pathlib import Path
 from typing import List, Sequence
+
+warnings.filterwarnings("ignore")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -137,9 +140,8 @@ def main() -> int:
 
     # 1. Modulo de Aduana y Saneamiento
     try:
-        logger.info("Cargando y saneando secuencias desde: %s", args.input)
         records = FastaParser.parse(args.input, min_length=Settings.MIN_SEQUENCE_LENGTH)
-        logger.info("Se cargaron %d secuencias validas tras el saneamiento.", len(records))
+        logger.info("Se cargaron %d secuencias validas.", len(records))
     except PipelineError as exc:
         logger.critical("Error fatal de formato en el FASTA de entrada: %s", exc)
         return 1
