@@ -49,8 +49,13 @@ def parse_arguments() -> argparse.Namespace:
         "-t",
         "--threshold",
         type=float,
-        default=Settings.ANTIGENICITY_THRESHOLD,
-        help="Umbral de corte de antigenicidad para la Fase 1 (1D-CNN).",
+        required=True,
+        default=argparse.SUPPRESS,
+        help=(
+            "Umbral de antigenicidad global (0.0 a 1.0). Usa 0.0 para forzar el "
+            "mapeo de epitopos en secuencias cortas o fragmentos saltandose el "
+            "filtro de la Fase 1."
+        ),
     )
     parser.add_argument(
         "--engine",
