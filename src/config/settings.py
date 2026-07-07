@@ -73,6 +73,17 @@ class Settings:
     ANTIGENICITY_CNN_KERNEL_SIZE: int = _env_int("ANTIGENICITY_CNN_KERNEL_SIZE", 5)
     ANTIGENICITY_RANDOM_SEED: int = _env_int("ANTIGENICITY_RANDOM_SEED", 42)
 
+    # --- Calibracion de Platt (Fase 1) ---
+    # La 1D-CNN emite logits crudos (sin sigmoide); este artefacto (A, B de una
+    # regresion logistica 1D ajustada sobre un hold-out estratificado que NUNCA
+    # participa del backprop) mapea logit -> probabilidad calibrada mediante
+    # sigmoid(A * logit + B), corrigiendo la compresion de rango causada por el
+    # desbalance de clases del dataset de entrenamiento.
+    ANTIGENICITY_CALIBRATION_PATH: Path = Path(
+        _env_str("ANTIGENICITY_CALIBRATION_PATH", "models/antigenicity_calibration.pkl")
+    )
+    CALIBRATION_HOLDOUT_RATIO: float = _env_float("CALIBRATION_HOLDOUT_RATIO", 0.10)
+
     # --- Fase 2: Motor de Prediccion de Epitopos (Patron Adaptador) ---
     PREDICTOR_ENGINE: str = _env_str("PREDICTOR_ENGINE", "esm2").strip().lower()
 

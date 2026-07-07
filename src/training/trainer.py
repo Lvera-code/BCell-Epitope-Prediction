@@ -24,17 +24,18 @@ import gc
 import random
 import sys
 from pathlib import Path
-from typing import Iterator, List, Optional, Tuple
+from typing import Dict, Iterator, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import DataLoader, IterableDataset
+from torch.utils.data import DataLoader, Dataset, IterableDataset
 
 from src.config.settings import Settings
 from src.engines.antigenicity_cnn import AntigenicityCNN, AntigenicityCNNEngine
 from src.engines.epitope_engine import NativeESM2Engine, ResidueClassifier
 from src.models import BenchmarkReport
+from src.utils.calibration import PlattScaler
 from src.utils.fasta_parser import FastaParser
 from src.utils.logger_config import setup_logger
 from src.utils.memory_profiler import log_memory_checkpoint
@@ -185,8 +186,191 @@ def _peek_embedding_dim(shard_dir: Path) -> int:
     return hidden_dim
 
 
+def _load_all_hellberg_samples(shard_dir: Path) -> List[Tuple[str, torch.Tensor, float]]:
+    """Carga en memoria TODAS las muestras de Escalas Z de un directorio de shards.
+
+    A diferencia de ``ShardIterableDataset`` (pensado para los embeddings
+    ESM-2, de varios MB por shard), las matrices de Hellberg ``(3, L)`` pesan
+    apenas unos KB por secuencia: cargar el split de entrenamiento completo en
+    RAM es seguro y es lo que permite separar, ANTES de construir el
+    ``DataLoader`` de entrenamiento, un hold-out de calibracion estratificado
+    que la red nunca vera durante el backpropagation.
+
+    Args:
+        shard_dir: Directorio con archivos ``shard_*.pt`` de Escalas Z.
+
+    Returns:
+        Lista de tuplas ``(id, tensor(3, L), label)``.
+
+    Raises:
+        FileNotFoundError: Si ``shard_dir`` no contiene ningun shard.
+    """
+    shard_paths = sorted(shard_dir.glob("shard_*.pt"))
+    if not shard_paths:
+        raise FileNotFoundError(
+            f"No se encontraron shards en '{shard_dir}'. "
+            "Ejecute 'python -m src.training.feature_extractor' primero."
+        )
+
+    samples: List[Tuple[str, torch.Tensor, float]] = []
+    for path in shard_paths:
+        shard = torch.load(path, weights_only=False)
+        samples.extend(
+            zip(shard["ids"], shard["z_scale"], (float(label) for label in shard["label"]))
+        )
+        del shard
+    return samples
+
+
+def _stratified_holdout_split(
+    samples: List[Tuple[str, torch.Tensor, float]], holdout_ratio: float, seed: int
+) -> Tuple[List[Tuple[str, torch.Tensor, float]], List[Tuple[str, torch.Tensor, float]]]:
+    """Separa un hold-out de calibracion estratificado que NUNCA participa del backprop.
+
+    CRITICO para evitar fuga de datos (data leakage) en la calibracion de
+    Platt: el split ocurre ANTES de instanciar el ``DataLoader`` de
+    entrenamiento. El hold-out resultante solo se usa, una vez finalizado el
+    entrenamiento, para extraer logits con el modelo ya congelado (``eval()``,
+    sin gradientes) y ajustar sobre ellos la regresion logistica de Platt. La
+    estratificacion (particionar cada clase por separado antes de recombinar)
+    preserva la proporcion positivo/negativo original tanto en el conjunto de
+    ajuste (``fit``) como en el de calibracion (``calib``).
+
+    Args:
+        samples: Muestras completas del split de entrenamiento.
+        holdout_ratio: Fraccion de cada clase reservada para calibracion
+            (p. ej. ``0.10`` = 10%).
+        seed: Semilla para el barajado reproducible.
+
+    Returns:
+        Tupla ``(fit_samples, calib_samples)``.
+    """
+    by_label: Dict[float, List[Tuple[str, torch.Tensor, float]]] = {}
+    for sample in samples:
+        by_label.setdefault(sample[2], []).append(sample)
+
+    rng = random.Random(seed)
+    fit_samples: List[Tuple[str, torch.Tensor, float]] = []
+    calib_samples: List[Tuple[str, torch.Tensor, float]] = []
+
+    for group in by_label.values():
+        shuffled = list(group)
+        rng.shuffle(shuffled)
+        n_holdout = max(1, round(len(shuffled) * holdout_ratio)) if shuffled else 0
+        calib_samples.extend(shuffled[:n_holdout])
+        fit_samples.extend(shuffled[n_holdout:])
+
+    rng.shuffle(fit_samples)
+    rng.shuffle(calib_samples)
+    return fit_samples, calib_samples
+
+
+class HellbergListDataset(Dataset):
+    """Dataset map-style en memoria sobre muestras ``(id, tensor, label)`` ya cargadas.
+
+    Usado exclusivamente para el conjunto de AJUSTE de Fase 1 tras separar el
+    hold-out de calibracion: al no ser un ``IterableDataset``, permite
+    ``shuffle=True`` nativo de ``DataLoader`` epoca a epoca.
+    """
+
+    def __init__(self, samples: List[Tuple[str, torch.Tensor, float]]):
+        """Envuelve una lista de muestras ya cargadas en memoria."""
+        self.samples = samples
+
+    def __len__(self) -> int:
+        return len(self.samples)
+
+    def __getitem__(self, index: int) -> Tuple[torch.Tensor, float]:
+        _seq_id, tensor, label = self.samples[index]
+        return tensor, label
+
+
+def _fit_and_save_calibration(
+    model: AntigenicityCNN,
+    weights_path: Path,
+    calib_samples: List[Tuple[str, torch.Tensor, float]],
+    device: torch.device,
+) -> None:
+    """Ajusta y persiste la calibracion de Platt sobre el hold-out reservado.
+
+    Recarga el MEJOR checkpoint guardado por early stopping (no
+    necesariamente los pesos de la ultima epoca) antes de extraer los logits
+    del hold-out, garantizando que la calibracion sea consistente con el
+    modelo que efectivamente queda desplegado en ``weights_path``.
+
+    Args:
+        model: Instancia de :class:`AntigenicityCNN` (se sobreescribe con los
+            pesos del mejor checkpoint).
+        weights_path: Ruta del mejor checkpoint guardado durante el
+            entrenamiento.
+        calib_samples: Hold-out de calibracion, nunca visto en backprop.
+        device: Dispositivo de inferencia.
+    """
+    if not calib_samples:
+        logger.warning("Hold-out de calibracion vacio; se omite el ajuste de Platt Scaling.")
+        return
+
+    if not weights_path.exists():
+        logger.warning(
+            "No se encontro checkpoint en '%s' tras el entrenamiento; se omite la "
+            "calibracion de Platt.",
+            weights_path,
+        )
+        return
+
+    model.load_state_dict(torch.load(weights_path, map_location=device))
+    model.eval()
+
+    calib_loader = DataLoader(
+        HellbergListDataset(calib_samples),
+        batch_size=Settings.TRAINING_BATCH_SIZE,
+        collate_fn=collate_hellberg,
+    )
+
+    all_logits: List[float] = []
+    all_labels: List[float] = []
+    with torch.no_grad():
+        for x, mask, y in calib_loader:
+            x, mask = x.to(device), mask.to(device)
+            logits = model(x, mask)
+            all_logits.extend(logits.cpu().tolist())
+            all_labels.extend(y.tolist())
+            del x, mask, logits
+
+    gc.collect()
+
+    try:
+        scaler = PlattScaler.fit(all_logits, all_labels)
+    except ValueError as exc:
+        logger.warning(
+            "No se pudo ajustar la calibracion de Platt (%s); Fase 1 operara con "
+            "sigmoide sin calibrar hasta que un hold-out balanceado este disponible.",
+            exc,
+        )
+        return
+
+    scaler.save(Settings.ANTIGENICITY_CALIBRATION_PATH)
+    logger.info(
+        "Calibracion de Platt ajustada sobre %d muestras de hold-out (A=%.4f, B=%.4f) "
+        "y guardada en '%s'.",
+        len(calib_samples),
+        scaler.coef_a,
+        scaler.intercept_b,
+        Settings.ANTIGENICITY_CALIBRATION_PATH,
+    )
+
+
 def train_antigenicity_cnn(train_shard_dir: Path, val_shard_dir: Path, save_path: Path) -> float:
     """Entrena la 1D-CNN de antigenicidad sobre matrices de Hellberg precomputadas.
+
+    Antes de entrenar, separa un hold-out de calibracion estratificado
+    (``Settings.CALIBRATION_HOLDOUT_RATIO``, p. ej. 10%) que NUNCA participa
+    del backpropagation. Entrena con ``BCEWithLogitsLoss`` y ``pos_weight``
+    calculado dinamicamente como ``clases_negativas / clases_positivas`` del
+    conjunto de ajuste, corrigiendo el desbalance de clases que antes
+    colapsaba las probabilidades de salida a un rango angosto cercano a cero.
+    Al finalizar (con el mejor checkpoint restaurado), ajusta una calibracion
+    de Platt sobre los logits del hold-out y la persiste junto al modelo.
 
     Args:
         train_shard_dir: Directorio de shards ``z_scale`` de entrenamiento.
@@ -209,11 +393,31 @@ def train_antigenicity_cnn(train_shard_dir: Path, val_shard_dir: Path, save_path
         lr=Settings.TRAINING_LEARNING_RATE,
         weight_decay=Settings.TRAINING_WEIGHT_DECAY,
     )
-    loss_fn = nn.BCELoss()
 
-    train_dataset = ShardIterableDataset(
-        train_shard_dir, tensor_key="z_scale", shuffle=True, seed=Settings.TRAINING_SEED
+    all_train_samples = _load_all_hellberg_samples(train_shard_dir)
+    fit_samples, calib_samples = _stratified_holdout_split(
+        all_train_samples, Settings.CALIBRATION_HOLDOUT_RATIO, seed=Settings.TRAINING_SEED
     )
+
+    n_pos_fit = sum(1 for _, _, label in fit_samples if label == 1.0)
+    n_neg_fit = len(fit_samples) - n_pos_fit
+    pos_weight_value = (n_neg_fit / n_pos_fit) if n_pos_fit > 0 else 1.0
+    loss_fn = nn.BCEWithLogitsLoss(
+        pos_weight=torch.tensor(pos_weight_value, dtype=torch.float32, device=device)
+    )
+
+    logger.info(
+        "Fase 1: hold-out de calibracion separado ANTES del backprop -> %d muestras de "
+        "ajuste (%d pos / %d neg, pos_weight=%.4f) / %d muestras de calibracion "
+        "(nunca vistas en backprop).",
+        len(fit_samples),
+        n_pos_fit,
+        n_neg_fit,
+        pos_weight_value,
+        len(calib_samples),
+    )
+
+    train_dataset = HellbergListDataset(fit_samples)
     val_dataset = ShardIterableDataset(
         val_shard_dir, tensor_key="z_scale", shuffle=False, seed=Settings.TRAINING_SEED
     )
@@ -221,13 +425,14 @@ def train_antigenicity_cnn(train_shard_dir: Path, val_shard_dir: Path, save_path
     train_loader = DataLoader(
         train_dataset,
         batch_size=Settings.TRAINING_BATCH_SIZE,
+        shuffle=True,
         collate_fn=collate_hellberg,
         drop_last=len(train_dataset) > Settings.TRAINING_BATCH_SIZE,
     )
     val_loader = DataLoader(val_dataset, batch_size=Settings.TRAINING_BATCH_SIZE, collate_fn=collate_hellberg)
 
     logger.info(
-        "Entrenando 1D-CNN de antigenicidad: %d train / %d val secuencias.",
+        "Entrenando 1D-CNN de antigenicidad: %d train (post hold-out) / %d val secuencias.",
         len(train_dataset),
         len(val_dataset),
     )
@@ -280,6 +485,8 @@ def train_antigenicity_cnn(train_shard_dir: Path, val_shard_dir: Path, save_path
                     patience_counter,
                 )
                 break
+
+    _fit_and_save_calibration(model, save_path, calib_samples, device)
 
     return best_val_loss
 
@@ -475,20 +682,21 @@ def _evaluate_residue_classifier(model: ResidueClassifier, loader: DataLoader, d
 
 def _prepare_baseline_engine(
     threshold: float, weights_path: Path
-) -> Tuple[AntigenicityCNNEngine, Optional[Path]]:
+) -> Tuple[AntigenicityCNNEngine, Optional[Path], Optional[Path]]:
     """Instancia un motor de Fase 1 con inicializacion aleatoria como linea base.
 
-    Si ya existe un checkpoint entrenado de una ejecucion anterior, se mueve
-    temporalmente a un archivo ``.pretrain_backup`` para forzar una linea base
-    honesta (pesos aleatorios), en lugar de comparar contra un modelo ya
-    calibrado.
+    Si ya existe un checkpoint entrenado (y/o una calibracion de Platt) de una
+    ejecucion anterior, se mueven temporalmente a archivos ``.pretrain_backup``
+    para forzar una linea base honesta (pesos aleatorios, sigmoide sin
+    calibrar), en lugar de comparar contra un modelo ya calibrado.
 
     Args:
         threshold: Umbral de antigenicidad a usar en el motor de linea base.
         weights_path: Ruta del checkpoint de la 1D-CNN.
 
     Returns:
-        Tupla ``(motor_linea_base, ruta_de_backup_o_None)``.
+        Tupla ``(motor_linea_base, ruta_de_backup_pesos_o_None,
+        ruta_de_backup_calibracion_o_None)``.
     """
     backup: Optional[Path] = None
     if weights_path.exists():
@@ -496,29 +704,53 @@ def _prepare_baseline_engine(
         weights_path.rename(backup)
         logger.info("Checkpoint preexistente respaldado temporalmente en '%s'.", backup)
 
+    calibration_path = Settings.ANTIGENICITY_CALIBRATION_PATH
+    calibration_backup: Optional[Path] = None
+    if calibration_path.exists():
+        calibration_backup = calibration_path.with_name(calibration_path.name + ".pretrain_backup")
+        calibration_path.rename(calibration_backup)
+        logger.info(
+            "Calibracion de Platt preexistente respaldada temporalmente en '%s'.", calibration_backup
+        )
+
     engine = AntigenicityCNNEngine(threshold=threshold)
-    return engine, backup
+    return engine, backup, calibration_backup
 
 
-def _finalize_checkpoint(weights_path: Path, backup: Optional[Path]) -> None:
-    """Resuelve el checkpoint de respaldo tras el entrenamiento.
+def _finalize_checkpoint(
+    weights_path: Path, backup: Optional[Path], calibration_backup: Optional[Path] = None
+) -> None:
+    """Resuelve el checkpoint (y la calibracion) de respaldo tras el entrenamiento.
 
     Args:
         weights_path: Ruta del checkpoint recien entrenado.
         backup: Ruta de respaldo devuelta por :func:`_prepare_baseline_engine`,
             o ``None`` si no existia un checkpoint previo.
+        calibration_backup: Ruta de respaldo de la calibracion de Platt, o
+            ``None`` si no existia una calibracion previa.
     """
-    if backup is None:
-        return
+    if backup is not None:
+        if weights_path.exists():
+            backup.unlink(missing_ok=True)
+            logger.info("Checkpoint previo descartado: el entrenamiento produjo uno mejor.")
+        elif backup.exists():
+            backup.rename(weights_path)
+            logger.warning(
+                "El entrenamiento no mejoro ningun checkpoint; se restauro el previo en '%s'.",
+                weights_path,
+            )
 
-    if weights_path.exists():
-        backup.unlink(missing_ok=True)
-        logger.info("Checkpoint previo descartado: el entrenamiento produjo uno mejor.")
-    elif backup.exists():
-        backup.rename(weights_path)
-        logger.warning(
-            "El entrenamiento no mejoro ningun checkpoint; se restauro el previo en '%s'.", weights_path
-        )
+    if calibration_backup is not None:
+        calibration_path = Settings.ANTIGENICITY_CALIBRATION_PATH
+        if calibration_path.exists():
+            calibration_backup.unlink(missing_ok=True)
+            logger.info("Calibracion de Platt previa descartada: el entrenamiento produjo una nueva.")
+        elif calibration_backup.exists():
+            calibration_backup.rename(calibration_path)
+            logger.warning(
+                "El entrenamiento no genero una nueva calibracion; se restauro la previa en '%s'.",
+                calibration_path,
+            )
 
 
 def _run_benchmark(
@@ -633,8 +865,11 @@ def main() -> int:
     if not args.skip_antigenicity:
         logger.info("=== Fase 1: calibrando 1D-CNN de antigenicidad ===")
         backup: Optional[Path] = None
+        calibration_backup: Optional[Path] = None
         if has_test_set:
-            baseline_engine, backup = _prepare_baseline_engine(Settings.ANTIGENICITY_THRESHOLD, weights_path)
+            baseline_engine, backup, calibration_backup = _prepare_baseline_engine(
+                Settings.ANTIGENICITY_THRESHOLD, weights_path
+            )
             baseline_suite = BenchmarkSuite(scorer=baseline_engine, threshold=Settings.ANTIGENICITY_THRESHOLD)
             baseline_report = baseline_suite.run(test_positive, test_negative)
             del baseline_engine
@@ -651,7 +886,7 @@ def main() -> int:
             args.features_dir / "val" / "hellberg",
             weights_path,
         )
-        _finalize_checkpoint(weights_path, backup)
+        _finalize_checkpoint(weights_path, backup, calibration_backup)
         logger.info("1D-CNN de antigenicidad calibrada. Mejor val_loss=%.4f", best_val_loss)
 
     if not args.skip_epitope:

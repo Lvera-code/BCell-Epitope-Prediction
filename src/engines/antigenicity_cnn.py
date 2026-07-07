@@ -24,6 +24,7 @@ from src.config.settings import Settings
 from src.engines.base_engine import BaseEngine
 from src.models import AntigenicityResult, SequenceRecord
 from src.utils.batching import dynamic_batches
+from src.utils.calibration import PlattScaler
 from src.utils.exceptions import ModelLoadError
 from src.utils.logger_config import setup_logger
 from src.utils.memory_profiler import log_memory_checkpoint, warn_if_over_budget
@@ -106,8 +107,15 @@ class AntigenicityCNN(nn.Module):
 
     Arquitectura: ``Conv1d -> BatchNorm1d -> ReLU`` (x2) seguido de un Global
     Max Pooling enmascarado (ignora posiciones de padding) y una cabeza densa
-    con activacion sigmoide que produce una unica probabilidad de
-    antigenicidad por secuencia.
+    lineal que produce un unico LOGIT crudo de antigenicidad por secuencia.
+
+    CRITICO: esta red ya NO aplica sigmoide internamente. Se entrena con
+    ``nn.BCEWithLogitsLoss`` (mas estable numericamente y compatible con
+    ``pos_weight`` para desbalance de clases) y sus logits crudos se calibran
+    en inferencia mediante Platt Scaling (:class:`~src.utils.calibration.PlattScaler`),
+    no con un sigmoide sin calibrar. Ver
+    ``src/training/trainer.py::train_antigenicity_cnn`` para el procedimiento
+    completo de entrenamiento + calibracion sin fuga de datos.
     """
 
     def __init__(self, in_channels: int = 3, hidden_channels: int = 32, kernel_size: int = 5):
@@ -129,7 +137,6 @@ class AntigenicityCNN(nn.Module):
         self.bn2 = nn.BatchNorm1d(hidden_channels * 2)
         self.relu = nn.ReLU(inplace=True)
         self.classifier_head = nn.Linear(hidden_channels * 2, 1)
-        self.sigmoid = nn.Sigmoid()
 
     def forward(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         """Ejecuta el forward pass completo de la red.
@@ -139,8 +146,9 @@ class AntigenicityCNN(nn.Module):
             mask: Tensor booleano de forma ``(B, L)`` marcando posiciones reales.
 
         Returns:
-            Tensor de forma ``(B,)`` con la probabilidad de antigenicidad de
-            cada secuencia del lote, en el rango ``[0, 1]``.
+            Tensor de forma ``(B,)`` con el LOGIT crudo de antigenicidad de
+            cada secuencia del lote (sin sigmoide aplicado; ver
+            :class:`AntigenicityCNN`).
         """
         features = self.relu(self.bn1(self.conv1(x)))
         features = self.relu(self.bn2(self.conv2(features)))  # (B, C, L)
@@ -149,8 +157,7 @@ class AntigenicityCNN(nn.Module):
         masked_features = features.masked_fill(~pooling_mask, float("-inf"))
         pooled, _ = torch.max(masked_features, dim=2)  # Global Max Pooling -> (B, C)
 
-        logits = self.classifier_head(pooled).squeeze(-1)  # (B,)
-        return self.sigmoid(logits)
+        return self.classifier_head(pooled).squeeze(-1)  # (B,) logits crudos
 
 
 class AntigenicityCNNEngine(BaseEngine[SequenceRecord, AntigenicityResult]):
@@ -166,6 +173,12 @@ class AntigenicityCNNEngine(BaseEngine[SequenceRecord, AntigenicityResult]):
         y se emite una advertencia: sin entrenamiento supervisado sobre un
         corpus IEDB, la salida de la red no esta calibrada para uso en
         produccion, solo demuestra la arquitectura y el flujo de inferencia.
+
+        Adicionalmente intenta cargar el artefacto de Platt Scaling
+        (``Settings.ANTIGENICITY_CALIBRATION_PATH``) que mapea los logits
+        crudos de la red a probabilidades calibradas. Si no existe, se aplica
+        un sigmoide sin calibrar como respaldo y se advierte que los scores
+        pueden estar comprimidos por el desbalance de clases del dataset.
 
         Args:
             threshold: Umbral de decision de antigenicidad. Si es ``None``, se
@@ -204,6 +217,38 @@ class AntigenicityCNNEngine(BaseEngine[SequenceRecord, AntigenicityResult]):
 
         self.model.eval()
 
+        self.calibrator: Optional[PlattScaler] = None
+        calibration_path = Settings.ANTIGENICITY_CALIBRATION_PATH
+        if calibration_path is not None and calibration_path.exists():
+            try:
+                self.calibrator = PlattScaler.load(calibration_path)
+                logger.info(
+                    "Calibracion de Platt cargada desde '%s' (A=%.4f, B=%.4f).",
+                    calibration_path,
+                    self.calibrator.coef_a,
+                    self.calibrator.intercept_b,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "No se pudo cargar la calibracion de Platt desde '%s' (%s); "
+                    "se usara un sigmoide sin calibrar.",
+                    calibration_path,
+                    exc,
+                )
+        else:
+            logger.warning(
+                "No se encontro artefacto de calibracion de Platt en '%s'. Los scores "
+                "de Fase 1 se emiten con un sigmoide SIN CALIBRAR: pueden estar "
+                "comprimidos por el desbalance de clases del dataset de entrenamiento. "
+                "Ejecute 'python -m src.training.trainer' para generar la calibracion.",
+                calibration_path,
+            )
+
+    @property
+    def is_calibrated(self) -> bool:
+        """Indica si los scores emitidos por :meth:`run` estan calibrados via Platt Scaling."""
+        return self.calibrator is not None
+
     def run(self, items: Sequence[SequenceRecord]) -> List[AntigenicityResult]:
         """Clasifica un lote de secuencias saneadas por antigenicidad.
 
@@ -238,9 +283,14 @@ class AntigenicityCNNEngine(BaseEngine[SequenceRecord, AntigenicityResult]):
             mask = mask.to(self.device)
 
             with torch.no_grad():
-                probs = self.model(tensor, mask)
+                logits = self.model(tensor, mask)
 
-            probs_np = probs.cpu().numpy()
+            logits_np = logits.cpu().numpy()
+            if self.calibrator is not None:
+                probs_np = self.calibrator.transform(logits_np)
+            else:
+                probs_np = 1.0 / (1.0 + np.exp(-logits_np))
+
             for record, score in zip(batch, probs_np):
                 score_val = float(score)
                 id_to_result[record.id] = AntigenicityResult(
@@ -250,7 +300,7 @@ class AntigenicityCNNEngine(BaseEngine[SequenceRecord, AntigenicityResult]):
                     method=self.METHOD_NAME,
                 )
 
-            del tensor, mask, probs, probs_np
+            del tensor, mask, logits, logits_np, probs_np
             rss_mb = log_memory_checkpoint(logger, f"antigenicity_batch_{batch_idx + 1}/{len(batches)}")
             warn_if_over_budget(
                 logger,

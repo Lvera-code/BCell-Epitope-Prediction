@@ -31,8 +31,10 @@ class AntigenicityResult:
 
     Attributes:
         record: Secuencia de origen evaluada.
-        score: Probabilidad de antigenicidad en el rango [0, 1] emitida por la
-            cabeza sigmoide de la red convolucional.
+        score: Probabilidad de antigenicidad en el rango [0, 1], calibrada via
+            Platt Scaling sobre el logit crudo de la red convolucional (o un
+            sigmoide sin calibrar como respaldo si no existe artefacto de
+            calibracion; ver ``AntigenicityCNNEngine.is_calibrated``).
         is_antigenic: Indica si ``score`` supera el umbral de corte configurado.
         method: Identificador legible del metodo/version que genero el score.
     """
