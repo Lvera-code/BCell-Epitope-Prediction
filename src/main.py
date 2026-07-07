@@ -85,18 +85,29 @@ def parse_arguments() -> argparse.Namespace:
 
 
 def print_console_report(
-    phase1_results: Sequence[AntigenicityResult], final_results: List[EpitopeResult]
+    phase1_results: Sequence[AntigenicityResult],
+    final_results: List[EpitopeResult],
+    is_calibrated: bool = True,
 ) -> None:
     """Imprime un reporte visual estructurado en forma de tabla ASCII en la terminal.
 
     Args:
         phase1_results: Resultados completos de la Fase 1 (aprobados y descartados).
         final_results: Resultados de Fase 2 para las secuencias aprobadas.
+        is_calibrated: Si ``True``, los scores de Fase 1 provienen de la
+            calibracion de Platt; si ``False``, de un sigmoide sin calibrar
+            (fallback cuando no existe artefacto de calibracion en disco).
     """
     phase2_map = {r.antigenicity.record.id: r for r in final_results}
+    calibration_note = (
+        "SCORES CALIBRADOS (Platt Scaling)"
+        if is_calibrated
+        else "AVISO: scores SIN CALIBRAR (sigmoide crudo) -- ejecute el entrenamiento"
+    )
 
     print("\n┌" + "─" * 85 + "┐")
     print(f"│{'REPORTE FINAL DE CRIBADO - SOTA-B-EPITOPE-PIPELINE':^85}│")
+    print(f"│{calibration_note:^85}│")
     print("├" + "─" * 27 + "┬" + "─" * 10 + "┬" + "─" * 12 + "┬" + "─" * 12 + "┬" + "─" * 20 + "┤")
     print(f"│ {'ID SECUENCIA':<25} │ {'SCORE':<8} │ {'ESTADO':<10} │ {'DENSIDAD B':<10} │ {'REGIONES':<18} │")
     print("├" + "─" * 27 + "┼" + "─" * 10 + "┼" + "─" * 12 + "┼" + "─" * 12 + "┼" + "─" * 20 + "┤")
@@ -162,6 +173,11 @@ def main() -> int:
     logger.info("FASE 1: Cribado de Antigenicidad (umbral >= %.4f)", args.threshold)
     try:
         antigenicity_engine = AntigenicityCNNEngine(threshold=args.threshold)
+        is_calibrated = antigenicity_engine.is_calibrated
+        logger.info(
+            "Fase 1: scores %s.",
+            "calibrados via Platt Scaling" if is_calibrated else "SIN CALIBRAR (sigmoide crudo)",
+        )
         phase1_results = antigenicity_engine.run(records)
     except ModelLoadError as exc:
         logger.critical("Fallo critico cargando el motor de antigenicidad: %s", exc)
@@ -176,7 +192,7 @@ def main() -> int:
 
     if not accepted_candidates:
         logger.warning("Ninguna secuencia supero el umbral en Fase 1.")
-        print_console_report(phase1_results, final_results)
+        print_console_report(phase1_results, final_results, is_calibrated)
         return 0
 
     logger.info(
@@ -194,11 +210,11 @@ def main() -> int:
         final_results = predictor.predict(accepted_candidates)
     except ModelLoadError as exc:
         logger.critical("Fallo critico cargando el motor de epitopos: %s", exc)
-        print_console_report(phase1_results, final_results)
+        print_console_report(phase1_results, final_results, is_calibrated)
         return 1
     except (EngineExecutionError, CLIWrapperError) as exc:
         logger.error("Fallo durante la inferencia de Fase 2: %s", exc)
-        print_console_report(phase1_results, final_results)
+        print_console_report(phase1_results, final_results, is_calibrated)
         return 1
     except ValueError as exc:
         logger.critical("Configuracion de motor invalida: %s", exc)
@@ -211,7 +227,7 @@ def main() -> int:
     CsvExporter.export(final_results, output_dir=args.output_dir)
 
     # 5. Reporte Visual en Consola
-    print_console_report(phase1_results, final_results)
+    print_console_report(phase1_results, final_results, is_calibrated)
 
     logger.info("Pipeline finalizado sin errores.")
     return 0
