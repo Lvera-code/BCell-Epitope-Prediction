@@ -22,6 +22,7 @@ import torch.nn as nn
 
 from src.config.settings import Settings
 from src.engines.base_engine import BaseEngine
+from src.engines.epitope_engine import compute_sliding_windows
 from src.models import AntigenicityResult, SequenceRecord
 from src.utils.batching import dynamic_batches
 from src.utils.calibration import PlattScaler
@@ -118,7 +119,13 @@ class AntigenicityCNN(nn.Module):
     completo de entrenamiento + calibracion sin fuga de datos.
     """
 
-    def __init__(self, in_channels: int = 3, hidden_channels: int = 32, kernel_size: int = 5):
+    def __init__(
+        self,
+        in_channels: int = 3,
+        hidden_channels: int = 32,
+        kernel_size: int = 5,
+        dropout: float = 0.0,
+    ):
         """Inicializa las capas de la red.
 
         Args:
@@ -127,14 +134,20 @@ class AntigenicityCNN(nn.Module):
                 La segunda capa usa el doble.
             kernel_size: Tamano del kernel convolucional (impar, para padding
                 simetrico "same").
+            dropout: Probabilidad de Dropout aplicada tras cada bloque
+                ``Conv1d -> BatchNorm1d -> ReLU`` (``Settings.
+                ANTIGENICITY_CNN_DROPOUT``). Solo activa durante ``model.train()``;
+                ``model.eval()`` la desactiva automaticamente en inferencia.
         """
         super().__init__()
         padding = kernel_size // 2
 
         self.conv1 = nn.Conv1d(in_channels, hidden_channels, kernel_size, padding=padding)
         self.bn1 = nn.BatchNorm1d(hidden_channels)
+        self.dropout1 = nn.Dropout(p=dropout)
         self.conv2 = nn.Conv1d(hidden_channels, hidden_channels * 2, kernel_size, padding=padding)
         self.bn2 = nn.BatchNorm1d(hidden_channels * 2)
+        self.dropout2 = nn.Dropout(p=dropout)
         self.relu = nn.ReLU(inplace=True)
         self.classifier_head = nn.Linear(hidden_channels * 2, 1)
 
@@ -150,8 +163,8 @@ class AntigenicityCNN(nn.Module):
             cada secuencia del lote (sin sigmoide aplicado; ver
             :class:`AntigenicityCNN`).
         """
-        features = self.relu(self.bn1(self.conv1(x)))
-        features = self.relu(self.bn2(self.conv2(features)))  # (B, C, L)
+        features = self.dropout1(self.relu(self.bn1(self.conv1(x))))
+        features = self.dropout2(self.relu(self.bn2(self.conv2(features))))  # (B, C, L)
 
         pooling_mask = mask.unsqueeze(1)  # (B, 1, L)
         masked_features = features.masked_fill(~pooling_mask, float("-inf"))
@@ -182,20 +195,23 @@ class AntigenicityCNNEngine(BaseEngine[SequenceRecord, AntigenicityResult]):
 
         Args:
             threshold: Umbral de decision de antigenicidad. Si es ``None``, se
-                usa ``Settings.ANTIGENICITY_THRESHOLD``.
+                usa el umbral dinamico F1-optimo persistido junto a la
+                calibracion de Platt (si existe); si tampoco existe, cae a
+                ``Settings.ANTIGENICITY_THRESHOLD``.
 
         Raises:
             ModelLoadError: Si existe un archivo de pesos pero esta corrupto o
                 es incompatible con la arquitectura actual.
         """
         self.device = torch.device(Settings.DEVICE)
-        self.threshold = threshold if threshold is not None else Settings.ANTIGENICITY_THRESHOLD
+        self._explicit_threshold = threshold
 
         torch.manual_seed(Settings.ANTIGENICITY_RANDOM_SEED)
         self.model = AntigenicityCNN(
             in_channels=3,
             hidden_channels=Settings.ANTIGENICITY_CNN_CHANNELS,
             kernel_size=Settings.ANTIGENICITY_CNN_KERNEL_SIZE,
+            dropout=Settings.ANTIGENICITY_CNN_DROPOUT,
         ).to(self.device)
 
         weights_path = Settings.ANTIGENICITY_CNN_WEIGHTS_PATH
@@ -244,13 +260,64 @@ class AntigenicityCNNEngine(BaseEngine[SequenceRecord, AntigenicityResult]):
                 calibration_path,
             )
 
+        if self._explicit_threshold is not None:
+            self.threshold = self._explicit_threshold
+        elif self.calibrator is not None and self.calibrator.threshold is not None:
+            self.threshold = self.calibrator.threshold
+            logger.info(
+                "Usando umbral dinamico F1-optimo persistido en la calibracion: %.4f.",
+                self.threshold,
+            )
+        else:
+            self.threshold = Settings.ANTIGENICITY_THRESHOLD
+
     @property
     def is_calibrated(self) -> bool:
         """Indica si los scores emitidos por :meth:`run` estan calibrados via Platt Scaling."""
         return self.calibrator is not None
 
+    @staticmethod
+    def _corroborated_score(ordered_scores: List[float], run_length: int) -> float:
+        """Agrega los scores de ventanas de un mismo candidato exigiendo corroboracion.
+
+        Tomar el ``max()`` simple entre ventanas es fragil: con un ~28% de
+        falsos positivos por ventana, una proteina con cientos de ventanas
+        acumula casi con certeza al menos una espuria (comparaciones
+        multiples). Un epitopo real es un parche contiguo que activa VARIAS
+        ventanas solapadas consecutivas; el ruido de una ventana aislada no.
+        Se calcula el minimo dentro de cada corrida de ``run_length`` ventanas
+        consecutivas (en orden posicional real sobre la secuencia) y se
+        devuelve el maximo de esos minimos: solo una racha sostenida de senal
+        sobrevive.
+
+        Args:
+            ordered_scores: Scores calibrados de las ventanas de un candidato,
+                en su orden posicional real (no el orden de batching).
+            run_length: Numero de ventanas consecutivas exigidas para corroborar
+                la senal (``Settings.ANTIGENICITY_CORROBORATION_WINDOWS``).
+
+        Returns:
+            Score final agregado para el candidato.
+        """
+        if len(ordered_scores) < run_length:
+            return max(ordered_scores)
+        return max(
+            min(ordered_scores[i : i + run_length])
+            for i in range(len(ordered_scores) - run_length + 1)
+        )
+
     def run(self, items: Sequence[SequenceRecord]) -> List[AntigenicityResult]:
         """Clasifica un lote de secuencias saneadas por antigenicidad.
+
+        La 1D-CNN se entrena sobre peptidos IEDB cortos (``Settings.
+        TRAINING_MIN/MAX_PEPTIDE_LEN``, 9-25aa). Puntuar una proteina completa
+        de una sola pasada extrapola muy fuera de ese rango (el Global Max
+        Pooling es no-decreciente en longitud y hunde el logit del
+        clasificador lineal). Por eso todo candidato mas largo que
+        ``Settings.ANTIGENICITY_WINDOW_SIZE`` se trocea en ventanas peptidicas
+        solapadas (misma mecanica que :func:`compute_sliding_windows` usa en
+        la Fase 2) y el score final se agrega exigiendo corroboracion entre
+        ventanas consecutivas (ver :meth:`_corroborated_score`).
 
         Args:
             items: Secuencias ya saneadas por ``FastaParser``.
@@ -262,22 +329,39 @@ class AntigenicityCNNEngine(BaseEngine[SequenceRecord, AntigenicityResult]):
         if not items:
             return []
 
-        id_to_result: Dict[str, AntigenicityResult] = {}
+        window_size = Settings.ANTIGENICITY_WINDOW_SIZE
+        overlap = Settings.ANTIGENICITY_WINDOW_OVERLAP
+        corroboration_run = Settings.ANTIGENICITY_CORROBORATION_WINDOWS
+
+        # (id_del_candidato_original, indice_posicional_de_la_ventana, secuencia).
+        window_entries: List[Tuple[str, int, str]] = []
+        for record in items:
+            windows = compute_sliding_windows(len(record.sequence), window_size, overlap)
+            for window_idx, (start, end) in enumerate(windows):
+                window_entries.append((record.id, window_idx, record.sequence[start:end]))
+
         batches = dynamic_batches(
-            items=items,
-            length_fn=lambda record: len(record.sequence),
+            items=window_entries,
+            length_fn=lambda entry: len(entry[2]),
             max_residues_per_batch=Settings.ANTIGENICITY_MAX_RESIDUES_PER_BATCH,
             max_items_per_batch=Settings.ANTIGENICITY_MAX_ITEMS_PER_BATCH,
         )
 
         logger.info(
-            "Fase 1 (Antigenicidad): %d secuencias agrupadas en %d mini-lotes dinamicos.",
+            "Fase 1 (Antigenicidad): %d secuencias expandidas a %d ventanas peptidicas "
+            "(<=%daa), agrupadas en %d mini-lotes dinamicos.",
             len(items),
+            len(window_entries),
+            window_size,
             len(batches),
         )
 
+        # Scores crudos por candidato, indexados por posicion de ventana (no
+        # por orden de batching, que reordena por longitud para minimizar padding).
+        scores_by_id: Dict[str, Dict[int, float]] = {}
+
         for batch_idx, batch in enumerate(batches):
-            sequences = [record.sequence for record in batch]
+            sequences = [window_seq for _, _, window_seq in batch]
             tensor, mask = ZScaleEncoder.encode_batch(sequences)
             tensor = tensor.to(self.device)
             mask = mask.to(self.device)
@@ -291,14 +375,8 @@ class AntigenicityCNNEngine(BaseEngine[SequenceRecord, AntigenicityResult]):
             else:
                 probs_np = 1.0 / (1.0 + np.exp(-logits_np))
 
-            for record, score in zip(batch, probs_np):
-                score_val = float(score)
-                id_to_result[record.id] = AntigenicityResult(
-                    record=record,
-                    score=score_val,
-                    is_antigenic=score_val >= self.threshold,
-                    method=self.METHOD_NAME,
-                )
+            for (record_id, window_idx, _), score in zip(batch, probs_np):
+                scores_by_id.setdefault(record_id, {})[window_idx] = float(score)
 
             del tensor, mask, logits, logits_np, probs_np
             rss_mb = log_memory_checkpoint(logger, f"antigenicity_batch_{batch_idx + 1}/{len(batches)}")
@@ -310,4 +388,19 @@ class AntigenicityCNNEngine(BaseEngine[SequenceRecord, AntigenicityResult]):
             )
 
         gc.collect()
-        return [id_to_result[record.id] for record in items]
+
+        results = []
+        for record in items:
+            ordered_scores = [
+                score for _, score in sorted(scores_by_id[record.id].items(), key=lambda kv: kv[0])
+            ]
+            score_val = self._corroborated_score(ordered_scores, corroboration_run)
+            results.append(
+                AntigenicityResult(
+                    record=record,
+                    score=score_val,
+                    is_antigenic=score_val >= self.threshold,
+                    method=self.METHOD_NAME,
+                )
+            )
+        return results

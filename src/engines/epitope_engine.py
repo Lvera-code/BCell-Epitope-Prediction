@@ -319,16 +319,17 @@ class NativeESM2Engine(BaseEpitopePredictor):
                 pesos de clasificador corruptos).
         """
         self.device = torch.device(Settings.DEVICE)
+        esm2_source = Settings.resolve_esm2_source()
         logger.info(
-            f"Cargando modelo ESM-2 '{Settings.ESM_MODEL_NAME}' en dispositivo '{self.device}'..."
+            f"Cargando modelo ESM-2 desde '{esm2_source}' en dispositivo '{self.device}'..."
         )
         try:
-            self.tokenizer = AutoTokenizer.from_pretrained(Settings.ESM_MODEL_NAME)
-            self.model = EsmModel.from_pretrained(Settings.ESM_MODEL_NAME).to(self.device)
+            self.tokenizer = AutoTokenizer.from_pretrained(esm2_source)
+            self.model = EsmModel.from_pretrained(esm2_source).to(self.device)
             self.model.eval()
         except Exception as exc:
             raise ModelLoadError(
-                f"Fallo critico al cargar el modelo ESM-2 '{Settings.ESM_MODEL_NAME}': {exc}"
+                f"Fallo critico al cargar el modelo ESM-2 desde '{esm2_source}': {exc}"
             ) from exc
 
         hidden_dim = self.model.config.hidden_size

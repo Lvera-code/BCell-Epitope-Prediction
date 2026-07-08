@@ -17,7 +17,7 @@ La probabilidad calibrada resultante es ``sigmoid(A * logit + B)``.
 import pickle
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
+from typing import Optional, Sequence
 
 import numpy as np
 from sklearn.linear_model import LogisticRegression
@@ -30,10 +30,15 @@ class PlattScaler:
     Attributes:
         coef_a: Pendiente ``A`` de la regresion logistica de Platt.
         intercept_b: Intercepto ``B`` de la regresion logistica de Platt.
+        threshold: Umbral de decision F1-optimo (curva Precision-Recall sobre
+            el propio hold-out de calibracion), o ``None`` si no se calculo
+            (compatibilidad con artefactos guardados antes de este campo).
+            Ver :func:`src.evaluation.evaluate_threshold.find_best_f1_threshold`.
     """
 
     coef_a: float
     intercept_b: float
+    threshold: Optional[float] = None
 
     def transform(self, logits: Sequence[float]) -> np.ndarray:
         """Aplica ``sigmoid(A * logit + B)`` a un array de logits crudos.
@@ -91,7 +96,10 @@ class PlattScaler:
         """
         path.parent.mkdir(parents=True, exist_ok=True)
         with open(path, "wb") as handle:
-            pickle.dump({"coef_a": self.coef_a, "intercept_b": self.intercept_b}, handle)
+            pickle.dump(
+                {"coef_a": self.coef_a, "intercept_b": self.intercept_b, "threshold": self.threshold},
+                handle,
+            )
 
     @classmethod
     def load(cls, path: Path) -> "PlattScaler":
@@ -109,4 +117,9 @@ class PlattScaler:
         """
         with open(path, "rb") as handle:
             payload = pickle.load(handle)
-        return cls(coef_a=float(payload["coef_a"]), intercept_b=float(payload["intercept_b"]))
+        raw_threshold = payload.get("threshold")
+        return cls(
+            coef_a=float(payload["coef_a"]),
+            intercept_b=float(payload["intercept_b"]),
+            threshold=float(raw_threshold) if raw_threshold is not None else None,
+        )

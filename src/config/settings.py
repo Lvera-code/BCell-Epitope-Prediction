@@ -73,6 +73,50 @@ class Settings:
     ANTIGENICITY_CNN_KERNEL_SIZE: int = _env_int("ANTIGENICITY_CNN_KERNEL_SIZE", 5)
     ANTIGENICITY_RANDOM_SEED: int = _env_int("ANTIGENICITY_RANDOM_SEED", 42)
 
+    # El Global Max Pooling de la 1D-CNN es estadisticamente no-decreciente en
+    # longitud (mas posiciones = mas intentos de activacion extrema), pero el
+    # clasificador lineal solo vio, en entrenamiento, vectores "pooled" de
+    # peptidos IEDB de 9-25aa (ver TRAINING_MIN/MAX_PEPTIDE_LEN). Puntuar una
+    # proteina completa (cientos/miles de aa) de una sola pasada extrapola muy
+    # fuera de ese rango y hunde el logit. Se trocea todo candidato mas largo
+    # que ANTIGENICITY_WINDOW_SIZE en ventanas peptidicas del mismo tamano que
+    # el entrenamiento y se agrega por maximo (misma estrategia de sliding
+    # window que ya usa la Fase 2 via ``compute_sliding_windows``).
+    ANTIGENICITY_WINDOW_SIZE: int = _env_int("ANTIGENICITY_WINDOW_SIZE", 25)
+    ANTIGENICITY_WINDOW_OVERLAP: int = _env_int("ANTIGENICITY_WINDOW_OVERLAP", 15)
+
+    # Agregar por max() puro entre ventanas es estadisticamente fragil: con un
+    # ~28% de falsos positivos por ventana (precision empirica del clasificador
+    # de peptidos), una proteina de cientos de ventanas acumula casi con
+    # certeza al menos una ventana espuria (problema de comparaciones
+    # multiples). Un epitopo real es un parche contiguo (>=5aa) que activa
+    # VARIAS ventanas solapadas consecutivas a la vez; el ruido de una sola
+    # ventana aislada, no. Se exige corroboracion: la puntuacion final es el
+    # maximo, sobre todas las corridas de ``ANTIGENICITY_CORROBORATION_WINDOWS``
+    # ventanas consecutivas, del MINIMO dentro de cada corrida (auditado
+    # empiricamente sobre el hold-out: recupera ROC-AUC vs. hard-negatives
+    # macromoleculares de 0.43 a 0.81 sin perder el control positivo real).
+    ANTIGENICITY_CORROBORATION_WINDOWS: int = _env_int("ANTIGENICITY_CORROBORATION_WINDOWS", 3)
+
+    # Regularizacion de la 1D-CNN (mitiga sobreajuste sobre el dataset ampliado).
+    ANTIGENICITY_CNN_DROPOUT: float = _env_float("ANTIGENICITY_CNN_DROPOUT", 0.35)
+
+    # --- Entrenamiento de Fase 1: Focal Loss + LR scheduling + early stopping ---
+    # Focal Loss (Lin et al., 2017) sustituye a BCEWithLogitsLoss+pos_weight:
+    # concentra el gradiente en los ejemplos dificiles (hard negatives
+    # macromoleculares) en vez de tratarlos igual que negativos triviales.
+    ANTIGENICITY_FOCAL_LOSS_GAMMA: float = _env_float("ANTIGENICITY_FOCAL_LOSS_GAMMA", 2.0)
+    ANTIGENICITY_MAX_EPOCHS: int = _env_int("ANTIGENICITY_MAX_EPOCHS", 200)
+    ANTIGENICITY_EARLY_STOP_PATIENCE: int = _env_int("ANTIGENICITY_EARLY_STOP_PATIENCE", 20)
+    ANTIGENICITY_LR_SCHEDULER_FACTOR: float = _env_float("ANTIGENICITY_LR_SCHEDULER_FACTOR", 0.5)
+    ANTIGENICITY_LR_SCHEDULER_PATIENCE: int = _env_int("ANTIGENICITY_LR_SCHEDULER_PATIENCE", 8)
+
+    # Directorio local vendorizado de ESM-2 (pesos + tokenizer ya guardados en
+    # disco via save_pretrained()); si existe, se prioriza sobre la cache
+    # generica de HuggingFace para arranque 100% autonomo. Ver
+    # ``Settings.resolve_esm2_source()``.
+    ESM_LOCAL_MODEL_DIR: Path = Path(_env_str("ESM_LOCAL_MODEL_DIR", "models/esm2_local"))
+
     # --- Calibracion de Platt (Fase 1) ---
     # La 1D-CNN emite logits crudos (sin sigmoide); este artefacto (A, B de una
     # regresion logistica 1D ajustada sobre un hold-out estratificado que NUNCA
@@ -196,3 +240,22 @@ class Settings:
         junto a otros procesos en la misma maquina de 12 nucleos.
         """
         torch.set_num_threads(cls.TORCH_NUM_THREADS)
+
+    @classmethod
+    def resolve_esm2_source(cls) -> str:
+        """Resuelve el origen de carga de ESM-2: vendorizado local o Hub.
+
+        Prioriza ``ESM_LOCAL_MODEL_DIR`` (pesos + tokenizer ya volcados a
+        disco dentro del repo via ``save_pretrained()``) para un arranque
+        100% autonomo que no dependa de la cache generica de HuggingFace. Si
+        el directorio no existe o esta incompleto, cae al nombre del Hub
+        (resuelto contra la cache local si ``OFFLINE_MODE`` esta activo).
+
+        Returns:
+            Ruta local (str) o nombre de modelo del Hub, listo para pasar a
+            ``from_pretrained()``.
+        """
+        local_dir = cls.ESM_LOCAL_MODEL_DIR
+        if (local_dir / "config.json").exists():
+            return str(local_dir)
+        return cls.ESM_MODEL_NAME

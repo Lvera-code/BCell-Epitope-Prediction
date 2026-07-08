@@ -49,10 +49,12 @@ def parse_arguments() -> argparse.Namespace:
         "-t",
         "--threshold",
         type=float,
-        required=True,
-        default=argparse.SUPPRESS,
+        default=None,
         help=(
-            "Umbral de antigenicidad global (0.0 a 1.0). Usa 0.0 para forzar el "
+            "Umbral de antigenicidad global (0.0 a 1.0). Si se omite, se usa el "
+            "umbral dinamico F1-optimo persistido junto a la calibracion de Platt "
+            "(ver Settings.ANTIGENICITY_CALIBRATION_PATH), o Settings."
+            "ANTIGENICITY_THRESHOLD si no hay calibracion. Usa 0.0 para forzar el "
             "mapeo de epitopos en secuencias cortas o fragmentos saltandose el "
             "filtro de la Fase 1."
         ),
@@ -146,9 +148,11 @@ def main() -> int:
     """
     args = parse_arguments()
 
-    if args.offline:
-        Settings.apply_offline_mode()
-        logger.info("Modo offline activado: sin llamadas de red a HuggingFace Hub.")
+    # Offline forzado incondicionalmente: bajo datos moviles/red publica compartida
+    # una verificacion de actualizacion contra HuggingFace Hub puede colgarse o
+    # fallar a mitad de una demo. El cache local ya contiene todo lo necesario.
+    Settings.apply_offline_mode()
+    logger.info("Modo offline activado: sin llamadas de red a HuggingFace Hub.")
 
     Settings.apply_thread_limits()
     Settings.setup_directories()
@@ -170,9 +174,9 @@ def main() -> int:
         return 0
 
     # 2. Fase 1: Cribado de Antigenicidad (1D-CNN sobre Escalas Z de Hellberg)
-    logger.info("FASE 1: Cribado de Antigenicidad (umbral >= %.4f)", args.threshold)
     try:
         antigenicity_engine = AntigenicityCNNEngine(threshold=args.threshold)
+        logger.info("FASE 1: Cribado de Antigenicidad (umbral >= %.4f)", antigenicity_engine.threshold)
         is_calibrated = antigenicity_engine.is_calibrated
         logger.info(
             "Fase 1: scores %s.",

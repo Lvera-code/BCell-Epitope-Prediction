@@ -108,13 +108,14 @@ def _load_esm2():
     Raises:
         ModelLoadError: Si el modelo o el tokenizer no pueden cargarse.
     """
+    esm2_source = Settings.resolve_esm2_source()
     try:
-        tokenizer = AutoTokenizer.from_pretrained(Settings.ESM_MODEL_NAME)
-        model = EsmModel.from_pretrained(Settings.ESM_MODEL_NAME).to(Settings.DEVICE)
+        tokenizer = AutoTokenizer.from_pretrained(esm2_source)
+        model = EsmModel.from_pretrained(esm2_source).to(Settings.DEVICE)
         model.eval()
     except Exception as exc:
         raise ModelLoadError(
-            f"Fallo al cargar ESM-2 '{Settings.ESM_MODEL_NAME}' para extraccion de features: {exc}"
+            f"Fallo al cargar ESM-2 desde '{esm2_source}' para extraccion de features: {exc}"
         ) from exc
     return tokenizer, model, model.config.hidden_size
 
@@ -145,6 +146,14 @@ def extract_features_for_split(
     esm2_dir = output_root / split_name / "esm2"
     hellberg_dir.mkdir(parents=True, exist_ok=True)
     esm2_dir.mkdir(parents=True, exist_ok=True)
+
+    # Purga shards de una corrida anterior: si el dataset actual produce MENOS
+    # shards que una extraccion previa (p. ej. tras reducir el dataset), los
+    # sobrantes quedarian huerfanos y ShardIterableDataset los leeria igual
+    # (glob de todo shard_*.pt en el directorio), contaminando el entrenamiento
+    # con datos de una version del dataset ya descartada.
+    for stale_shard in list(hellberg_dir.glob("shard_*.pt")) + list(esm2_dir.glob("shard_*.pt")):
+        stale_shard.unlink()
 
     logger.info("Cargando ESM-2 para extraccion de embeddings ('%s')...", split_name)
     tokenizer, model, hidden_dim = _load_esm2()

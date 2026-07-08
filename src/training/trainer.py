@@ -34,6 +34,7 @@ from torch.utils.data import DataLoader, Dataset, IterableDataset
 from src.config.settings import Settings
 from src.engines.antigenicity_cnn import AntigenicityCNN, AntigenicityCNNEngine
 from src.engines.epitope_engine import NativeESM2Engine, ResidueClassifier
+from src.evaluation.evaluate_threshold import find_best_f1_threshold
 from src.models import BenchmarkReport
 from src.utils.calibration import PlattScaler
 from src.utils.fasta_parser import FastaParser
@@ -42,6 +43,39 @@ from src.utils.memory_profiler import log_memory_checkpoint
 from src.validation.benchmark_suite import BenchmarkSuite, print_benchmark_report
 
 logger = setup_logger(__name__)
+
+
+class FocalLoss(nn.Module):
+    """Focal Loss binaria (Lin et al., 2017) para el desbalance de clases de Fase 1.
+
+    A diferencia de ``BCEWithLogitsLoss`` + ``pos_weight`` (que solo reescala
+    el gradiente por clase), Focal Loss down-weightea ademas los ejemplos YA
+    bien clasificados (``(1 - p_t) ** gamma``) y concentra el aprendizaje en
+    los dificiles -- en particular los hard negatives macromoleculares, que
+    con pos_weight reciben el mismo peso que cualquier negativo trivial.
+    """
+
+    def __init__(self, alpha: float, gamma: float):
+        """Inicializa la perdida.
+
+        Args:
+            alpha: Peso de la clase positiva (``1 - alpha`` para la negativa).
+                Se calcula dinamicamente como ``negativos / (positivos +
+                negativos)`` del conjunto de ajuste, igual convencion que el
+                ``pos_weight`` que sustituye.
+            gamma: Exponente de enfoque (``Settings.ANTIGENICITY_FOCAL_LOSS_GAMMA``).
+                ``gamma=0`` degenera en BCE ponderada por ``alpha``.
+        """
+        super().__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+
+    def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        bce = F.binary_cross_entropy_with_logits(logits, targets, reduction="none")
+        p_t = torch.exp(-bce)
+        alpha_t = self.alpha * targets + (1.0 - self.alpha) * (1.0 - targets)
+        focal_term = (1.0 - p_t).clamp(min=0.0).pow(self.gamma)
+        return (alpha_t * focal_term * bce).mean()
 
 MIN_DELTA: float = 1e-4
 
@@ -349,13 +383,35 @@ def _fit_and_save_calibration(
         )
         return
 
+    calibrated_probs = scaler.transform(all_logits).tolist()
+    try:
+        best_threshold, best_f1, best_precision, best_recall, _, _ = find_best_f1_threshold(
+            all_labels, calibrated_probs
+        )
+        scaler = PlattScaler(coef_a=scaler.coef_a, intercept_b=scaler.intercept_b, threshold=best_threshold)
+        logger.info(
+            "Umbral dinamico F1-optimo sobre el hold-out de calibracion: %.4f "
+            "(F1=%.4f, Precision=%.4f, Recall=%.4f).",
+            best_threshold,
+            best_f1,
+            best_precision,
+            best_recall,
+        )
+    except ValueError as exc:
+        logger.warning(
+            "No se pudo calcular el umbral F1-optimo (%s); se persiste la calibracion "
+            "sin umbral dinamico (cae a Settings.ANTIGENICITY_THRESHOLD en inferencia).",
+            exc,
+        )
+
     scaler.save(Settings.ANTIGENICITY_CALIBRATION_PATH)
     logger.info(
-        "Calibracion de Platt ajustada sobre %d muestras de hold-out (A=%.4f, B=%.4f) "
-        "y guardada en '%s'.",
+        "Calibracion de Platt ajustada sobre %d muestras de hold-out (A=%.4f, B=%.4f, "
+        "umbral=%s) y guardada en '%s'.",
         len(calib_samples),
         scaler.coef_a,
         scaler.intercept_b,
+        f"{scaler.threshold:.4f}" if scaler.threshold is not None else "N/D",
         Settings.ANTIGENICITY_CALIBRATION_PATH,
     )
 
@@ -387,11 +443,18 @@ def train_antigenicity_cnn(train_shard_dir: Path, val_shard_dir: Path, save_path
         in_channels=3,
         hidden_channels=Settings.ANTIGENICITY_CNN_CHANNELS,
         kernel_size=Settings.ANTIGENICITY_CNN_KERNEL_SIZE,
+        dropout=Settings.ANTIGENICITY_CNN_DROPOUT,
     ).to(device)
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=Settings.TRAINING_LEARNING_RATE,
         weight_decay=Settings.TRAINING_WEIGHT_DECAY,
+    )
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer,
+        mode="min",
+        factor=Settings.ANTIGENICITY_LR_SCHEDULER_FACTOR,
+        patience=Settings.ANTIGENICITY_LR_SCHEDULER_PATIENCE,
     )
 
     all_train_samples = _load_all_hellberg_samples(train_shard_dir)
@@ -401,19 +464,18 @@ def train_antigenicity_cnn(train_shard_dir: Path, val_shard_dir: Path, save_path
 
     n_pos_fit = sum(1 for _, _, label in fit_samples if label == 1.0)
     n_neg_fit = len(fit_samples) - n_pos_fit
-    pos_weight_value = (n_neg_fit / n_pos_fit) if n_pos_fit > 0 else 1.0
-    loss_fn = nn.BCEWithLogitsLoss(
-        pos_weight=torch.tensor(pos_weight_value, dtype=torch.float32, device=device)
-    )
+    focal_alpha = (n_neg_fit / len(fit_samples)) if fit_samples else 0.5
+    loss_fn = FocalLoss(alpha=focal_alpha, gamma=Settings.ANTIGENICITY_FOCAL_LOSS_GAMMA)
 
     logger.info(
         "Fase 1: hold-out de calibracion separado ANTES del backprop -> %d muestras de "
-        "ajuste (%d pos / %d neg, pos_weight=%.4f) / %d muestras de calibracion "
-        "(nunca vistas en backprop).",
+        "ajuste (%d pos / %d neg, Focal Loss alpha=%.4f gamma=%.1f) / %d muestras de "
+        "calibracion (nunca vistas en backprop).",
         len(fit_samples),
         n_pos_fit,
         n_neg_fit,
-        pos_weight_value,
+        focal_alpha,
+        Settings.ANTIGENICITY_FOCAL_LOSS_GAMMA,
         len(calib_samples),
     )
 
@@ -441,7 +503,7 @@ def train_antigenicity_cnn(train_shard_dir: Path, val_shard_dir: Path, save_path
     best_val_loss = float("inf")
     patience_counter = 0
 
-    for epoch in range(1, Settings.TRAINING_MAX_EPOCHS + 1):
+    for epoch in range(1, Settings.ANTIGENICITY_MAX_EPOCHS + 1):
         model.train()
         running_loss = 0.0
         n_batches = 0
@@ -461,14 +523,16 @@ def train_antigenicity_cnn(train_shard_dir: Path, val_shard_dir: Path, save_path
         gc.collect()
         train_loss = running_loss / max(n_batches, 1)
         val_loss = _evaluate_antigenicity(model, val_loader, loss_fn, device)
+        scheduler.step(val_loss)
         log_memory_checkpoint(logger, f"antigenicity_train_epoch_{epoch}")
 
         logger.info(
-            "Fase 1 | Epoca %d/%d | train_loss=%.4f | val_loss=%.4f",
+            "Fase 1 | Epoca %d/%d | train_loss=%.4f | val_loss=%.4f | lr=%.2e",
             epoch,
-            Settings.TRAINING_MAX_EPOCHS,
+            Settings.ANTIGENICITY_MAX_EPOCHS,
             train_loss,
             val_loss,
+            optimizer.param_groups[0]["lr"],
         )
 
         if val_loss < best_val_loss - MIN_DELTA:
@@ -478,7 +542,7 @@ def train_antigenicity_cnn(train_shard_dir: Path, val_shard_dir: Path, save_path
             logger.info("Nuevo mejor checkpoint de Fase 1 guardado en '%s' (val_loss=%.4f).", save_path, best_val_loss)
         else:
             patience_counter += 1
-            if patience_counter >= Settings.TRAINING_EARLY_STOP_PATIENCE:
+            if patience_counter >= Settings.ANTIGENICITY_EARLY_STOP_PATIENCE:
                 logger.info(
                     "Early stopping en epoca %d (sin mejora en %d epocas consecutivas).",
                     epoch,
