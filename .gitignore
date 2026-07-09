@@ -10,3 +10,4 @@ tools/
 logs/
 __pycache__/
 *.pyc
+models/esm2_local/
