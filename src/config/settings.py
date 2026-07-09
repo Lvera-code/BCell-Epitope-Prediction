@@ -85,6 +85,20 @@ class Settings:
     ANTIGENICITY_WINDOW_SIZE: int = _env_int("ANTIGENICITY_WINDOW_SIZE", 25)
     ANTIGENICITY_WINDOW_OVERLAP: int = _env_int("ANTIGENICITY_WINDOW_OVERLAP", 15)
 
+    # Enrutamiento dinamico de entrada: empiricamente, la CNN calibrada
+    # subestima peptidos sinteticos cortos hiper-validados (p. ej. HA-tag
+    # YPYDVPDYA, 9aa, epitopo lineal de referencia: score Platt 0.039, muy por
+    # debajo del umbral F1-optimo). Para secuencias de longitud <= este umbral
+    # se omite el cribado grueso de Fase 1 y se rutea directo al mapeo
+    # residuo-a-residuo de Fase 2 (ESM-2), que es el motor autoritativo para
+    # fragmentos cortos. Desacoplado de ANTIGENICITY_WINDOW_SIZE (aunque
+    # comparte el mismo valor por defecto) porque son decisiones distintas:
+    # uno es el tamano de ventana de entrenamiento de la CNN, el otro es una
+    # politica de negocio sobre cuando confiar en su score.
+    SHORT_PEPTIDE_DIRECT_ROUTING_MAX_LEN: int = _env_int(
+        "SHORT_PEPTIDE_DIRECT_ROUTING_MAX_LEN", 25
+    )
+
     # Agregar por max() puro entre ventanas es estadisticamente fragil: con un
     # ~28% de falsos positivos por ventana (precision empirica del clasificador
     # de peptidos), una proteina de cientos de ventanas acumula casi con

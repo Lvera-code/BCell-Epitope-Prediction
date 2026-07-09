@@ -117,8 +117,13 @@ def print_console_report(
     for res1 in phase1_results:
         seq_id = res1.record.id
         display_id = seq_id[:23] + ".." if len(seq_id) > 25 else seq_id
-        score_str = f"{res1.score:.4f}"
-        status = " APROBADA " if res1.is_antigenic else "DESCARTADA"
+        bypassed_phase1 = res1.method.startswith("Fase1-OMITIDA")
+        if bypassed_phase1:
+            score_str = "N/A"
+            status = "DIRECTA-F2"
+        else:
+            score_str = f"{res1.score:.4f}"
+            status = " APROBADA " if res1.is_antigenic else "DESCARTADA"
 
         if res1.is_antigenic and seq_id in phase2_map:
             res2 = phase2_map[seq_id]
@@ -173,7 +178,14 @@ def main() -> int:
         logger.warning("Ninguna secuencia sobrevivio al saneamiento. Pipeline finalizado sin resultados.")
         return 0
 
-    # 2. Fase 1: Cribado de Antigenicidad (1D-CNN sobre Escalas Z de Hellberg)
+    # 2. Enrutamiento dinamico + Fase 1: Cribado de Antigenicidad (1D-CNN)
+    # Secuencias <= Settings.SHORT_PEPTIDE_DIRECT_ROUTING_MAX_LEN omiten la
+    # CNN (no calibrada de forma fiable en ese rango, ver Settings) y van
+    # directo a Fase 2. El resto sigue el cribado normal.
+    routing_max_len = Settings.SHORT_PEPTIDE_DIRECT_ROUTING_MAX_LEN
+    short_records = [r for r in records if len(r.sequence) <= routing_max_len]
+    long_records = [r for r in records if len(r.sequence) > routing_max_len]
+
     try:
         antigenicity_engine = AntigenicityCNNEngine(threshold=args.threshold)
         logger.info("FASE 1: Cribado de Antigenicidad (umbral >= %.4f)", antigenicity_engine.threshold)
@@ -182,15 +194,37 @@ def main() -> int:
             "Fase 1: scores %s.",
             "calibrados via Platt Scaling" if is_calibrated else "SIN CALIBRAR (sigmoide crudo)",
         )
-        phase1_results = antigenicity_engine.run(records)
+        cnn_results = antigenicity_engine.run(long_records)
     except ModelLoadError as exc:
         logger.critical("Fallo critico cargando el motor de antigenicidad: %s", exc)
         return 1
 
+    bypassed_results: List[AntigenicityResult] = []
+    for record in short_records:
+        logger.info(
+            "[%s] Secuencia <= 25aa detectada. Redireccionando directamente a la "
+            "Fase 2 (ESM-2) para mapeo molecular.",
+            record.id,
+        )
+        bypassed_results.append(
+            AntigenicityResult(
+                record=record,
+                score=float("nan"),
+                is_antigenic=True,
+                method="Fase1-OMITIDA(ruteo-directo<=25aa)",
+            )
+        )
+
+    results_by_id = {res.record.id: res for res in cnn_results + bypassed_results}
+    phase1_results = [results_by_id[record.id] for record in records]
+
     accepted_candidates = [res for res in phase1_results if res.is_antigenic]
     for res in phase1_results:
-        status = "APROBADA" if res.is_antigenic else "DESCARTADA"
-        logger.info("[%s] Score: %.4f -> %s", res.record.id, res.score, status)
+        if res.method.startswith("Fase1-OMITIDA"):
+            logger.info("[%s] Fase 1 omitida (ruteo directo) -> APROBADA", res.record.id)
+        else:
+            status = "APROBADA" if res.is_antigenic else "DESCARTADA"
+            logger.info("[%s] Score: %.4f -> %s", res.record.id, res.score, status)
 
     final_results: List[EpitopeResult] = []
 
