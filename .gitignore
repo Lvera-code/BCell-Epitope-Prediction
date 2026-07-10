@@ -1,13 +1,28 @@
 *.pt
-!models/antigenicity_cnn.pt
-!models/residue_classifier.pt
-*.pdb
-*.ent
-produccion_resultados/
-# Exclusiones del Pipeline de Células B
-data/
-tools/
 logs/
 __pycache__/
 *.pyc
-models/esm2_local/
+
+# Herramienta BepiPred-3.0 (Fase 2, ejecucion local): paquete de codigo fuente
+# con licencia academica de DTU Health Tech, descarga manual obligatoria (ver
+# README.md - Seccion de Instalacion). Incluye pesos de modelo (bp3/BP3Models)
+# y cache de encodings ESM-2: nunca debe subirse al repositorio.
+bepipred-3.0b.src/
+
+# Entorno virtual dedicado para las dependencias antiguas de BepiPred-3.0
+# (ver README.md - Seccion de Instalacion).
+.venv-bepipred/
+
+# Base de datos BLAST del proteoma humano (Fase 4): regenerable localmente
+# via 'makeblastdb' a partir de una descarga de UniProt (ver README.md -
+# Seccion de Instalacion). Binaria y pesada, no es codigo fuente.
+reference_db/
+
+# Salida del pipeline (Fases 1-5): resultados regenerables de cada corrida
+# de pipeline.py. No es codigo fuente ni un artefacto versionable.
+fasta_outputs/
+
+# Fallback historico del motor de BepiPred si se invoca sin output_dir
+# explicito (ver Settings.BEPIPRED_OUTPUT_DIR). En uso normal, pipeline.py
+# siempre redirige esto dentro de fasta_outputs/, pero se deja por si acaso.
+produccion_resultados/

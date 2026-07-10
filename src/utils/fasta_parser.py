@@ -1,155 +1,152 @@
-"""Modulo de aduana y saneamiento de secuencias FASTA.
+"""Fase 1: Saneamiento de FASTA crudo (aduana de entrada del pipeline).
 
-Actua como frontera estricta entre datos crudos externos y el resto del
-pipeline: normaliza el formato, excinde residuos ambiguos IUPAC (``X``, ``B``,
-``Z``, ``J``) y descarta cualquier secuencia que, tras el saneamiento, no
-alcance la longitud minima requerida para el calculo de covarianza posterior
-(Auto Cross Covariance / campo receptivo de la 1D-CNN en Fase 1).
+Responsabilidad exclusiva: leer un FASTA tal como llega del usuario, separarlo
+en registros (cabecera, secuencia) y producir una version saneada -mayusculas,
+sin saltos de linea internos, sin caracteres no canonicos- que sea segura para
+enviar a BioLib (Fase 2), a BLASTp (Fase 4) y a los motores de inmunogenicidad
+(Fase 5). El descarte de un registro individual por quedar vacio tras el
+saneamiento es recuperable (ver ``InvalidSequenceError``); un FASTA sin ningun
+'>' es un error fatal (ver ``FastaFormatError``).
 """
 
+from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Set
+from typing import List, Tuple
 
-from src.models import SequenceRecord
-from src.utils.exceptions import FastaFormatError
+from src.utils.exceptions import FastaFormatError, InvalidSequenceError
 from src.utils.logger_config import setup_logger
 
 logger = setup_logger(__name__)
 
-CANONICAL_AA: Set[str] = set("ACDEFGHIKLMNPQRSTVWY")
-AMBIGUOUS_RESIDUES: Set[str] = {"X", "B", "Z", "J"}
-DEFAULT_MIN_LENGTH: int = 9
+# Alfabeto canonico de los 20 aminoacidos estandar. Cualquier otro caracter
+# (ambiguedades IUPAC como X/B/Z/J/U/O, gaps '-', stops '*', digitos, etc.)
+# se elimina en el saneamiento.
+CANONICAL_AMINOACIDS = set("ACDEFGHIKLMNPQRSTVWY")
 
 
-class FastaParser:
-    """Parser FASTA estricto con saneamiento biologico integrado."""
+@dataclass
+class FastaRecord:
+    """Un registro FASTA ya saneado, listo para las fases siguientes."""
 
-    @staticmethod
-    def parse(file_path: Path, min_length: int = DEFAULT_MIN_LENGTH) -> List[SequenceRecord]:
-        """Parsea, sanea y filtra un archivo FASTA.
+    header: str
+    accession: str
+    sequence: str
+    removed_chars: int
 
-        El proceso por secuencia es:
 
-        1. Normalizacion: mayusculas, eliminacion de espacios/tabulaciones internas.
-        2. Excision de residuos ambiguos IUPAC (``X``, ``B``, ``Z``, ``J``): se
-           remueven del cuerpo de la secuencia (no se descarta el registro).
-        3. Rechazo si, tras la excision, quedan caracteres fuera del alfabeto
-           canonico de 20 aminoacidos (anomalia estructural: digitos, ``*``,
-           gaps, aminoacidos no estandar como ``U``/``O``, etc.).
-        4. Rechazo (WARNING) si la longitud resultante es menor que
-           ``min_length``.
+def parse_fasta(path: Path) -> List[Tuple[str, str]]:
+    """Separa un archivo FASTA crudo en pares ``(cabecera, secuencia_cruda)``.
 
-        Args:
-            file_path: Ruta al archivo FASTA de entrada.
-            min_length: Longitud minima de aminoacidos exigida tras el
-                saneamiento. Por defecto 9, el minimo estructural para que el
-                calculo de Auto Cross Covariance (lag hasta 8) sea valido.
+    Args:
+        path: Ruta al archivo FASTA de entrada.
 
-        Returns:
-            Lista de :class:`~src.models.SequenceRecord` que superaron el
-            saneamiento completo.
+    Returns:
+        Lista de tuplas ``(header_sin_'>', secuencia_sin_saltos_de_linea)``
+        en el mismo orden en que aparecen en el archivo.
 
-        Raises:
-            FileNotFoundError: Si ``file_path`` no existe.
-            FastaFormatError: Si el archivo no contiene ninguna cabecera FASTA
-                valida (``>``), lo que indica un formato de entrada corrupto.
-        """
-        if not file_path.exists():
-            raise FileNotFoundError(f"El archivo FASTA no existe: {file_path}")
+    Raises:
+        FileNotFoundError: Si ``path`` no existe.
+        FastaFormatError: Si el archivo no contiene ningun registro valido
+            (no empieza con '>' o esta vacio). Es un error fatal.
+    """
+    if not path.is_file():
+        raise FileNotFoundError(f"No se encontro el archivo FASTA de entrada: {path}")
 
-        raw_entries = FastaParser._split_entries(file_path)
-        if not raw_entries:
-            raise FastaFormatError(
-                f"El archivo '{file_path}' no contiene ninguna cabecera FASTA ('>') valida."
-            )
+    raw_text = path.read_text(encoding="utf-8", errors="replace")
+    lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
 
-        records: List[SequenceRecord] = []
-        for seq_id, description, raw_seq in raw_entries:
-            record = FastaParser._sanitize_entry(seq_id, description, raw_seq, min_length)
-            if record is not None:
-                records.append(record)
+    if not lines or not lines[0].startswith(">"):
+        raise FastaFormatError(
+            f"'{path.name}' no cumple la sintaxis FASTA minima (debe iniciar con '>')."
+        )
 
-        if not records:
-            logger.warning(
-                "No se extrajo ninguna secuencia valida de '%s' tras el saneamiento completo.",
-                file_path,
-            )
+    records: List[Tuple[str, str]] = []
+    header: str = ""
+    seq_chunks: List[str] = []
+
+    for line in lines:
+        if line.startswith(">"):
+            if header:
+                records.append((header, "".join(seq_chunks)))
+            header = line[1:].strip()
+            seq_chunks = []
         else:
-            logger.info(
-                "Saneamiento completado: %d/%d secuencias validas extraidas de '%s'.",
-                len(records),
-                len(raw_entries),
-                file_path,
-            )
+            seq_chunks.append(line)
 
-        return records
+    if header:
+        records.append((header, "".join(seq_chunks)))
 
-    @staticmethod
-    def _split_entries(file_path: Path) -> List[tuple]:
-        """Divide el archivo en tuplas crudas ``(id, descripcion, secuencia)``."""
-        entries: List[tuple] = []
-        current_id = ""
-        current_desc = ""
-        current_chunks: List[str] = []
+    if not records:
+        raise FastaFormatError(f"'{path.name}' no contiene ningun registro FASTA valido.")
 
-        with open(file_path, mode="r", encoding="utf-8") as handle:
-            for line in handle:
-                line = line.strip()
-                if not line:
-                    continue
-                if line.startswith(">"):
-                    if current_id:
-                        entries.append((current_id, current_desc, "".join(current_chunks)))
-                    header = line[1:].strip()
-                    tokens = header.split(maxsplit=1)
-                    current_id = tokens[0] if tokens else ""
-                    current_desc = tokens[1] if len(tokens) > 1 else ""
-                    current_chunks = []
-                else:
-                    current_chunks.append(line)
+    return records
 
-            if current_id:
-                entries.append((current_id, current_desc, "".join(current_chunks)))
 
-        return entries
+def sanitize_sequence(raw_sequence: str) -> Tuple[str, int]:
+    """Normaliza una secuencia cruda: mayusculas + solo aminoacidos canonicos.
 
-    @staticmethod
-    def _sanitize_entry(
-        seq_id: str, description: str, raw_seq: str, min_length: int
-    ) -> "SequenceRecord | None":
-        """Aplica la cadena de saneamiento a una unica entrada FASTA."""
-        normalized = "".join(raw_seq.upper().split())
+    Args:
+        raw_sequence: Secuencia de aminoacidos sin procesar.
 
-        ambiguous_found = {c for c in normalized if c in AMBIGUOUS_RESIDUES}
-        if ambiguous_found:
-            removed_count = sum(1 for c in normalized if c in AMBIGUOUS_RESIDUES)
-            logger.info(
-                "Secuencia '%s': excindidos %d residuos ambiguos %s.",
-                seq_id,
-                removed_count,
-                sorted(ambiguous_found),
-            )
-            cleaned = "".join(c for c in normalized if c not in AMBIGUOUS_RESIDUES)
-        else:
-            cleaned = normalized
+    Returns:
+        Tupla ``(secuencia_limpia, n_caracteres_eliminados)``.
+    """
+    upper = raw_sequence.upper()
+    clean = "".join(c for c in upper if c in CANONICAL_AMINOACIDS)
+    return clean, len(upper) - len(clean)
 
-        illegal_chars = set(cleaned) - CANONICAL_AA
-        if illegal_chars:
+
+def load_and_sanitize(path: Path) -> List[FastaRecord]:
+    """Lee y sanea un FASTA completo, descartando registros que queden vacios.
+
+    Args:
+        path: Ruta al archivo FASTA de entrada (dentro de ``fasta_inputs/``).
+
+    Returns:
+        Lista de :class:`FastaRecord` saneados.
+
+    Raises:
+        FastaFormatError: Si el archivo no tiene sintaxis FASTA valida (fatal).
+        InvalidSequenceError: Si NINGUN registro sobrevive el saneamiento
+            (fatal a nivel de archivo). El descarte de registros individuales
+            solo se loggea como warning y no detiene el resto del lote.
+    """
+    raw_records = parse_fasta(path)
+    sane_records: List[FastaRecord] = []
+
+    for header, raw_seq in raw_records:
+        clean_seq, removed = sanitize_sequence(raw_seq)
+        if not clean_seq:
             logger.warning(
-                "Secuencia descartada '%s': contiene residuos no canonicos irrecuperables %s.",
-                seq_id,
-                sorted(illegal_chars),
+                "Registro '%s' descartado: no quedaron residuos canonicos tras el saneamiento.",
+                header,
             )
-            return None
+            continue
 
-        if len(cleaned) < min_length:
-            logger.warning(
-                "Secuencia descartada '%s': longitud insuficiente tras saneamiento "
-                "(%d aa < minimo %d aa).",
-                seq_id,
-                len(cleaned),
-                min_length,
-            )
-            return None
+        accession = header.split()[0] if header else "UNKNOWN"
+        sane_records.append(
+            FastaRecord(header=header, accession=accession, sequence=clean_seq, removed_chars=removed)
+        )
 
-        return SequenceRecord(id=seq_id, sequence=cleaned, description=description)
+    if not sane_records:
+        raise InvalidSequenceError(
+            f"Ninguna secuencia valida en '{path.name}' tras eliminar caracteres no canonicos."
+        )
+
+    return sane_records
+
+
+def write_fasta(records: List[FastaRecord], out_path: Path, line_width: int = 60) -> None:
+    """Escribe una lista de :class:`FastaRecord` saneados como FASTA valido.
+
+    Args:
+        records: Registros a escribir, en orden.
+        out_path: Ruta de salida (se sobreescribe si ya existe).
+        line_width: Ancho de linea para el envoltorio de la secuencia.
+    """
+    with out_path.open("w", encoding="utf-8") as fh:
+        for record in records:
+            fh.write(f">{record.header}\n")
+            seq = record.sequence
+            for i in range(0, len(seq), line_width):
+                fh.write(seq[i : i + line_width] + "\n")

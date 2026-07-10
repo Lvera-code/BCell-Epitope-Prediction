@@ -1,10 +1,24 @@
-torch>=2.0.0
-transformers>=4.30.0
-numpy>=1.22.0
+# Dependencias del pipeline de descubrimiento de epitopos vacunales (pipeline.py).
+# NOTA: torch/transformers/scikit-learn/matplotlib se retiraron junto con el
+# motor de CNN de antigenicidad local (pivote a BepiPred-3.0, ver ADR en
+# src/engines/bepipred_engine.py). No son requeridos por pipeline.py en si.
 pandas>=1.5.0
-pyyaml>=6.0
-scikit-learn>=1.3.0
-requests>=2.28.0
-scipy>=1.10.0
-matplotlib>=3.7.0
-pytest>=7.4.0
+numpy>=1.22.0
+
+# Fase 5 (--inmuno mhcflurry). Tras instalar, ejecuta 'mhcflurry-downloads fetch'
+# una vez para descargar los modelos pre-entrenados (ver README.md).
+mhcflurry>=2.0.0
+
+# NOTA: la Fase 2 (BepiPred-3.0) NO se instala aqui. Se ejecuta como
+# subproceso local contra un paquete descargado manualmente por licencia
+# academica (bepipred-3.0b.src/, gitignored). Sus dependencias (fair-esm,
+# torch==1.12.0, plotly, ...) son antiguas y pueden chocar con las de este
+# archivo: instalalas en un venv APARTE con
+# 'pip install -r bepipred-3.0b.src/BepiPred3_src/requirements.txt' y apunta
+# BEPIPRED_PYTHON_BIN al python de ese venv. Ver README.md - Seccion de
+# Instalacion.
+#
+# NOTA: la Fase 4 (BLASTp local) depende del binario 'blastp' (paquete NCBI
+# BLAST+), que NO se instala via pip. Ver README.md - Seccion de Instalacion.
+# NOTA: --inmuno netmhcpan depende del binario propietario 'netMHCpan'
+# (licencia DTU Health Tech), tampoco distribuible via pip. Ver README.md.

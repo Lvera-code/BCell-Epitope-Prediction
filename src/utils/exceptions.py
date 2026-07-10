@@ -44,9 +44,39 @@ class CLIWrapperError(EngineExecutionError):
     """
 
 
+class BepiPredExecutionError(EngineExecutionError):
+    """Fallo al ejecutar BepiPred-3.0 localmente (Fase 2, via subprocess).
+
+    Cubre tanto la instalacion local ausente (paquete de codigo fuente con
+    licencia academica DTU Health Tech no descargado, ver
+    ``Settings.BEPIPRED_DOWNLOAD_URL``) como fallos del propio subproceso
+    (exit code distinto de cero, timeout, formato de salida inesperado),
+    traducidos a un mensaje accionable en vez de un ``FileNotFoundError`` o
+    una traza cruda de ``subprocess``.
+    """
+
+
 class DatasetPrepError(PipelineError):
     """Fallo durante la curacion del dataset de entrenamiento (IEDB/UniProt).
 
     Cubre errores de red irrecuperables tras agotar reintentos y respuestas de
     API con un volumen de datos insuficiente para curar un dataset balanceado.
+    """
+
+
+class BlastExecutionError(EngineExecutionError):
+    """Fallo al ejecutar el filtro de tolerancia inmunologica (Fase 4, BLASTp local).
+
+    Cubre binario 'blastp' ausente del PATH, base de datos local no encontrada
+    (proteoma humano sin indexar con makeblastdb) y fallos del propio proceso
+    (exit code distinto de cero, timeout).
+    """
+
+
+class ImmunogenicityExecutionError(EngineExecutionError):
+    """Fallo al ejecutar la prediccion de presentacion celular (Fase 5).
+
+    Cubre tanto MHCflurry (modelos locales no descargados, alelo no soportado)
+    como NetMHCpan (binario no instalado localmente, formato de salida
+    inesperado).
     """
