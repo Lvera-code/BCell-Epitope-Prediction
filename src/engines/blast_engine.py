@@ -9,18 +9,29 @@ hardcodeada). Si el binario o la base de datos faltan, se lanza
 patron de salida elegante que ``BepiPredEngine`` usa en la Fase 2- en vez de
 fallar con una traza opaca.
 
-Seleccion dinamica de algoritmo (por peptido): BLAST recomienda un modo de
-busqueda distinto segun la longitud de la secuencia consultada. Cada peptido
-de ``epitopes_df`` (Fase 3) se evalua individualmente:
+Seleccion dinamica de algoritmo y E-value (por peptido): BLAST recomienda un
+modo de busqueda y una sensibilidad estadistica distintos segun la longitud
+de la secuencia consultada. Cada peptido de ``epitopes_df`` (Fase 3) se
+evalua individualmente:
 
-* longitud < ``Settings.BLAST_SHORT_PEPTIDE_MAX_LEN`` (30 aa por defecto) ->
+* longitud <= ``Settings.BLAST_SHORT_PEPTIDE_MAX_LEN`` (30 aa por defecto) ->
   ``-task blastp-short`` (word_size y matriz de sustitucion ajustados para
-  secuencias cortas).
-* longitud >= ese umbral -> ``-task blastp`` (algoritmo estandar).
+  secuencias cortas), ``evalue=Settings.BLAST_EVALUE_SHORT`` (50 por
+  defecto: con el e-value estandar de blastp, un match identico de un
+  peptido corto contra el proteoma humano se descarta como "no
+  significativo" por pura estadistica de longitud, arruinando el filtro de
+  autoinmunidad justo donde mas importa).
+* ``Settings.BLAST_SHORT_PEPTIDE_MAX_LEN`` < longitud <=
+  ``Settings.BLAST_MEDIUM_PEPTIDE_MAX_LEN`` (100 aa por defecto) ->
+  ``-task blastp``, ``evalue=Settings.BLAST_EVALUE_MEDIUM`` (0.1 por defecto).
+* longitud > ese segundo umbral -> ``-task blastp``,
+  ``evalue=Settings.BLAST_EVALUE_LONG`` (0.05 por defecto: en consultas
+  largas un e-value laxo generaria ruido de homologias irrelevantes).
 
-Los peptidos se agrupan por tarea y cada grupo se ejecuta en su propia
-invocacion de ``subprocess.run`` (un unico comando no puede mezclar dos
-``-task`` distintos), y los resultados se combinan al final.
+Los peptidos se agrupan por tramo (misma tarea + mismo E-value) y cada grupo
+se ejecuta en su propia invocacion de ``subprocess.run`` (un unico comando no
+puede mezclar dos ``-task``/``-evalue`` distintos), y los resultados se
+combinan al final.
 """
 
 import shutil
@@ -74,13 +85,43 @@ def _select_task(sequence_length: int, short_max_len: int = Settings.BLAST_SHORT
 
     Args:
         sequence_length: Longitud (aa) del peptido candidato.
-        short_max_len: Umbral (exclusivo) por debajo del cual se usa
+        short_max_len: Umbral (inclusive) por debajo o igual al cual se usa
             ``blastp-short`` en vez de ``blastp``.
 
     Returns:
-        ``"blastp-short"`` si ``sequence_length < short_max_len``, si no ``"blastp"``.
+        ``"blastp-short"`` si ``sequence_length <= short_max_len``, si no ``"blastp"``.
     """
-    return "blastp-short" if sequence_length < short_max_len else "blastp"
+    return "blastp-short" if sequence_length <= short_max_len else "blastp"
+
+
+def _select_evalue(
+    sequence_length: int,
+    short_max_len: int = Settings.BLAST_SHORT_PEPTIDE_MAX_LEN,
+    medium_max_len: int = Settings.BLAST_MEDIUM_PEPTIDE_MAX_LEN,
+) -> float:
+    """Selecciona dinamicamente el E-value segun el tramo de longitud del peptido.
+
+    La estadistica de BLAST depende fuertemente de la longitud de la consulta:
+    un e-value estricto (por defecto ~10 o menor) descarta como "no
+    significativos" hits identicos de peptidos cortos, arruinando el filtro
+    de autoinmunidad justo donde mas importa. Para consultas largas ocurre lo
+    contrario: un e-value laxo generaria ruido de homologias irrelevantes.
+
+    Args:
+        sequence_length: Longitud (aa) del peptido candidato.
+        short_max_len: Umbral (inclusive) del tramo "corto".
+        medium_max_len: Umbral (inclusive) del tramo "intermedio".
+
+    Returns:
+        ``Settings.BLAST_EVALUE_SHORT`` si ``sequence_length <= short_max_len``;
+        ``Settings.BLAST_EVALUE_MEDIUM`` si ``short_max_len < sequence_length <= medium_max_len``;
+        ``Settings.BLAST_EVALUE_LONG`` en caso contrario.
+    """
+    if sequence_length <= short_max_len:
+        return Settings.BLAST_EVALUE_SHORT
+    if sequence_length <= medium_max_len:
+        return Settings.BLAST_EVALUE_MEDIUM
+    return Settings.BLAST_EVALUE_LONG
 
 
 def _run_blastp_batch(
@@ -140,12 +181,22 @@ def run_blastp_filter(
     epitopes_df: pd.DataFrame,
     db_path: str = Settings.BLAST_HUMAN_DB,
     identity_threshold: float = Settings.BLAST_IDENTITY_THRESHOLD,
-    evalue: float = Settings.BLAST_EVALUE,
 ) -> pd.DataFrame:
     """Ejecuta BLASTp local sobre cada peptido de ``epitopes_df`` y anota tolerancia.
 
-    Cada peptido se enruta dinamicamente a ``blastp-short`` o ``blastp`` segun
-    su longitud (ver :func:`_select_task`), en lotes separados por tarea.
+    Cada peptido se enruta dinamicamente a un tramo de (``-task``, E-value)
+    segun su longitud (ver :func:`_select_task` / :func:`_select_evalue`), en
+    lotes separados por tramo:
+
+    * ``<= Settings.BLAST_SHORT_PEPTIDE_MAX_LEN`` aa -> ``blastp-short``,
+      ``evalue=Settings.BLAST_EVALUE_SHORT`` (laxo: la estadistica de BLAST
+      penaliza a los peptidos cortos y descartaria hits identicos reales).
+    * ``Settings.BLAST_SHORT_PEPTIDE_MAX_LEN`` < longitud ``<=
+      Settings.BLAST_MEDIUM_PEPTIDE_MAX_LEN`` aa -> ``blastp``,
+      ``evalue=Settings.BLAST_EVALUE_MEDIUM``.
+    * ``> Settings.BLAST_MEDIUM_PEPTIDE_MAX_LEN`` aa -> ``blastp``,
+      ``evalue=Settings.BLAST_EVALUE_LONG`` (estricto: evita ruido de
+      homologias irrelevantes en consultas largas).
 
     Args:
         epitopes_df: Salida de la Fase 3 (``extract_epitopes``), debe contener
@@ -154,13 +205,13 @@ def run_blastp_filter(
             (por defecto, ``Settings.BLAST_HUMAN_DB``).
         identity_threshold: Porcentaje de identidad (exclusivo) por encima del
             cual un peptido se descarta por riesgo de autoinmunidad.
-        evalue: E-value usado en ambas busquedas.
 
     Returns:
         Copia de ``epitopes_df`` con columnas nuevas: ``blast_task`` (tarea
-        usada para ese peptido), ``max_pident`` (maxima identidad encontrada
-        contra el proteoma humano, 0.0 si no hubo hits) y ``status``
-        (``"Segura"`` o ``"Autoinmunidad"``).
+        usada para ese peptido), ``blast_evalue`` (E-value del tramo
+        aplicado), ``max_pident`` (maxima identidad encontrada contra el
+        proteoma humano, 0.0 si no hubo hits) y ``status`` (``"Segura"`` o
+        ``"Autoinmunidad"``).
 
     Raises:
         BlastExecutionError: Si 'blastp' no esta instalado, la base de datos
@@ -171,24 +222,23 @@ def run_blastp_filter(
 
     if epitopes_df.empty:
         return epitopes_df.assign(
-            blast_task=pd.Series(dtype=str), max_pident=pd.Series(dtype=float), status=pd.Series(dtype=str)
+            blast_task=pd.Series(dtype=str),
+            blast_evalue=pd.Series(dtype=float),
+            max_pident=pd.Series(dtype=float),
+            status=pd.Series(dtype=str),
         )
 
     result = epitopes_df.reset_index(drop=True).copy()
-    result["blast_task"] = result["sequence"].str.len().apply(_select_task)
+    lengths = result["sequence"].str.len()
+    result["blast_task"] = lengths.apply(_select_task)
+    result["blast_evalue"] = lengths.apply(_select_evalue)
 
-    short_records = [
-        (idx, seq) for idx, seq, task in zip(result.index, result["sequence"], result["blast_task"])
-        if task == "blastp-short"
-    ]
-    long_records = [
-        (idx, seq) for idx, seq, task in zip(result.index, result["sequence"], result["blast_task"])
-        if task == "blastp"
-    ]
-
-    hits_short = _run_blastp_batch(short_records, "blastp-short", db, evalue)
-    hits_long = _run_blastp_batch(long_records, "blastp", db, evalue)
-    hits = pd.concat([hits_short, hits_long], ignore_index=True)
+    hits_frames = []
+    for task, evalue in result[["blast_task", "blast_evalue"]].drop_duplicates().itertuples(index=False):
+        tier_mask = (result["blast_task"] == task) & (result["blast_evalue"] == evalue)
+        records = list(zip(result.index[tier_mask], result.loc[tier_mask, "sequence"]))
+        hits_frames.append(_run_blastp_batch(records, task, db, evalue))
+    hits = pd.concat(hits_frames, ignore_index=True) if hits_frames else pd.DataFrame(columns=_OUTFMT6_COLUMNS)
 
     max_identity_per_query = hits.groupby("qseqid")["pident"].max() if not hits.empty else pd.Series(dtype=float)
 
@@ -208,11 +258,17 @@ def print_blast_report(blast_df: pd.DataFrame) -> None:
         return
 
     seq_width = max(30, blast_df["sequence"].str.len().max() + 2)
-    header = f"{'Secuencia':<{seq_width}}{'Tarea BLAST':<14}{'Identidad max (%)':>18}{'Veredicto':>16}"
+    header = (
+        f"{'Secuencia':<{seq_width}}{'Tarea BLAST':<14}{'E-value':>10}"
+        f"{'Identidad max (%)':>18}{'Veredicto':>16}"
+    )
     print(header)
     print("-" * len(header))
     for row in blast_df.itertuples(index=False):
-        print(f"{row.sequence:<{seq_width}}{row.blast_task:<14}{row.max_pident:>18.2f}{row.status:>16}")
+        print(
+            f"{row.sequence:<{seq_width}}{row.blast_task:<14}{row.blast_evalue:>10.3g}"
+            f"{row.max_pident:>18.2f}{row.status:>16}"
+        )
 
     n_safe = int((blast_df["status"] == "Segura").sum())
     n_rejected = int((blast_df["status"] == "Autoinmunidad").sum())

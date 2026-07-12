@@ -73,6 +73,13 @@ class Settings:
     # genera la ejecucion local de BepiPred-3.0.
     BEPIPRED_THRESHOLD: float = _env_float("BEPIPRED_THRESHOLD", 0.1512)
     BEPIPRED_MIN_EPITOPE_LENGTH: int = _env_int("BEPIPRED_MIN_EPITOPE_LENGTH", 9)
+    # Ventana deslizante de Fase 3 (ver `extract_epitopes`): tamano fijo del
+    # footprint minimo de reconocimiento de celula B, y tolerancia de gaps
+    # (residuos individuales por debajo de BEPIPRED_THRESHOLD) permitida
+    # dentro de cada ventana de 9 aa para no perder epitopos reales por un
+    # unico residuo debil.
+    BEPIPRED_WINDOW_SIZE: int = _env_int("BEPIPRED_WINDOW_SIZE", 9)
+    BEPIPRED_MAX_GAP_RESIDUES: int = _env_int("BEPIPRED_MAX_GAP_RESIDUES", 2)
 
     # Nombre del CSV de salida crudo que escribe BepiPred-3.0 localmente
     # (confirmado leyendo bp3/bepipred3.py::create_csvfile en el codigo fuente
@@ -95,19 +102,49 @@ class Settings:
     # blast_engine.py), igual que la validacion de instalacion de BepiPred.
     BLAST_HUMAN_DB: str = _env_str("BLAST_HUMAN_DB", "reference_db/human_proteome_db")
     BLAST_IDENTITY_THRESHOLD: float = _env_float("BLAST_IDENTITY_THRESHOLD", 75.0)
-    # E-value elevado deliberadamente: para peptidos cortos (9-25 aa) el
-    # e-value por defecto de blastp (10) es demasiado estricto y descarta
-    # hits reales de alta identidad (guia estandar de NCBI para 'blastp-short').
-    BLAST_EVALUE: float = _env_float("BLAST_EVALUE", 200.0)
-    # Umbral de longitud (aa) que decide el algoritmo de BLASTp por peptido:
-    # < este valor -> '-task blastp-short' (word_size/matriz ajustados para
-    # secuencias cortas); >= este valor -> '-task blastp' (algoritmo estandar).
+    # E-value seleccionado dinamicamente por tramo de longitud del peptido
+    # (ver `_select_evalue` en blast_engine.py). La estadistica de BLAST
+    # penaliza a los peptidos cortos: con el e-value por defecto de blastp
+    # (10), un match identico de 9-25 aa contra el proteoma humano puede
+    # descartarse por "no significativo", arruinando el filtro de
+    # autoinmunidad. Para secuencias largas (dominios/proteinas completas)
+    # aplica el criterio contrario: ahi si un e-value laxo generaria ruido de
+    # homologias irrelevantes, por lo que se usan los valores estandar de
+    # BLAST (mas estrictos cuanto mas larga la consulta).
+    BLAST_EVALUE_SHORT: float = _env_float("BLAST_EVALUE_SHORT", 50.0)      # <= BLAST_SHORT_PEPTIDE_MAX_LEN aa
+    BLAST_EVALUE_MEDIUM: float = _env_float("BLAST_EVALUE_MEDIUM", 0.1)     # BLAST_SHORT_PEPTIDE_MAX_LEN+1 .. BLAST_MEDIUM_PEPTIDE_MAX_LEN aa
+    BLAST_EVALUE_LONG: float = _env_float("BLAST_EVALUE_LONG", 0.05)        # > BLAST_MEDIUM_PEPTIDE_MAX_LEN aa
+    # Umbrales de longitud (aa) que deciden tanto el algoritmo de BLASTp como
+    # el tramo de E-value de cada peptido (ver `_select_task` / `_select_evalue`
+    # en blast_engine.py):
+    #   <= BLAST_SHORT_PEPTIDE_MAX_LEN         -> '-task blastp-short', evalue=BLAST_EVALUE_SHORT
+    #   BLAST_SHORT_PEPTIDE_MAX_LEN < len <= BLAST_MEDIUM_PEPTIDE_MAX_LEN -> '-task blastp', evalue=BLAST_EVALUE_MEDIUM
+    #   >  BLAST_MEDIUM_PEPTIDE_MAX_LEN        -> '-task blastp', evalue=BLAST_EVALUE_LONG
     BLAST_SHORT_PEPTIDE_MAX_LEN: int = _env_int("BLAST_SHORT_PEPTIDE_MAX_LEN", 30)
+    BLAST_MEDIUM_PEPTIDE_MAX_LEN: int = _env_int("BLAST_MEDIUM_PEPTIDE_MAX_LEN", 100)
 
-    # --- Fase 5: Presentacion celular / Inmunogenicidad ---
-    DEFAULT_INMUNO_METHOD: str = _env_str("DEFAULT_INMUNO_METHOD", "netmhcpan")
-    DEFAULT_ALLELE: str = _env_str("DEFAULT_ALLELE", "HLA-A02:01")
-    IC50_THRESHOLD: float = _env_float("IC50_THRESHOLD", 500.0)
+    # --- Fase 5: Inmunogenicidad T-helper (MHC-II, NetMHCIIpan-4.3 LOCAL) ---
+    # Pivote metodologico: toda prediccion de presentacion MHC-I (celulas T
+    # CD8+, antes servida por MHCflurry/NetMHCpan) fue descartada. La Fase 5
+    # ahora evalua exclusivamente presentacion MHC-II (celulas T-helper CD4+)
+    # via NetMHCIIpan-4.3 ejecutado 100% en local por subprocess, mismo
+    # patron que BepiPred-3.0 (Fase 2) y BLASTp+ (Fase 4): ninguna ruta se
+    # hardcodea, todo se resuelve desde variables de entorno.
+    NETMHCIIPAN_HOME: Path = Path(_env_str("NETMHCIIPAN_HOME", "netMHCIIpan-4.3"))
+    NETMHCIIPAN_BINARY_NAME: str = _env_str("NETMHCIIPAN_BINARY_NAME", "netMHCIIpan")
+    NETMHCIIPAN_TIMEOUT_SECONDS: int = _env_int("NETMHCIIPAN_TIMEOUT_SECONDS", 600)
+    NETMHCIIPAN_DOWNLOAD_URL: str = "https://services.healthtech.dtu.dk/services/NetMHCIIpan-4.3/"
+    # Umbrales de %Rank POR DEFECTO de NetMHCIIpan-4.3 (ver 'netMHCIIpan.1':
+    # flags -rankS/-rankW del binario). SB (aglutinador fuerte): Rank_EL <=
+    # NETMHCIIPAN_RANK_STRONG. WB (aglutinador debil): Rank_EL <=
+    # NETMHCIIPAN_RANK_WEAK. No se pasan -rankS/-rankW al comando: se
+    # replica el mismo umbral aqui, en Python, para clasificar el .xls.
+    NETMHCIIPAN_RANK_STRONG: float = _env_float("NETMHCIIPAN_RANK_STRONG", 1.0)
+    NETMHCIIPAN_RANK_WEAK: float = _env_float("NETMHCIIPAN_RANK_WEAK", 5.0)
+    # "Promiscuidad": un epitopo T-helper se reporta como 'Candidato Valido'
+    # solo si clasifica SB o WB en al menos este numero de alelos distintos
+    # del panel evaluado (cobertura poblacional, no un unico alelo HLA).
+    NETMHCIIPAN_MIN_PROMISCUOUS_ALLELES: int = _env_int("NETMHCIIPAN_MIN_PROMISCUOUS_ALLELES", 3)
 
     @classmethod
     def setup_directories(cls) -> None:

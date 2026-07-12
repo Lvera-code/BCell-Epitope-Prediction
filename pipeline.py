@@ -11,17 +11,20 @@ Flujo estricto de 5 fases, cada una consumiendo la salida de la anterior:
        (misma fuente que Fase 2).
     4. Filtro de tolerancia inmunologica: BLASTp local contra el proteoma
        humano, descarta homologos de alta identidad (``src.engines.blast_engine``).
-    5. Prediccion de presentacion celular (NetMHCpan o MHCflurry) y reporte
-       final de candidatos aprobados (``src.engines.immunogenicity_engine``).
+    5. Prediccion de presentacion T-helper (MHC-II) via NetMHCIIpan-4.3 LOCAL
+       contra un panel de 15 alelos HLA-DR de referencia (IEDB_DR_PANEL);
+       reporta como candidato final solo los peptidos "promiscuos" (SB/WB en
+       >= 3 alelos del panel) (``src.engines.netmhciipan_engine``).
 
 Todos los artefactos intermedios y el reporte final se guardan en
 ``fasta_outputs/``. Requiere: instalacion local de BepiPred-3.0 en
 ``bepipred-3.0b.src/`` (descarga manual, ver README.md), NCBI BLAST+ con el
-proteoma humano indexado en ``reference_db/``, y (segun ``--inmuno``)
-MHCflurry instalado o el binario NetMHCpan en el PATH.
+proteoma humano indexado en ``reference_db/``, y NetMHCIIpan-4.3 instalado
+localmente en ``netMHCIIpan-4.3/`` (descarga manual bajo licencia academica
+DTU Health Tech, ver README.md).
 
 Ejemplo:
-    python pipeline.py --input fasta_inputs/secuencia.fasta --inmuno netmhcpan --alelo "HLA-A*02:01"
+    python pipeline.py --input fasta_inputs/secuencia.fasta
 """
 
 import argparse
@@ -34,7 +37,7 @@ import pandas as pd
 from src.config.settings import Settings
 from src.engines.bepipred_engine import BepiPredEngine, extract_epitopes
 from src.engines.blast_engine import print_blast_report, run_blastp_filter
-from src.engines.immunogenicity_engine import evaluate_immunogenicity, normalize_allele
+from src.engines.netmhciipan_engine import IEDB_DR_PANEL, predict_netmhciipan, print_th_report
 from src.utils.exceptions import PipelineError
 from src.utils.fasta_parser import FastaRecord, load_and_sanitize, write_fasta
 from src.utils.logger_config import setup_logger
@@ -56,12 +59,11 @@ def parse_args(argv: List[str] = None) -> argparse.Namespace:
         help="Ruta al FASTA de entrada (dentro de fasta_inputs/).",
     )
     parser.add_argument(
-        "--inmuno", required=True, choices=["netmhcpan", "mhcflurry"],
-        help="Motor de prediccion de inmunogenicidad para la Fase 5.",
-    )
-    parser.add_argument(
-        "--alelo", default=Settings.DEFAULT_ALLELE,
-        help="Alelo HLA objetivo para la Fase 5.",
+        "--alelo-extra", default=None,
+        help="Alelo(s) HLA-DR adicionales a anexar al panel por defecto de la Fase 5 "
+        "(IEDB_DR_PANEL, 15 alelos). Formato NetMHCIIpan, separados por coma sin "
+        "espacios (ej. 'DRB1_1602'). No especificar este flag no requiere ninguna "
+        "otra accion: el panel por defecto siempre se evalua.",
     )
     parser.add_argument(
         "--output-dir", default=str(Settings.FASTA_OUTPUT_DIR),
@@ -69,7 +71,7 @@ def parse_args(argv: List[str] = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--threshold", type=float, default=Settings.BEPIPRED_THRESHOLD,
-        help="Umbral de score de antigenicidad para agrupar residuos en epitopos (Fase 3).",
+        help="Umbral de score de antigenicidad para la ventana deslizante de epitopos (Fase 3).",
     )
     parser.add_argument(
         "--min-length", type=int, default=Settings.BEPIPRED_MIN_EPITOPE_LENGTH,
@@ -83,14 +85,6 @@ def parse_args(argv: List[str] = None) -> argparse.Namespace:
     parser.add_argument(
         "--identity-threshold", type=float, default=Settings.BLAST_IDENTITY_THRESHOLD,
         help="Porcentaje de identidad (exclusivo) por encima del cual se descarta un peptido (Fase 4).",
-    )
-    parser.add_argument(
-        "--blast-evalue", type=float, default=Settings.BLAST_EVALUE,
-        help="E-value usado en la busqueda blastp-short (Fase 4).",
-    )
-    parser.add_argument(
-        "--ic50-threshold", type=float, default=Settings.IC50_THRESHOLD,
-        help="IC50 maximo (nM, exclusivo) para aprobar un candidato final (Fase 5).",
     )
     return parser.parse_args(argv)
 
@@ -169,7 +163,6 @@ def fase_4_tolerancia(
     epitopes_df: pd.DataFrame,
     blast_db: str,
     identity_threshold: float,
-    evalue: float,
     output_dir: Path,
     input_stem: str,
 ) -> pd.DataFrame:
@@ -179,12 +172,13 @@ def fase_4_tolerancia(
     if epitopes_df.empty:
         print("No hay peptidos candidatos de la Fase 3 para analizar.")
         blast_df = epitopes_df.assign(
-            blast_task=pd.Series(dtype=str), max_pident=pd.Series(dtype=float), status=pd.Series(dtype=str)
+            blast_task=pd.Series(dtype=str),
+            blast_evalue=pd.Series(dtype=float),
+            max_pident=pd.Series(dtype=float),
+            status=pd.Series(dtype=str),
         )
     else:
-        blast_df = run_blastp_filter(
-            epitopes_df, db_path=blast_db, identity_threshold=identity_threshold, evalue=evalue
-        )
+        blast_df = run_blastp_filter(epitopes_df, db_path=blast_db, identity_threshold=identity_threshold)
         print_blast_report(blast_df)
 
     out_path = output_dir / f"{input_stem}_blast_report.csv"
@@ -193,37 +187,39 @@ def fase_4_tolerancia(
     return blast_df
 
 
-def fase_5_inmunogenicidad(
-    safe_df: pd.DataFrame, method: str, allele: str, ic50_threshold: float, output_dir: Path
+def fase_5_th_promiscuidad(
+    safe_df: pd.DataFrame, output_dir: Path, allele_extra: str = None
 ) -> pd.DataFrame:
-    """Fase 5: valida presentacion celular (IC50) de los peptidos 'Seguros' de la Fase 4."""
-    print(f"\n{_SEPARATOR}\nFASE 5 | Presentacion celular / Inmunogenicidad ({method}, IC50 < {ic50_threshold} nM)\n{_SEPARATOR}")
+    """Fase 5: evalua promiscuidad T-helper (MHC-II) de los peptidos 'Seguros' de la Fase 4.
+
+    Args:
+        safe_df: Peptidos con ``status == 'Segura'`` provenientes de la Fase 4.
+        output_dir: Carpeta donde persistir el reporte final y el .xls crudo.
+        allele_extra: Alelo(s) HLA-DR adicionales (formato NetMHCIIpan,
+            separados por coma sin espacios) a anexar a ``IEDB_DR_PANEL``. Se
+            admiten sin romper el panel por defecto.
+    """
+    allele_panel = f"{IEDB_DR_PANEL},{allele_extra}" if allele_extra else IEDB_DR_PANEL
+    n_alleles = len(allele_panel.split(","))
+    print(f"\n{_SEPARATOR}\nFASE 5 | Promiscuidad T-helper (MHC-II, NetMHCIIpan-4.3 local, {n_alleles} alelo(s) HLA-DR)\n{_SEPARATOR}")
 
     final_path = output_dir / "candidatos_finales.csv"
 
     if safe_df.empty:
         print("No hay peptidos 'Seguros' provenientes de la Fase 4 para evaluar.")
-        report = pd.DataFrame(columns=["sequence", "allele", "ic50_nM", "metodo", "veredicto"])
+        report = pd.DataFrame(columns=["sequence", "n_alelos_evaluados", "n_alelos_promiscuos", "min_rank_el", "veredicto"])
         report.to_csv(final_path, index=False)
         return report
 
     peptides = safe_df["sequence"].tolist()
-    allele_norm = normalize_allele(allele)
-    print(f"Motor: {method} | Alelo objetivo: {allele_norm} | Peptidos a evaluar: {len(peptides)}")
+    print(f"Panel HLA-DR: {allele_panel} | Peptidos a evaluar: {len(peptides)}")
 
-    report = evaluate_immunogenicity(peptides, allele, method, output_dir, ic50_threshold=ic50_threshold)
+    report = predict_netmhciipan(peptides, output_dir, allele_panel=allele_panel)
 
     if report.empty:
-        print("El motor de inmunogenicidad no devolvio resultados evaluables (revisa longitudes/alelo).")
+        print("NetMHCIIpan no devolvio resultados evaluables (revisa longitudes minimas: 9 aa).")
     else:
-        header = f"{'Secuencia':<20}{'Alelo':<14}{'IC50 (nM)':>12}  Veredicto"
-        print(header)
-        print("-" * len(header))
-        for row in report.itertuples(index=False):
-            print(f"{row.sequence:<20}{row.allele:<14}{row.ic50_nM:>12.2f}  {row.veredicto}")
-
-        n_ok = int((report["veredicto"] == "Aprobado").sum())
-        print(f"\nResumen Fase 5: {n_ok}/{len(report)} candidato(s) final(es) aprobado(s).")
+        print_th_report(report, allele_panel=allele_panel)
 
     report.to_csv(final_path, index=False)
     print(f"-> Reporte final guardado en: {final_path}")
@@ -242,10 +238,10 @@ def main(argv: List[str] = None) -> int:
         raw_df = fase_2_antigenicidad(input_path.stem, clean_fasta, output_dir)
         epitopes_df = fase_3_mapeo(raw_df, args.threshold, args.min_length, output_dir, input_path.stem)
         blast_df = fase_4_tolerancia(
-            epitopes_df, args.blast_db, args.identity_threshold, args.blast_evalue, output_dir, input_path.stem
+            epitopes_df, args.blast_db, args.identity_threshold, output_dir, input_path.stem
         )
         safe_df = blast_df[blast_df["status"] == "Segura"] if not blast_df.empty else blast_df
-        fase_5_inmunogenicidad(safe_df, args.inmuno, args.alelo, args.ic50_threshold, output_dir)
+        fase_5_th_promiscuidad(safe_df, output_dir, allele_extra=args.alelo_extra)
     except PipelineError as exc:
         logger.error("Pipeline detenido: %s", exc)
         print(f"\n[ERROR FATAL] {exc}")

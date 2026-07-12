@@ -74,9 +74,11 @@ class BlastExecutionError(EngineExecutionError):
 
 
 class ImmunogenicityExecutionError(EngineExecutionError):
-    """Fallo al ejecutar la prediccion de presentacion celular (Fase 5).
+    """Fallo al ejecutar la prediccion de presentacion T-helper MHC-II (Fase 5).
 
-    Cubre tanto MHCflurry (modelos locales no descargados, alelo no soportado)
-    como NetMHCpan (binario no instalado localmente, formato de salida
-    inesperado).
+    Cubre la instalacion local de NetMHCIIpan-4.3 ausente (paquete con
+    licencia academica DTU Health Tech no descargado/instalado, ver
+    ``Settings.NETMHCIIPAN_DOWNLOAD_URL``), fallos del propio subproceso
+    (exit code distinto de cero, timeout) y formato de salida .xls
+    inesperado.
     """

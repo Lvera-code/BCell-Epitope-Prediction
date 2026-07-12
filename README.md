@@ -3,7 +3,9 @@
 Orquestador de terminal (`pipeline.py`) que procesa una secuencia de proteína
 (FASTA) a través de 5 fases estrictas hasta producir una lista de péptidos
 candidatos a vacuna, validados por antigenicidad, ausencia de homología con
-el proteoma humano (autoinmunidad) e inmunogenicidad (presentación por MHC-I).
+el proteoma humano (autoinmunidad) e inmunogenicidad T-helper (presentación
+MHC-II / HLA-DR, célula CD4+). La predicción MHC-I (CD8+, vía MHCflurry o
+NetMHCpan) fue descartada metodológicamente: ver `src/engines/netmhciipan_engine.py`.
 
 ## Flujo de trabajo (5 fases)
 
@@ -11,12 +13,18 @@ el proteoma humano (autoinmunidad) e inmunogenicidad (presentación por MHC-I).
 2. **Antigenicidad** — BepiPred-3.0 ejecutado **100% en local** (subprocess
    sobre el código fuente oficial de DTU Health Tech), con auto-caché local
    en CSV.
-3. **Mapeo de epítopos** — agrupa localmente regiones de residuos contiguos
-   por encima de un umbral de score.
-4. **Filtro de tolerancia** — BLASTp local contra el proteoma humano, descarta
+3. **Mapeo de epítopos** — ventana deslizante local (9 aa, tolerante a hasta
+   2 residuos por debajo del umbral por ventana, con fusión de ventanas
+   solapadas/adyacentes) sobre los scores de antigenicidad.
+4. **Filtro de tolerancia** — BLASTp local contra el proteoma humano, con
+   E-value seleccionado dinámicamente por longitud del péptido (laxo para
+   péptidos cortos, estricto para dominios/proteínas completas), descarta
    péptidos con alta homología (riesgo de autoinmunidad).
-5. **Inmunogenicidad** — predicción de afinidad HLA (IC50) vía NetMHCpan o
-   MHCflurry.
+5. **Promiscuidad T-helper (MHC-II)** — NetMHCIIpan-4.3 ejecutado **100% en
+   local** (subprocess) contra un panel de 15 alelos HLA-DR de referencia del
+   IEDB (`IEDB_DR_PANEL`). Un péptido se aprueba solo si clasifica como
+   aglutinador fuerte o débil (SB/WB, %Rank por defecto de NetMHCIIpan) en al
+   menos 3 alelos distintos del panel.
 
 Todos los resultados intermedios y el reporte final se guardan en
 `fasta_outputs/`.
@@ -138,36 +146,61 @@ Si `blastp` no está en el `PATH` o la base de datos configurada no existe, la
 Fase 4 se detiene con un mensaje claro (igual que la Fase 2 con BepiPred), en
 vez de fallar con una traza opaca.
 
-**d) Selección dinámica de algoritmo.** Cada péptido candidato se enruta
-automáticamente según su longitud: `< 30 aa` usa `-task blastp-short`
-(word_size y matriz de sustitución ajustados para péptidos cortos, guía
-estándar de NCBI); `>= 30 aa` usa `-task blastp` clásico. Configurable vía
-`BLAST_SHORT_PEPTIDE_MAX_LEN`.
+**d) Selección dinámica de algoritmo y E-value.** Cada péptido candidato se
+enruta automáticamente según su longitud: `<= 30 aa` usa `-task blastp-short`
+con E-value laxo (50, evita que la estadística de BLAST descarte como "no
+significativos" hits idénticos de péptidos cortos); `31–100 aa` usa `-task
+blastp` con E-value 0.1; `> 100 aa` usa `-task blastp` con E-value 0.05
+(estricto, evita ruido de homologías irrelevantes en consultas largas).
+Configurable vía `BLAST_SHORT_PEPTIDE_MAX_LEN`, `BLAST_MEDIUM_PEPTIDE_MAX_LEN`
+y `BLAST_EVALUE_SHORT` / `BLAST_EVALUE_MEDIUM` / `BLAST_EVALUE_LONG`.
 
 Sin este paso, la Fase 4 se detiene con un error explicando exactamente qué
 falta (`blastp` en el PATH o la base de datos en `reference_db/`).
 
-### 4. Motor de inmunogenicidad (Fase 5)
+### 4. NetMHCIIpan-4.3 local (obligatorio para la Fase 5)
 
-Elige uno según el flag `--inmuno`:
+Binario propietario de DTU Health Tech (predicción MHC-II / HLA-DR),
+requiere licencia académica y descarga manual — igual patrón que BepiPred.
 
-- **`mhcflurry`** (recomendado, 100% local vía pip):
-  ```bash
-  pip install mhcflurry
-  mhcflurry-downloads fetch
-  ```
-- **`netmhcpan`**: binario propietario de DTU Health Tech, requiere licencia
-  académica y descarga manual desde su sitio oficial. Instálalo y añádelo a
-  tu `PATH` como `netMHCpan`.
+**a) Descarga manual obligatoria.** Solicítalo en
+`https://services.healthtech.dtu.dk/services/NetMHCIIpan-4.3/` (sección
+"Downloads", requiere cuenta académica). No existe un `data.tar.gz` público
+separado: el paquete `.tar.gz` que entrega DTU ya incluye la carpeta
+`data/` completa (pseudosecuencias, listas de alelos, pesos de la red).
+
+**b) Instalación.**
+```bash
+tar -xvf netMHCIIpan-4.3.Linux.tar.gz
+mv netMHCIIpan-4.3 /ruta/al/proyecto/DiffSBDD/netMHCIIpan-4.3
+```
+Edita la línea `NMHOME` al inicio del script `netMHCIIpan-4.3/netMHCIIpan`
+con la ruta absoluta de instalación (paso manual obligatorio según el propio
+instructivo de DTU, no se puede resolver por variable de entorno):
+```tcsh
+setenv NMHOME /ruta/absoluta/a/DiffSBDD/netMHCIIpan-4.3
+```
+
+**c) Dependencia de sistema.** El script `netMHCIIpan` es un wrapper en
+`tcsh` (no `bash`): instala el intérprete si no lo tienes (`apt-get install
+tcsh` en Debian/Ubuntu).
+
+**d) Panel de alelos.** La Fase 5 nunca evalúa un único alelo: usa
+`IEDB_DR_PANEL` (15 alelos HLA-DR/DRB3/DRB4/DRB5 de referencia poblacional
+del IEDB, ver `src/engines/netmhciipan_engine.py`) para estimar cobertura
+poblacional amplia. Un péptido se aprueba (`'Candidato Valido'`) solo si
+clasifica SB o WB en al menos `NETMHCIIPAN_MIN_PROMISCUOUS_ALLELES` (3 por
+defecto) alelos distintos del panel.
 
 ## Uso
 
 ```bash
 # Coloca tu(s) FASTA en fasta_inputs/, luego:
-python pipeline.py --input fasta_inputs/secuencia.fasta --inmuno netmhcpan --alelo "HLA-A*02:01"
+python pipeline.py --input fasta_inputs/secuencia.fasta
 
-# --alelo es opcional (por defecto: HLA-A02:01)
-python pipeline.py --input fasta_inputs/secuencia.fasta --inmuno mhcflurry
+# El panel de 15 alelos HLA-DR (IEDB_DR_PANEL) se evalúa siempre por
+# defecto, sin necesidad de especificar nada. Para anexar un alelo extra:
+python pipeline.py --input fasta_inputs/secuencia.fasta --alelo-extra "DRB1_1602"
 ```
 
 Resultados en `fasta_outputs/`:
@@ -178,4 +211,5 @@ Resultados en `fasta_outputs/`:
 | `<nombre>_bepipred_raw.csv` | 2 | Scores crudos por residuo (caché) |
 | `<nombre>_epitopes.csv` | 3 | Regiones de epítopo mapeadas localmente |
 | `<nombre>_blast_report.csv` | 4 | Veredicto de tolerancia (Segura / Autoinmunidad) |
-| `candidatos_finales.csv` | 5 | **Reporte final** de candidatos con IC50 y veredicto |
+| `netmhciipan_raw.xls` | 5 | Salida cruda de NetMHCIIpan-4.3 (multi-alelo), para trazabilidad |
+| `candidatos_finales.csv` | 5 | **Reporte final** de candidatos con promiscuidad HLA-DR y veredicto |

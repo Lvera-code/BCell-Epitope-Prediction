@@ -5,10 +5,6 @@
 pandas>=1.5.0
 numpy>=1.22.0
 
-# Fase 5 (--inmuno mhcflurry). Tras instalar, ejecuta 'mhcflurry-downloads fetch'
-# una vez para descargar los modelos pre-entrenados (ver README.md).
-mhcflurry>=2.0.0
-
 # NOTA: la Fase 2 (BepiPred-3.0) NO se instala aqui. Se ejecuta como
 # subproceso local contra un paquete descargado manualmente por licencia
 # academica (bepipred-3.0b.src/, gitignored). Sus dependencias (fair-esm,
@@ -20,5 +16,10 @@ mhcflurry>=2.0.0
 #
 # NOTA: la Fase 4 (BLASTp local) depende del binario 'blastp' (paquete NCBI
 # BLAST+), que NO se instala via pip. Ver README.md - Seccion de Instalacion.
-# NOTA: --inmuno netmhcpan depende del binario propietario 'netMHCpan'
-# (licencia DTU Health Tech), tampoco distribuible via pip. Ver README.md.
+#
+# NOTA: la Fase 5 (NetMHCIIpan-4.3, promiscuidad T-helper MHC-II) depende del
+# script/binario propietario 'netMHCIIpan' (licencia academica DTU Health
+# Tech, gitignored en 'netMHCIIpan-4.3/'), tampoco distribuible via pip. El
+# wrapper del binario requiere el interprete 'tcsh' instalado en el sistema
+# (paquete de SO, no pip: 'apt-get install tcsh' en Debian/Ubuntu). Ver
+# README.md - Seccion de Instalacion.

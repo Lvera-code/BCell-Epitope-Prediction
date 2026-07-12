@@ -26,3 +26,14 @@ fasta_outputs/
 # explicito (ver Settings.BEPIPRED_OUTPUT_DIR). En uso normal, pipeline.py
 # siempre redirige esto dentro de fasta_outputs/, pero se deja por si acaso.
 produccion_resultados/
+
+# Herramienta NetMHCIIpan-4.3 (Fase 5, ejecucion local): paquete propietario
+# de DTU Health Tech con licencia academica, descarga manual obligatoria (ver
+# README.md - Seccion de Instalacion). Supera 1 GB con la carpeta data/
+# (pesos de red neuronal, pseudosecuencias) y su licencia prohibe la
+# redistribucion publica: nunca debe subirse al repositorio.
+/netMHCIIpan-4.3/
+
+# Cualquier tarball residual en la raiz (descargas de paquetes con licencia
+# academica como BepiPred o NetMHCIIpan, nunca deben commitearse).
+*.tar.gz

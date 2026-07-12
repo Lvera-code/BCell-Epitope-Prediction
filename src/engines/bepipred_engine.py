@@ -16,8 +16,8 @@ Division de responsabilidades resultante:
 * Fase 2 (``BepiPredEngine``, esta clase): invoca el CLI local de BepiPred-3.0
   con ``subprocess.run``, sin aplicar ningun filtrado. Devuelve el DataFrame
   crudo de scores por residuo leido desde ``raw_output.csv``.
-* Fase 3 (``extract_epitopes``): toda la logica de negocio (umbral,
-  agrupamiento de residuos contiguos, longitud minima) corre en local sobre
+* Fase 3 (``extract_epitopes``): toda la logica de negocio (ventana
+  deslizante tolerante a gaps, umbral, longitud minima) corre en local sobre
   ese DataFrame, sin depender de los propios ficheros de prediccion que
   genera BepiPred (``Bcell_epitope_preds.fasta``, etc.), que se ignoran.
 
@@ -32,7 +32,7 @@ defaults razonables), ver ``src/config/settings.py``.
 
 import subprocess
 from pathlib import Path
-from typing import List, Optional, Sequence
+from typing import List, Optional, Sequence, Tuple
 
 import pandas as pd
 
@@ -237,23 +237,87 @@ def _resolve_residue_column(df: pd.DataFrame) -> Optional[str]:
     return None
 
 
+def _find_valid_windows(
+    scores: List[float], threshold: float, window_size: int, max_gap_residues: int
+) -> List[Tuple[int, int]]:
+    """Desliza una ventana de ``window_size`` (paso=1) y devuelve los rangos validos.
+
+    Una ventana ``[i, i + window_size - 1]`` (0-indexada, inclusive) es valida
+    si, a la vez: (a) a lo sumo ``max_gap_residues`` de sus residuos tienen un
+    score individual por debajo de ``threshold``, y (b) el score medio de la
+    ventana completa es ``>= threshold``.
+
+    Returns:
+        Lista de rangos ``(start, end)`` validos, en orden de aparicion (sin
+        fusionar todavia).
+    """
+    n = len(scores)
+    valid_windows = []
+    for i in range(0, n - window_size + 1):
+        window = scores[i : i + window_size]
+        below_count = sum(1 for score in window if score < threshold)
+        if below_count <= max_gap_residues and (sum(window) / window_size) >= threshold:
+            valid_windows.append((i, i + window_size - 1))
+    return valid_windows
+
+
+def _merge_overlapping_windows(windows: List[Tuple[int, int]]) -> List[Tuple[int, int]]:
+    """Fusiona ventanas validas solapadas o adyacentes en regiones continuas.
+
+    Asume ``windows`` ordenado por posicion de inicio (garantizado por el
+    barrido secuencial de :func:`_find_valid_windows`).
+    """
+    if not windows:
+        return []
+
+    merged = [windows[0]]
+    for start, end in windows[1:]:
+        last_start, last_end = merged[-1]
+        if start <= last_end + 1:  # solapada o adyacente
+            merged[-1] = (last_start, max(last_end, end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
 def extract_epitopes(
     raw_scores_df: pd.DataFrame,
     threshold: float = Settings.BEPIPRED_THRESHOLD,
     min_length: int = Settings.BEPIPRED_MIN_EPITOPE_LENGTH,
+    window_size: int = Settings.BEPIPRED_WINDOW_SIZE,
+    max_gap_residues: int = Settings.BEPIPRED_MAX_GAP_RESIDUES,
 ) -> pd.DataFrame:
-    """Fase 3: agrupa residuos contiguos por encima de ``threshold`` en epitopos.
+    """Fase 3: mapea regiones de epitopo con una ventana deslizante tolerante a gaps.
 
     Logica 100% local. La posicion de cada residuo se deriva del orden de las
     filas dentro de cada ``Accession`` (1-indexado), no de una columna de
     posicion.
 
+    Algoritmo (por ``Accession``, paso de la ventana = 1 residuo):
+
+    1. Para cada posicion, evalua la ventana de ``window_size`` residuos que
+       comienza ahi: es "valida" si a lo sumo ``max_gap_residues`` residuos
+       individuales caen por debajo de ``threshold`` Y el score medio de la
+       ventana completa es ``>= threshold``. Esto evita que un unico residuo
+       debil descarte un epitopo real (a diferencia de exigir que los
+       ``window_size`` residuos esten TODOS por encima del umbral).
+    2. Las ventanas validas que se solapan o son adyacentes se fusionan en
+       una unica region antigenica continua.
+    3. Cada region fusionada se reporta como epitopo si su longitud final es
+       ``>= min_length`` (con ``mean_score``/``max_score`` calculados sobre
+       todos los residuos de la region fusionada, no solo la ventana de
+       origen).
+
     Args:
         raw_scores_df: DataFrame crudo devuelto por ``BepiPredEngine.run``.
-        threshold: Score minimo (inclusive) para considerar un residuo parte
-            de un epitopo candidato.
-        min_length: Longitud minima (en residuos) de una region contigua para
-            reportarse como epitopo.
+        threshold: Score minimo (inclusive) para considerar un residuo o una
+            ventana como parte de un epitopo candidato.
+        min_length: Longitud minima (en residuos) de una region fusionada
+            para reportarse como epitopo.
+        window_size: Tamano de la ventana deslizante (footprint minimo de
+            reconocimiento de celula B; 9 aa por defecto).
+        max_gap_residues: Numero maximo de residuos por debajo de
+            ``threshold`` tolerados dentro de una misma ventana.
 
     Returns:
         DataFrame con una fila por region de epitopo: ``accession``,
@@ -272,20 +336,23 @@ def extract_epitopes(
 
     for accession, group in raw_scores_df.groupby(ACCESSION_COLUMN, sort=False):
         group = group.reset_index(drop=True)
-        above_threshold = group[SCORE_COLUMN] >= threshold
-        block_id = (above_threshold != above_threshold.shift(fill_value=False)).cumsum()
+        scores = group[SCORE_COLUMN].tolist()
 
-        for _, block in group[above_threshold].groupby(block_id[above_threshold]):
-            length = len(block)
+        valid_windows = _find_valid_windows(scores, threshold, window_size, max_gap_residues)
+        merged_regions = _merge_overlapping_windows(valid_windows)
+
+        for start, end in merged_regions:
+            length = end - start + 1
             if length < min_length:
                 continue
 
+            block = group.iloc[start : end + 1]
             sequence = "".join(block[residue_col].astype(str)) if residue_col else ""
             records.append(
                 {
                     "accession": accession,
-                    "start": int(block.index[0]) + 1,
-                    "end": int(block.index[-1]) + 1,
+                    "start": start + 1,
+                    "end": end + 1,
                     "length": length,
                     "mean_score": float(block[SCORE_COLUMN].mean()),
                     "max_score": float(block[SCORE_COLUMN].max()),
