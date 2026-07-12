@@ -208,7 +208,7 @@ def predict_netmhciipan(
         ]
         logger.info("Ejecutando NetMHCIIpan-4.3 local sobre %d peptido(s), %d alelo(s): %s", len(valid_peptides), n_alleles, " ".join(cmd))
         try:
-            subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=Settings.NETMHCIIPAN_TIMEOUT_SECONDS)
+            proc = subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=Settings.NETMHCIIPAN_TIMEOUT_SECONDS)
         except subprocess.CalledProcessError as exc:
             raise ImmunogenicityExecutionError(
                 f"NetMHCIIpan-4.3 termino con exit code {exc.returncode}: "
@@ -218,6 +218,26 @@ def predict_netmhciipan(
             raise ImmunogenicityExecutionError(
                 f"NetMHCIIpan-4.3 excedio el tiempo limite de {Settings.NETMHCIIPAN_TIMEOUT_SECONDS}s."
             ) from exc
+
+        if not xls_path.is_file():
+            # El wrapper 'netMHCIIpan' (tcsh) NO propaga exit code != 0 cuando
+            # el binario interno ($NETMHCIIpan/bin/NetMHCIIpan-4.3) no se
+            # encuentra: solo imprime un aviso y termina con exit 0. Causa
+            # tipica: la linea 'NMHOME' del script quedo con una ruta
+            # absoluta desactualizada (p. ej. tras mover/renombrar la carpeta
+            # del proyecto). subprocess.run(check=True) no detecta esto por
+            # si solo, asi que se valida aqui explicitamente en vez de dejar
+            # que pandas falle con un FileNotFoundError confuso.
+            raise ImmunogenicityExecutionError(
+                f"NetMHCIIpan-4.3 termino sin error (exit 0) pero no genero el archivo "
+                f"de salida esperado en '{xls_path}'. Esto normalmente indica que el "
+                f"binario interno no se encontro porque la linea 'NMHOME' dentro de "
+                f"'{Settings.NETMHCIIPAN_HOME / Settings.NETMHCIIPAN_BINARY_NAME}' apunta "
+                f"a una ruta desactualizada (p. ej. si moviste la carpeta del proyecto). "
+                f"Edita esa linea con la ruta absoluta ACTUAL de "
+                f"'{Settings.NETMHCIIPAN_HOME.resolve()}' y vuelve a intentarlo. "
+                f"Salida del proceso: {(proc.stdout or '<vacia>')[:1000]}"
+            )
 
         result = _parse_xls(xls_path, n_alleles)
         shutil.copyfile(xls_path, persisted_xls)
