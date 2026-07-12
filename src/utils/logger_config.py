@@ -32,7 +32,11 @@ def setup_logger(name: str = "HTS_Pipeline") -> logging.Logger:
             datefmt="%Y-%m-%d %H:%M:%S",
         )
 
+        # Consola: solo WARNING en adelante. Los mensajes INFO (comandos de
+        # subprocess ejecutados, detalle de cada fase) quedan solo en el
+        # archivo de log, para no saturar la salida normal del pipeline.
         console_handler = logging.StreamHandler()
+        console_handler.setLevel(logging.WARNING)
         console_handler.setFormatter(formatter)
         logger.addHandler(console_handler)
 

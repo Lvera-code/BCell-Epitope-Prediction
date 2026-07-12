@@ -238,7 +238,8 @@ def run_blastp_filter(
         tier_mask = (result["blast_task"] == task) & (result["blast_evalue"] == evalue)
         records = list(zip(result.index[tier_mask], result.loc[tier_mask, "sequence"]))
         hits_frames.append(_run_blastp_batch(records, task, db, evalue))
-    hits = pd.concat(hits_frames, ignore_index=True) if hits_frames else pd.DataFrame(columns=_OUTFMT6_COLUMNS)
+    non_empty_frames = [df for df in hits_frames if not df.empty]
+    hits = pd.concat(non_empty_frames, ignore_index=True) if non_empty_frames else pd.DataFrame(columns=_OUTFMT6_COLUMNS)
 
     max_identity_per_query = hits.groupby("qseqid")["pident"].max() if not hits.empty else pd.Series(dtype=float)
 

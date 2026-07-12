@@ -123,8 +123,6 @@ def fase_2_antigenicidad(input_stem: str, clean_fasta: Path, output_dir: Path) -
         return df
 
     engine = BepiPredEngine()
-    print(f"Ruta configurada del CLI de BepiPred-3.0: {engine.cli_script}")
-    print(f"Interprete configurado: {engine.python_bin}")
 
     raw_artifacts_dir = output_dir / "_bepipred_raw"
     df = engine.run([str(clean_fasta)], output_dir=raw_artifacts_dir)[0]
