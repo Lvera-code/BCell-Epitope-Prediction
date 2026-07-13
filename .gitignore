@@ -13,6 +13,11 @@ bepipred-3.0b.src/
 # (ver README.md - Seccion de Instalacion).
 .venv-bepipred/
 
+# Entorno conda dedicado para EpiDope (Fase 2, segundo motor de
+# antigenicidad, dependencias antiguas incompatibles con el resto del
+# pipeline: ver README.md - Seccion de Instalacion).
+.conda-epidope/
+
 # Base de datos BLAST del proteoma humano (Fase 4): regenerable localmente
 # via 'makeblastdb' a partir de una descarga de UniProt (ver README.md -
 # Seccion de Instalacion). Binaria y pesada, no es codigo fuente.

@@ -32,12 +32,14 @@ defaults razonables), ver ``src/config/settings.py``.
 
 import subprocess
 from pathlib import Path
-from typing import List, Optional, Sequence, Tuple
+from typing import List, Optional, Sequence
 
 import pandas as pd
 
 from src.config.settings import Settings
 from src.engines.base_engine import BaseEngine
+from src.engines.epitope_mapping import extract_epitope_regions
+from src.engines.epitope_mapping import print_epitope_table as _print_epitope_table
 from src.utils.exceptions import BepiPredExecutionError
 from src.utils.logger_config import setup_logger
 
@@ -53,7 +55,7 @@ SCORE_COLUMN = "BepiPred-3.0 score"
 # Nombre de columna de residuo confirmado en el codigo fuente oficial
 # (bp3/bepipred3.py::create_csvfile). Se mantienen alternativas como
 # fallback best-effort por si una version futura renombra la columna.
-_RESIDUE_COLUMN_CANDIDATES = ("Residue", "residue", "Residues", "AA", "aa")
+RESIDUE_COLUMN_CANDIDATES = ("Residue", "residue", "Residues", "AA", "aa")
 
 
 class BepiPredEngine(BaseEngine[str, pd.DataFrame]):
@@ -224,62 +226,6 @@ class BepiPredEngine(BaseEngine[str, pd.DataFrame]):
         return df
 
 
-def _resolve_residue_column(df: pd.DataFrame) -> Optional[str]:
-    for candidate in _RESIDUE_COLUMN_CANDIDATES:
-        if candidate in df.columns:
-            return candidate
-    logger.warning(
-        "No se encontro ninguna columna de residuo entre %s. Columnas disponibles: %s. "
-        "Las regiones de epitopo se reportaran sin secuencia de aminoacidos.",
-        _RESIDUE_COLUMN_CANDIDATES,
-        list(df.columns),
-    )
-    return None
-
-
-def _find_valid_windows(
-    scores: List[float], threshold: float, window_size: int, max_gap_residues: int
-) -> List[Tuple[int, int]]:
-    """Desliza una ventana de ``window_size`` (paso=1) y devuelve los rangos validos.
-
-    Una ventana ``[i, i + window_size - 1]`` (0-indexada, inclusive) es valida
-    si, a la vez: (a) a lo sumo ``max_gap_residues`` de sus residuos tienen un
-    score individual por debajo de ``threshold``, y (b) el score medio de la
-    ventana completa es ``>= threshold``.
-
-    Returns:
-        Lista de rangos ``(start, end)`` validos, en orden de aparicion (sin
-        fusionar todavia).
-    """
-    n = len(scores)
-    valid_windows = []
-    for i in range(0, n - window_size + 1):
-        window = scores[i : i + window_size]
-        below_count = sum(1 for score in window if score < threshold)
-        if below_count <= max_gap_residues and (sum(window) / window_size) >= threshold:
-            valid_windows.append((i, i + window_size - 1))
-    return valid_windows
-
-
-def _merge_overlapping_windows(windows: List[Tuple[int, int]]) -> List[Tuple[int, int]]:
-    """Fusiona ventanas validas solapadas o adyacentes en regiones continuas.
-
-    Asume ``windows`` ordenado por posicion de inicio (garantizado por el
-    barrido secuencial de :func:`_find_valid_windows`).
-    """
-    if not windows:
-        return []
-
-    merged = [windows[0]]
-    for start, end in windows[1:]:
-        last_start, last_end = merged[-1]
-        if start <= last_end + 1:  # solapada o adyacente
-            merged[-1] = (last_start, max(last_end, end))
-        else:
-            merged.append((start, end))
-    return merged
-
-
 def extract_epitopes(
     raw_scores_df: pd.DataFrame,
     threshold: float = Settings.BEPIPRED_THRESHOLD,
@@ -331,52 +277,21 @@ def extract_epitopes(
             f"Columnas encontradas: {list(raw_scores_df.columns)}."
         )
 
-    residue_col = _resolve_residue_column(raw_scores_df)
-    records = []
-
-    for accession, group in raw_scores_df.groupby(ACCESSION_COLUMN, sort=False):
-        group = group.reset_index(drop=True)
-        scores = group[SCORE_COLUMN].tolist()
-
-        valid_windows = _find_valid_windows(scores, threshold, window_size, max_gap_residues)
-        merged_regions = _merge_overlapping_windows(valid_windows)
-
-        for start, end in merged_regions:
-            length = end - start + 1
-            if length < min_length:
-                continue
-
-            block = group.iloc[start : end + 1]
-            sequence = "".join(block[residue_col].astype(str)) if residue_col else ""
-            records.append(
-                {
-                    "accession": accession,
-                    "start": start + 1,
-                    "end": end + 1,
-                    "length": length,
-                    "mean_score": float(block[SCORE_COLUMN].mean()),
-                    "max_score": float(block[SCORE_COLUMN].max()),
-                    "sequence": sequence,
-                }
-            )
-
-    return pd.DataFrame.from_records(
-        records,
-        columns=["accession", "start", "end", "length", "mean_score", "max_score", "sequence"],
+    return extract_epitope_regions(
+        raw_scores_df,
+        accession_col=ACCESSION_COLUMN,
+        score_col=SCORE_COLUMN,
+        residue_col_candidates=RESIDUE_COLUMN_CANDIDATES,
+        threshold=threshold,
+        min_length=min_length,
+        window_size=window_size,
+        max_gap_residues=max_gap_residues,
     )
 
 
 def print_epitope_table(epitopes_df: pd.DataFrame) -> None:
-    """Imprime la tabla final de epitopos filtrados en consola."""
-    if epitopes_df.empty:
-        print("No se encontraron epitopos que superen el threshold y la longitud minima.")
-        return
-
-    header = f"{'accession':<28}{'start':>7}{'end':>7}{'len':>6}{'mean':>8}{'max':>8}  sequence"
-    print(header)
-    print("-" * len(header))
-    for row in epitopes_df.itertuples(index=False):
-        print(
-            f"{row.accession:<28}{row.start:>7}{row.end:>7}{row.length:>6}"
-            f"{row.mean_score:>8.4f}{row.max_score:>8.4f}  {row.sequence}"
-        )
+    """Imprime la tabla final de epitopos filtrados (BepiPred-3.0) en consola."""
+    _print_epitope_table(
+        epitopes_df,
+        empty_message="No se encontraron epitopos que superen el threshold y la longitud minima.",
+    )

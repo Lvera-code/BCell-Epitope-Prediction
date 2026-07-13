@@ -4,24 +4,35 @@
 Flujo estricto de 5 fases, cada una consumiendo la salida de la anterior:
 
     1. Saneamiento del FASTA de entrada (``src.utils.fasta_parser``).
-    2. Prediccion de antigenicidad por residuo via BepiPred-3.0 EJECUTADO EN
-       LOCAL (subprocess sobre el codigo fuente oficial), con auto-cache en
-       ``fasta_outputs/`` (``src.engines.bepipred_engine``).
+    2. Prediccion de antigenicidad por residuo via DOS motores independientes
+       EJECUTADOS EN LOCAL: BepiPred-3.0 (subprocess sobre el codigo fuente
+       oficial, ``src.engines.bepipred_engine``) y EpiDope (subprocess via
+       conda, codigo abierto, ``src.engines.epidope_engine``). Cada motor
+       tiene auto-cache propio en ``fasta_outputs/``.
     3. Mapeo local de regiones de epitopo contiguas por encima de un umbral
-       (misma fuente que Fase 2).
+       para cada motor (misma fuente que Fase 2, ``src.engines.epitope_mapping``),
+       y UNION LOGICA ANOTADA entre ambos (``src.engines.consensus``): TODA
+       region detectada por BepiPred y/o por EpiDope avanza a la Fase 4;
+       las regiones que solapan entre motores se FUSIONAN (start minimo, end
+       maximo, sin recortar a la interseccion) y quedan etiquetadas como
+       ``'Consenso'`` en la columna ``origen`` (``'BepiPred'``/``'EpiDope'``
+       si solo un motor la detecto). Filtro de longitud inquebrantable: se
+       descarta cualquier region final menor a 9 aa antes de la Fase 4.
     4. Filtro de tolerancia inmunologica: BLASTp local contra el proteoma
        humano, descarta homologos de alta identidad (``src.engines.blast_engine``).
     5. Prediccion de presentacion T-helper (MHC-II) via NetMHCIIpan-4.3 LOCAL
-       contra un panel de 15 alelos HLA-DR de referencia (IEDB_DR_PANEL);
-       reporta como candidato final solo los peptidos "promiscuos" (SB/WB en
-       >= 3 alelos del panel) (``src.engines.netmhciipan_engine``).
+       contra un panel de 27 alelos HLA-DR/DQ/DP de referencia
+       (IEDB_REFERENCE_PANEL); reporta como candidato final solo los
+       peptidos "promiscuos" (SB/WB en >= 3 alelos del panel)
+       (``src.engines.netmhciipan_engine``).
 
 Todos los artefactos intermedios y el reporte final se guardan en
 ``fasta_outputs/``. Requiere: instalacion local de BepiPred-3.0 en
-``bepipred-3.0b.src/`` (descarga manual, ver README.md), NCBI BLAST+ con el
-proteoma humano indexado en ``reference_db/``, y NetMHCIIpan-4.3 instalado
-localmente en ``netMHCIIpan-4.3/`` (descarga manual bajo licencia academica
-DTU Health Tech, ver README.md).
+``bepipred-3.0b.src/`` y de EpiDope en ``.conda-epidope/`` (descarga/instalacion
+manual, ver README.md), NCBI BLAST+ con el proteoma humano indexado en
+``reference_db/``, y NetMHCIIpan-4.3 instalado localmente en
+``netMHCIIpan-4.3/`` (descarga manual bajo licencia academica DTU Health
+Tech, ver README.md).
 
 Ejemplo:
     python pipeline.py --input fasta_inputs/secuencia.fasta
@@ -35,9 +46,18 @@ from typing import List, Tuple
 import pandas as pd
 
 from src.config.settings import Settings
-from src.engines.bepipred_engine import BepiPredEngine, extract_epitopes
+from src.engines.bepipred_engine import BepiPredEngine
+from src.engines.bepipred_engine import extract_epitopes as extract_bepipred_epitopes
 from src.engines.blast_engine import print_blast_report, run_blastp_filter
-from src.engines.netmhciipan_engine import IEDB_DR_PANEL, predict_netmhciipan, print_th_report
+from src.engines.consensus import build_annotated_union_table, print_union_table
+from src.engines.epidope_engine import EpidopeEngine
+from src.engines.epidope_engine import extract_epitopes as extract_epidope_epitopes
+from src.engines.epidope_engine import ACCESSION_COLUMN as EPIDOPE_ACCESSION_COLUMN
+from src.engines.epidope_engine import RESIDUE_COLUMN as EPIDOPE_RESIDUE_COLUMN
+from src.engines.bepipred_engine import ACCESSION_COLUMN as BEPIPRED_ACCESSION_COLUMN
+from src.engines.bepipred_engine import RESIDUE_COLUMN_CANDIDATES as BEPIPRED_RESIDUE_CANDIDATES
+from src.engines.epitope_mapping import build_sequence_lookup, print_epitope_table
+from src.engines.netmhciipan_engine import IEDB_REFERENCE_PANEL, predict_netmhciipan, print_th_report
 from src.utils.exceptions import PipelineError
 from src.utils.fasta_parser import FastaRecord, load_and_sanitize, write_fasta
 from src.utils.logger_config import setup_logger
@@ -51,7 +71,7 @@ def parse_args(argv: List[str] = None) -> argparse.Namespace:
     """Define y parsea los argumentos de linea de comandos del pipeline."""
     parser = argparse.ArgumentParser(
         prog="pipeline.py",
-        description="Pipeline de descubrimiento de epitopos vacunales (BepiPred-3.0 + BLASTp + MHC).",
+        description="Pipeline de descubrimiento de epitopos vacunales (BepiPred-3.0 + EpiDope + BLASTp + MHC).",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
@@ -60,22 +80,32 @@ def parse_args(argv: List[str] = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--alelo-extra", default=None,
-        help="Alelo(s) HLA-DR adicionales a anexar al panel por defecto de la Fase 5 "
-        "(IEDB_DR_PANEL, 15 alelos). Formato NetMHCIIpan, separados por coma sin "
-        "espacios (ej. 'DRB1_1602'). No especificar este flag no requiere ninguna "
-        "otra accion: el panel por defecto siempre se evalua.",
+        help="Alelo(s) HLA-DR/DQ/DP adicionales a anexar al panel por defecto de la "
+        "Fase 5 (IEDB_REFERENCE_PANEL, 27 alelos). Formato NetMHCIIpan, separados "
+        "por coma sin espacios (ej. 'DRB1_1602' o 'HLA-DQA10501-DQB10201'). No "
+        "especificar este flag no requiere ninguna otra accion: el panel por "
+        "defecto siempre se evalua.",
     )
     parser.add_argument(
         "--output-dir", default=str(Settings.FASTA_OUTPUT_DIR),
         help="Carpeta donde se guardan todos los resultados del pipeline.",
     )
     parser.add_argument(
-        "--threshold", type=float, default=Settings.BEPIPRED_THRESHOLD,
-        help="Umbral de score de antigenicidad para la ventana deslizante de epitopos (Fase 3).",
+        "--bepipred-threshold", type=float, default=Settings.BEPIPRED_THRESHOLD,
+        help="Umbral de score de antigenicidad (BepiPred-3.0) para la ventana deslizante de epitopos (Fase 3).",
     )
     parser.add_argument(
-        "--min-length", type=int, default=Settings.BEPIPRED_MIN_EPITOPE_LENGTH,
-        help="Longitud minima (aa) de una region de epitopo para no ser descartada (Fase 3).",
+        "--bepipred-min-length", type=int, default=Settings.BEPIPRED_MIN_EPITOPE_LENGTH,
+        help="Longitud minima (aa) de una region de epitopo BepiPred-3.0 para no ser descartada (Fase 3).",
+    )
+    parser.add_argument(
+        "--epidope-threshold", type=float, default=Settings.EPIDOPE_THRESHOLD,
+        help="Umbral de score de antigenicidad (EpiDope) para la ventana deslizante de epitopos (Fase 3). "
+        "No comparable en escala al umbral de BepiPred: cada motor conserva el suyo.",
+    )
+    parser.add_argument(
+        "--epidope-min-length", type=int, default=Settings.EPIDOPE_MIN_EPITOPE_LENGTH,
+        help="Longitud minima (aa) de una region de epitopo EpiDope para no ser descartada (Fase 3).",
     )
     parser.add_argument(
         "--blast-db", default=Settings.BLAST_HUMAN_DB,
@@ -111,72 +141,124 @@ def fase_1_saneamiento(input_path: Path, output_dir: Path) -> Tuple[List[FastaRe
     return records, clean_path
 
 
-def fase_2_antigenicidad(input_stem: str, clean_fasta: Path, output_dir: Path) -> pd.DataFrame:
-    """Fase 2: obtiene scores crudos de BepiPred-3.0 (ejecucion local), con auto-cache en CSV."""
-    print(f"\n{_SEPARATOR}\nFASE 2 | Prediccion de antigenicidad (BepiPred-3.0, ejecucion local)\n{_SEPARATOR}")
+def fase_2_antigenicidad(input_stem: str, clean_fasta: Path, output_dir: Path) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """Fase 2: obtiene scores crudos de antigenicidad de BepiPred-3.0 y EpiDope (ambos locales), con auto-cache en CSV."""
+    print(f"\n{_SEPARATOR}\nFASE 2 | Prediccion de antigenicidad (BepiPred-3.0 + EpiDope, ejecucion local)\n{_SEPARATOR}")
 
-    cache_path = output_dir / f"{input_stem}_bepipred_raw.csv"
+    bepipred_df = _cached_raw_scores(
+        engine_name="BepiPred-3.0",
+        cache_path=output_dir / f"{input_stem}_bepipred_raw.csv",
+        raw_artifacts_dir=output_dir / "_bepipred_raw",
+        clean_fasta=clean_fasta,
+        engine=BepiPredEngine(),
+    )
+    epidope_df = _cached_raw_scores(
+        engine_name="EpiDope",
+        cache_path=output_dir / f"{input_stem}_epidope_raw.csv",
+        raw_artifacts_dir=output_dir / "_epidope_raw",
+        clean_fasta=clean_fasta,
+        engine=EpidopeEngine(),
+    )
+    return bepipred_df, epidope_df
+
+
+def _cached_raw_scores(
+    engine_name: str, cache_path: Path, raw_artifacts_dir: Path, clean_fasta: Path, engine
+) -> pd.DataFrame:
+    """Corre ``engine`` sobre ``clean_fasta`` con auto-cache en ``cache_path`` (CSV)."""
     if cache_path.is_file():
         df = pd.read_csv(cache_path)
-        print(f"Cache local detectada en '{cache_path}'. Se omite la re-ejecucion de BepiPred-3.0.")
-        print(f"Origen de los datos: CACHE LOCAL | Dimensiones de la matriz: {df.shape}")
+        print(f"[{engine_name}] Cache local detectada en '{cache_path}'. Se omite la re-ejecucion.")
+        print(f"[{engine_name}] Origen de los datos: CACHE LOCAL | Dimensiones de la matriz: {df.shape}")
         return df
 
-    engine = BepiPredEngine()
-
-    raw_artifacts_dir = output_dir / "_bepipred_raw"
     df = engine.run([str(clean_fasta)], output_dir=raw_artifacts_dir)[0]
 
     df.to_csv(cache_path, index=False)
-    print(f"Origen de los datos: INFERENCIA LOCAL (subprocess) | Dimensiones de la matriz: {df.shape}")
-    print(f"-> Resultado crudo cacheado en: {cache_path} (para futuras ejecuciones instantaneas)")
+    print(f"[{engine_name}] Origen de los datos: INFERENCIA LOCAL (subprocess) | Dimensiones de la matriz: {df.shape}")
+    print(f"[{engine_name}] -> Resultado crudo cacheado en: {cache_path} (para futuras ejecuciones instantaneas)")
     return df
 
 
-def fase_3_mapeo(
-    raw_df: pd.DataFrame, threshold: float, min_length: int, output_dir: Path, input_stem: str
+def fase_3_mapeo_y_union(
+    bepipred_raw_df: pd.DataFrame,
+    epidope_raw_df: pd.DataFrame,
+    bepipred_threshold: float,
+    bepipred_min_length: int,
+    epidope_threshold: float,
+    epidope_min_length: int,
+    output_dir: Path,
+    input_stem: str,
 ) -> pd.DataFrame:
-    """Fase 3: agrupa residuos contiguos por encima del umbral en regiones de epitopo."""
-    print(f"\n{_SEPARATOR}\nFASE 3 | Mapeo logico de regiones de epitopo (umbral={threshold}, min_len={min_length})\n{_SEPARATOR}")
+    """Fase 3: mapea regiones de epitopo por motor y construye la union logica anotada entre ambos."""
+    print(f"\n{_SEPARATOR}\nFASE 3 | Mapeo logico de regiones de epitopo y union anotada BepiPred U EpiDope\n{_SEPARATOR}")
 
-    epitopes_df = extract_epitopes(raw_df, threshold=threshold, min_length=min_length)
+    print(f"-- BepiPred-3.0 (umbral={bepipred_threshold}, min_len={bepipred_min_length}) --")
+    bepipred_epitopes_df = extract_bepipred_epitopes(
+        bepipred_raw_df, threshold=bepipred_threshold, min_length=bepipred_min_length
+    )
+    print_epitope_table(
+        bepipred_epitopes_df,
+        empty_message=f"No se encontraron regiones >= {bepipred_min_length} aa con score medio >= {bepipred_threshold}.",
+    )
+    bepipred_epitopes_df.to_csv(output_dir / f"{input_stem}_bepipred_epitopes.csv", index=False)
 
-    if epitopes_df.empty:
-        print(f"No se encontraron regiones >= {min_length} aa con score medio >= {threshold}.")
-    else:
-        header = f"{'N.Region':<10}{'Coordenadas':<16}{'Score Medio':>13}  Secuencia"
-        print(header)
-        print("-" * len(header))
-        for i, row in enumerate(epitopes_df.itertuples(index=False), start=1):
-            coords = f"{row.start}-{row.end}"
-            print(f"{i:<10}{coords:<16}{row.mean_score:>13.4f}  {row.sequence}")
+    print(f"\n-- EpiDope (umbral={epidope_threshold}, min_len={epidope_min_length}) --")
+    epidope_epitopes_df = extract_epidope_epitopes(
+        epidope_raw_df, threshold=epidope_threshold, min_length=epidope_min_length
+    )
+    print_epitope_table(
+        epidope_epitopes_df,
+        empty_message=f"No se encontraron regiones >= {epidope_min_length} aa con score medio >= {epidope_threshold}.",
+    )
+    epidope_epitopes_df.to_csv(output_dir / f"{input_stem}_epidope_epitopes.csv", index=False)
 
-    out_path = output_dir / f"{input_stem}_epitopes.csv"
-    epitopes_df.to_csv(out_path, index=False)
-    print(f"-> Tabla de regiones guardada en: {out_path}")
-    return epitopes_df
+    print("\n-- Union anotada (fusion de solapes, origen BepiPred/EpiDope/Consenso) --")
+    # Lookup de secuencia completa por accession: una region fusionada puede
+    # exceder el span detectado por cualquiera de los dos motores por
+    # separado, asi que la subsecuencia final se reconstruye desde aqui en
+    # vez de recortar las subsecuencias individuales de cada motor. Se
+    # combinan ambos motores (BepiPred como fuente preferente) porque, tras
+    # el saneamiento de Fase 1, ambos reciben el mismo FASTA y deberian
+    # coincidir residuo a residuo para la misma accession.
+    sequence_lookup = build_sequence_lookup(
+        epidope_raw_df, accession_col=EPIDOPE_ACCESSION_COLUMN, residue_col_candidates=(EPIDOPE_RESIDUE_COLUMN,)
+    )
+    sequence_lookup.update(
+        build_sequence_lookup(
+            bepipred_raw_df, accession_col=BEPIPRED_ACCESSION_COLUMN, residue_col_candidates=BEPIPRED_RESIDUE_CANDIDATES
+        )
+    )
+
+    union_df = build_annotated_union_table(bepipred_epitopes_df, epidope_epitopes_df, sequence_lookup)
+    print_union_table(union_df)
+
+    out_path = output_dir / f"{input_stem}_union_epitopes.csv"
+    union_df.to_csv(out_path, index=False)
+    print(f"-> Tabla de union anotada guardada en: {out_path}")
+    return union_df
 
 
 def fase_4_tolerancia(
-    epitopes_df: pd.DataFrame,
+    union_df: pd.DataFrame,
     blast_db: str,
     identity_threshold: float,
     output_dir: Path,
     input_stem: str,
 ) -> pd.DataFrame:
-    """Fase 4: descarta por BLASTp local los peptidos con alta homologia al proteoma humano."""
+    """Fase 4: descarta por BLASTp local los peptidos de la union anotada con alta homologia al proteoma humano."""
     print(f"\n{_SEPARATOR}\nFASE 4 | Filtro de tolerancia inmunologica (BLASTp local, umbral={identity_threshold}%)\n{_SEPARATOR}")
 
-    if epitopes_df.empty:
-        print("No hay peptidos candidatos de la Fase 3 para analizar.")
-        blast_df = epitopes_df.assign(
+    if union_df.empty:
+        print("No hay peptidos de la union anotada de la Fase 3 para analizar.")
+        blast_df = union_df.assign(
             blast_task=pd.Series(dtype=str),
             blast_evalue=pd.Series(dtype=float),
             max_pident=pd.Series(dtype=float),
             status=pd.Series(dtype=str),
         )
     else:
-        blast_df = run_blastp_filter(epitopes_df, db_path=blast_db, identity_threshold=identity_threshold)
+        blast_df = run_blastp_filter(union_df, db_path=blast_db, identity_threshold=identity_threshold)
         print_blast_report(blast_df)
 
     out_path = output_dir / f"{input_stem}_blast_report.csv"
@@ -193,13 +275,14 @@ def fase_5_th_promiscuidad(
     Args:
         safe_df: Peptidos con ``status == 'Segura'`` provenientes de la Fase 4.
         output_dir: Carpeta donde persistir el reporte final y el .xls crudo.
-        allele_extra: Alelo(s) HLA-DR adicionales (formato NetMHCIIpan,
-            separados por coma sin espacios) a anexar a ``IEDB_DR_PANEL``. Se
-            admiten sin romper el panel por defecto.
+        allele_extra: Alelo(s) HLA-DR/DQ/DP adicionales (formato NetMHCIIpan,
+            separados por coma sin espacios) a anexar a
+            ``IEDB_REFERENCE_PANEL``. Se admiten sin romper el panel por
+            defecto.
     """
-    allele_panel = f"{IEDB_DR_PANEL},{allele_extra}" if allele_extra else IEDB_DR_PANEL
+    allele_panel = f"{IEDB_REFERENCE_PANEL},{allele_extra}" if allele_extra else IEDB_REFERENCE_PANEL
     n_alleles = len(allele_panel.split(","))
-    print(f"\n{_SEPARATOR}\nFASE 5 | Promiscuidad T-helper (MHC-II, NetMHCIIpan-4.3 local, {n_alleles} alelo(s) HLA-DR)\n{_SEPARATOR}")
+    print(f"\n{_SEPARATOR}\nFASE 5 | Promiscuidad T-helper (MHC-II, NetMHCIIpan-4.3 local, {n_alleles} alelo(s) HLA-DR/DQ/DP)\n{_SEPARATOR}")
 
     final_path = output_dir / "candidatos_finales.csv"
 
@@ -233,10 +316,15 @@ def main(argv: List[str] = None) -> int:
 
     try:
         _, clean_fasta = fase_1_saneamiento(input_path, output_dir)
-        raw_df = fase_2_antigenicidad(input_path.stem, clean_fasta, output_dir)
-        epitopes_df = fase_3_mapeo(raw_df, args.threshold, args.min_length, output_dir, input_path.stem)
+        bepipred_raw_df, epidope_raw_df = fase_2_antigenicidad(input_path.stem, clean_fasta, output_dir)
+        union_df = fase_3_mapeo_y_union(
+            bepipred_raw_df, epidope_raw_df,
+            args.bepipred_threshold, args.bepipred_min_length,
+            args.epidope_threshold, args.epidope_min_length,
+            output_dir, input_path.stem,
+        )
         blast_df = fase_4_tolerancia(
-            epitopes_df, args.blast_db, args.identity_threshold, output_dir, input_path.stem
+            union_df, args.blast_db, args.identity_threshold, output_dir, input_path.stem
         )
         safe_df = blast_df[blast_df["status"] == "Segura"] if not blast_df.empty else blast_df
         fase_5_th_promiscuidad(safe_df, output_dir, allele_extra=args.alelo_extra)

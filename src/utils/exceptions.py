@@ -1,4 +1,4 @@
-"""Jerarquia de excepciones especificas del pipeline para control de flujo granular."""
+"""Jerarquia de excepciones especificas del pipeline para control de flujo."""
 
 
 class PipelineError(Exception):
@@ -8,7 +8,7 @@ class PipelineError(Exception):
 class InvalidSequenceError(PipelineError):
     """Una secuencia FASTA individual tiene residuos invalidos o longitud insuficiente.
 
-    Este error es recuperable a nivel de registro: el modulo de aduana lo captura
+    Este error es recuperable a nivel de registro: el modulo de saneamiento lo captura
     internamente y descarta unicamente la secuencia afectada, sin detener el lote.
     """
 
@@ -50,6 +50,17 @@ class BepiPredExecutionError(EngineExecutionError):
     Cubre tanto la instalacion local ausente (paquete de codigo fuente con
     licencia academica DTU Health Tech no descargado, ver
     ``Settings.BEPIPRED_DOWNLOAD_URL``) como fallos del propio subproceso
+    (exit code distinto de cero, timeout, formato de salida inesperado),
+    traducidos a un mensaje accionable en vez de un ``FileNotFoundError`` o
+    una traza cruda de ``subprocess``.
+    """
+
+
+class EpidopeExecutionError(EngineExecutionError):
+    """Fallo al ejecutar EpiDope localmente (Fase 2, via subprocess/conda run).
+
+    Cubre tanto el entorno conda dedicado ausente (paquete open-source MIT,
+    ver ``Settings.EPIDOPE_DOWNLOAD_URL``) como fallos del propio subproceso
     (exit code distinto de cero, timeout, formato de salida inesperado),
     traducidos a un mensaje accionable en vez de un ``FileNotFoundError`` o
     una traza cruda de ``subprocess``.

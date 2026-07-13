@@ -1,9 +1,9 @@
-"""Fase 1: Saneamiento de FASTA crudo (aduana de entrada del pipeline).
+"""Fase 1: Saneamiento de FASTA crudo.
 
 Responsabilidad exclusiva: leer un FASTA tal como llega del usuario, separarlo
 en registros (cabecera, secuencia) y producir una version saneada -mayusculas,
 sin saltos de linea internos, sin caracteres no canonicos- que sea segura para
-enviar a BioLib (Fase 2), a BLASTp (Fase 4) y a los motores de inmunogenicidad
+enviar a BepiPred (Fase 2), a BLASTp (Fase 4) y a los motores de inmunogenicidad
 (Fase 5). El descarte de un registro individual por quedar vacio tras el
 saneamiento es recuperable (ver ``InvalidSequenceError``); un FASTA sin ningun
 '>' es un error fatal (ver ``FastaFormatError``).
@@ -139,6 +139,21 @@ def load_and_sanitize(path: Path) -> List[FastaRecord]:
 def write_fasta(records: List[FastaRecord], out_path: Path, line_width: int = 60) -> None:
     """Escribe una lista de :class:`FastaRecord` saneados como FASTA valido.
 
+    Escribe unicamente ``record.accession`` (primer token de la cabecera
+    original, sin espacios) como cabecera, DESCARTANDO el resto de la
+    descripcion libre. Motivo (ver tambien ``src.engines.consensus``):
+    BepiPred-3.0 escribe la cabecera CRUDA, sin escapar, en su propio
+    ``raw_output.csv`` separado por comas -una descripcion con comas (ej.
+    ``'Tetanus toxin, fragment C (Hc domain, residues 865-1315)'``) corrompe
+    silenciosamente el parseo de esa columna (pandas absorbe los fragmentos
+    de mas como un MultiIndex implicito, dejando un accession irreconocible
+    pero igual para todas las filas: los scores por residuo NO se corrompen,
+    solo la etiqueta de accession). EpiDope, por su parte, solo conserva el
+    primer token separado por espacio como ID de gen (``--idpos 0 --delim
+    ' '``). Escribir unicamente el primer token evita ambos problemas de raiz
+    y garantiza que BepiPred y EpiDope reporten el MISMO accession para la
+    misma secuencia, requisito para el cruce de consenso en Fase 3.
+
     Args:
         records: Registros a escribir, en orden.
         out_path: Ruta de salida (se sobreescribe si ya existe).
@@ -146,7 +161,7 @@ def write_fasta(records: List[FastaRecord], out_path: Path, line_width: int = 60
     """
     with out_path.open("w", encoding="utf-8") as fh:
         for record in records:
-            fh.write(f">{record.header}\n")
+            fh.write(f">{record.accession}\n")
             seq = record.sequence
             for i in range(0, len(seq), line_width):
                 fh.write(seq[i : i + line_width] + "\n")

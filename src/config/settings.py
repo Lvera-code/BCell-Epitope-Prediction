@@ -88,6 +88,45 @@ class Settings:
 
     BEPIPRED_OUTPUT_DIR: Path = Path(_env_str("BEPIPRED_OUTPUT_DIR", "produccion_resultados/bepipred3"))
 
+    # --- Fase 2 (segundo motor): Prediccion de Antigenicidad (EpiDope, ejecucion LOCAL) ---
+    # A diferencia de BepiPred-3.0 y NetMHCIIpan-4.3, EpiDope es codigo abierto
+    # (licencia MIT, github.com/rnajena/EpiDope -fork activamente mantenido,
+    # sucesor de github.com/flomock/EpiDope-) e instalable via conda sin
+    # solicitud academica. Fija un entorno completo (``epidope.yml`` del
+    # propio repo: Python 3.6, TensorFlow 1.13, Keras 2.3, PyTorch 0.4,
+    # AllenNLP 0.7.2 para embeddings ELMo) incompatible con el entorno
+    # principal del pipeline (mismo problema que BepiPred con torch==1.12.0):
+    # requiere un entorno conda dedicado, creado EXACTAMENTE con ese
+    # ``epidope.yml`` (no version por version a mano: la resolucion de
+    # dependencias de ese stack es fragil), igual patron que
+    # ``.venv-bepipred`` (ver README.md - Seccion de Instalacion). Los pesos
+    # del modelo y los embeddings ELMo vienen empaquetados en el propio repo
+    # (``epidope/epidope_weights``, ``epidope/elmo_settings``): la inferencia
+    # es 100% local, sin ninguna llamada de red.
+    #
+    # Invocacion: si EPIDOPE_BIN apunta a un ejecutable existente, se llama
+    # directamente (bypass de conda); si no, se invoca via
+    # 'conda run -p EPIDOPE_CONDA_PREFIX epidope' (o -n EPIDOPE_CONDA_ENV si
+    # se prefiere un entorno por nombre en vez de por prefijo de ruta).
+    EPIDOPE_CONDA_PREFIX: str = _env_str("EPIDOPE_CONDA_PREFIX", ".conda-epidope")
+    EPIDOPE_CONDA_ENV: str = _env_str("EPIDOPE_CONDA_ENV", "")
+    EPIDOPE_BIN: str = _env_str("EPIDOPE_BIN", "")
+    EPIDOPE_TIMEOUT_SECONDS: int = _env_int("EPIDOPE_TIMEOUT_SECONDS", 1800)
+    EPIDOPE_DOWNLOAD_URL: str = "https://github.com/rnajena/EpiDope"
+
+    # Umbral y longitud minima aplicados LOCALMENTE en Fase 3 (misma logica de
+    # ventana deslizante que BepiPred, ver `src/engines/epitope_mapping.py`)
+    # sobre los scores crudos por residuo que genera la ejecucion local de
+    # EpiDope. 0.818 es el umbral por defecto del propio EpiDope (ver su
+    # `epidope/cli.py`), MUY distinto en escala al de BepiPred (0.1512): no
+    # son scores comparables entre si, cada motor conserva su propio umbral.
+    EPIDOPE_THRESHOLD: float = _env_float("EPIDOPE_THRESHOLD", 0.818)
+    EPIDOPE_MIN_EPITOPE_LENGTH: int = _env_int("EPIDOPE_MIN_EPITOPE_LENGTH", 9)
+    EPIDOPE_WINDOW_SIZE: int = _env_int("EPIDOPE_WINDOW_SIZE", 9)
+    EPIDOPE_MAX_GAP_RESIDUES: int = _env_int("EPIDOPE_MAX_GAP_RESIDUES", 2)
+
+    EPIDOPE_OUTPUT_DIR: Path = Path(_env_str("EPIDOPE_OUTPUT_DIR", "produccion_resultados/epidope"))
+
     # --- Fase 1 / Orquestador: carpetas de entrada y salida del pipeline ---
     FASTA_INPUT_DIR: Path = Path(_env_str("FASTA_INPUT_DIR", "fasta_inputs"))
     FASTA_OUTPUT_DIR: Path = Path(_env_str("FASTA_OUTPUT_DIR", "fasta_outputs"))
@@ -150,5 +189,6 @@ class Settings:
     def setup_directories(cls) -> None:
         """Crea los directorios de datos requeridos si aun no existen."""
         cls.BEPIPRED_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        cls.EPIDOPE_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
         cls.FASTA_INPUT_DIR.mkdir(parents=True, exist_ok=True)
         cls.FASTA_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)

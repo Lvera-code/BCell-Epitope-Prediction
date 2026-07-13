@@ -13,15 +13,15 @@ wrapper puro de ``subprocess`` sobre un binario local con licencia academica
 DTU Health Tech (``Settings.NETMHCIIPAN_HOME``, nunca hardcodeado, resuelto
 desde variable de entorno). No se usa ``requests`` ni ninguna llamada de red.
 
-Promiscuidad HLA-DR: en vez de evaluar un unico alelo (insuficiente para
+Promiscuidad HLA-II: en vez de evaluar un unico alelo (insuficiente para
 cobertura poblacional), cada peptido candidato se evalua contra
-``IEDB_DR_PANEL`` -un panel de referencia de 15 alelos HLA-DR/DRB3/DRB4/DRB5
-usado por el IEDB para estimar cobertura poblacional amplia- pasado tal cual
-al flag ``-a`` de NetMHCIIpan. Un peptido se reporta como ``'Candidato
-Valido'`` (T-helper promiscuo) solo si clasifica como aglutinador fuerte (SB)
-o debil (WB), segun los umbrales de %Rank POR DEFECTO del propio
-NetMHCIIpan-4.3, en al menos ``Settings.NETMHCIIPAN_MIN_PROMISCUOUS_ALLELES``
-alelos distintos del panel.
+``IEDB_REFERENCE_PANEL`` -el panel de referencia de 27 alelos HLA-DR/DQ/DP
+mas representativos de la poblacion (IEDB) para estimar cobertura amplia-
+pasado tal cual al flag ``-a`` de NetMHCIIpan. Un peptido se reporta como
+``'Candidato Valido'`` (T-helper promiscuo) solo si clasifica como
+aglutinador fuerte (SB) o debil (WB), segun los umbrales de %Rank POR
+DEFECTO del propio NetMHCIIpan-4.3, en al menos
+``Settings.NETMHCIIPAN_MIN_PROMISCUOUS_ALLELES`` alelos distintos del panel.
 """
 
 import os
@@ -39,19 +39,40 @@ from src.utils.logger_config import setup_logger
 
 logger = setup_logger(__name__)
 
-# Panel de referencia HLA-DR/DRB3/DRB4/DRB5 usado por el IEDB para estimar
-# cobertura poblacional amplia en el diseno de epitopos T-helper (MHC-II).
-# NUNCA se le agregan espacios entre comas: NetMHCIIpan lo pasa tal cual a
-# su parser de '-a' y un espacio rompe el parseo del alelo siguiente.
-IEDB_DR_PANEL = (
+# Panel de referencia de 27 alelos HLA-DR/DQ/DP mas representativos usado
+# por el IEDB para estimar cobertura poblacional amplia en el diseno de
+# epitopos T-helper (MHC-II). NUNCA se le agregan espacios entre comas:
+# NetMHCIIpan lo pasa tal cual a su parser de '-a' y un espacio rompe el
+# parseo del alelo siguiente.
+IEDB_REFERENCE_PANEL = (
     "DRB1_0101,DRB1_0301,DRB1_0401,DRB1_0405,DRB1_0701,DRB1_0802,DRB1_0901,"
-    "DRB1_1101,DRB1_1201,DRB1_1302,DRB1_1501,DRB3_0101,DRB3_0202,DRB4_0101,DRB5_0101"
+    "DRB1_1101,DRB1_1201,DRB1_1302,DRB1_1501,DRB3_0101,DRB3_0202,DRB4_0101,DRB5_0101,"
+    "HLA-DQA10501-DQB10201,HLA-DQA10501-DQB10301,HLA-DQA10301-DQB10302,"
+    "HLA-DQA10401-DQB10402,HLA-DQA10101-DQB10501,HLA-DQA10102-DQB10602,"
+    "HLA-DPA10201-DPB10101,HLA-DPA10103-DPB10201,HLA-DPA10103-DPB10401,"
+    "HLA-DPA10301-DPB10402,HLA-DPA10201-DPB10501,HLA-DPA10201-DPB11401"
 )
 
 # Footprint minimo del core de union a MHC-II: NetMHCIIpan descarta (o
 # calcula sobre un core mas corto que el peptido, degradando la prediccion)
 # peptidos mas cortos que esto.
 _MIN_PEPTIDE_LENGTH = 9
+
+# Longitud maxima segura para el modo peptido exacto ('-p', -inptype 1). El
+# binario NetMHCIIpan-4.3 (Linux_x86_64) revienta con "*** buffer overflow
+# detected ***" (SIGABRT, core dump) en ese modo para entradas mayores a 56
+# aminoacidos -confirmado empiricamente: 56 aa OK, 57 aa crash, reproducible
+# con contenido aleatorio, no depende de la secuencia concreta-. El wrapper
+# 'netMHCIIpan' (tcsh) NO propaga ese crash como exit code distinto de cero
+# (ver ``_require_xls_output``), asi que sin este enrutamiento el pipeline
+# fallaria con un error generico e indescifrable. Peptidos mas largos que
+# esto se evaluan en modo proteina (FASTA, sin '-p'): NetMHCIIpan desliza
+# internamente una ventana (``-length``, 15 aa por defecto) y evalua todos
+# los nucleos de union candidatos dentro del fragmento -el uso correcto de
+# la herramienta para fragmentos largos, en vez de tratarlos como un unico
+# peptido exacto-. Se deja un margen de seguridad considerable (40, no 56)
+# por si el limite real del binario varia entre builds o paneles de alelos.
+_MAX_PEPTIDE_MODE_LENGTH = 40
 
 _OUTPUT_COLUMNS = ["sequence", "n_alelos_evaluados", "n_alelos_promiscuos", "min_rank_el", "veredicto"]
 
@@ -141,28 +162,81 @@ def _parse_xls(xls_path: Path, n_alleles: int) -> pd.DataFrame:
     return result[_OUTPUT_COLUMNS]
 
 
+def _run_netmhciipan(
+    binary: Path, mode_args: List[str], allele_panel: str, xls_path: Path, timeout: int
+) -> subprocess.CompletedProcess:
+    """Invoca el binario local con ``mode_args`` (formato de entrada) + panel + salida .xls."""
+    cmd = [str(binary)] + mode_args + ["-a", allele_panel, "-xls", "-xlsfile", str(xls_path)]
+    logger.info("Ejecutando NetMHCIIpan-4.3 local: %s", " ".join(cmd))
+    try:
+        return subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=timeout)
+    except subprocess.CalledProcessError as exc:
+        raise ImmunogenicityExecutionError(
+            f"NetMHCIIpan-4.3 termino con exit code {exc.returncode}: "
+            f"{(exc.stderr or '<sin stderr>')[:2000]}"
+        ) from exc
+    except subprocess.TimeoutExpired as exc:
+        raise ImmunogenicityExecutionError(f"NetMHCIIpan-4.3 excedio el tiempo limite de {timeout}s.") from exc
+
+
+def _require_xls_output(xls_path: Path, proc: subprocess.CompletedProcess, mode_desc: str) -> None:
+    """Valida que el .xls prometido exista: el wrapper tcsh no propaga fallos internos como exit != 0.
+
+    Causas conocidas: (a) modo peptido exacto con una entrada > 56 aa
+    (buffer overflow del binario, ver ``_MAX_PEPTIDE_MODE_LENGTH`` -
+    ``predict_netmhciipan`` ya enruta para evitar esto-), (b) la linea
+    'NMHOME' dentro del script wrapper apunta a una ruta desactualizada
+    (p. ej. tras mover/renombrar la carpeta del proyecto).
+    """
+    if xls_path.is_file():
+        return
+    raise ImmunogenicityExecutionError(
+        f"NetMHCIIpan-4.3 ({mode_desc}) termino sin error (exit 0) pero no genero el archivo "
+        f"de salida esperado en '{xls_path}'. Causas conocidas: un peptido de entrada excede "
+        f"el limite del modo usado (revisa Settings._MAX_PEPTIDE_MODE_LENGTH), o la linea "
+        f"'NMHOME' dentro de '{Settings.NETMHCIIPAN_HOME / Settings.NETMHCIIPAN_BINARY_NAME}' "
+        f"apunta a una ruta desactualizada (p. ej. si moviste la carpeta del proyecto) -en ese "
+        f"caso, edita esa linea con la ruta absoluta ACTUAL de "
+        f"'{Settings.NETMHCIIPAN_HOME.resolve()}' y vuelve a intentarlo-. "
+        f"Salida del proceso: {(proc.stdout or '<vacia>')[:1000]}"
+    )
+
+
 def predict_netmhciipan(
     peptides: List[str],
     output_dir: Path,
-    allele_panel: str = IEDB_DR_PANEL,
+    allele_panel: str = IEDB_REFERENCE_PANEL,
 ) -> pd.DataFrame:
     """Fase 5: evalua promiscuidad T-helper (MHC-II) via NetMHCIIpan-4.3 local.
 
     Ejecuta, de forma sincrona (``subprocess.run``), el binario local
     ``./netMHCIIpan-4.3/netMHCIIpan`` sobre los peptidos que superaron el
     filtro de tolerancia inmunologica de la Fase 4 (BLASTp, ``status ==
-    'Segura'``), evaluandolos en modo peptido exacto (``-p``, sin digestion
-    de proteina) contra el panel completo de alelos HLA-DR indicado.
+    'Segura'``), contra el panel completo de alelos HLA-DR/DQ/DP indicado.
+    Cada peptido se enruta segun su longitud (ver ``_MAX_PEPTIDE_MODE_LENGTH``):
+
+    * ``<= _MAX_PEPTIDE_MODE_LENGTH`` (40 aa) -> modo peptido exacto (``-p``):
+      una fila de salida por peptido de entrada, ``sequence`` = el peptido
+      completo tal cual.
+    * ``> _MAX_PEPTIDE_MODE_LENGTH`` -> modo proteina (FASTA, sin ``-p``):
+      NetMHCIIpan desliza internamente una ventana y evalua todos los
+      nucleos de union candidatos dentro del fragmento; puede devolver
+      VARIAS filas por peptido de entrada, cada una con ``sequence`` = el
+      nucleo candidato especifico (mas corto que el fragmento original), no
+      el fragmento completo. Es el uso correcto de la herramienta para
+      fragmentos largos (el modo peptido exacto revienta con "buffer
+      overflow" en el binario para entradas > 56 aa).
 
     Args:
         peptides: Peptidos candidatos que superaron la Fase 4. Los mas
             cortos que el footprint minimo del core de MHC-II (9 aa) se
             omiten con un warning.
-        output_dir: Carpeta donde persistir el .xls crudo devuelto por
+        output_dir: Carpeta donde persistir el/los .xls crudos devueltos por
             NetMHCIIpan, para trazabilidad.
-        allele_panel: Alelos HLA-DR separados por coma sin espacios (formato
-            NetMHCIIpan, ej. ``"DRB1_0101,DRB1_0301"``), pasados tal cual al
-            flag ``-a``. Por defecto ``IEDB_DR_PANEL`` (15 alelos); si se
+        allele_panel: Alelos HLA-DR/DQ/DP separados por coma sin espacios
+            (formato NetMHCIIpan, ej. ``"DRB1_0101,DRB1_0301"`` o
+            ``"HLA-DQA10501-DQB10201"``), pasados tal cual al flag ``-a``.
+            Por defecto ``IEDB_REFERENCE_PANEL`` (27 alelos); si se
             necesita cubrir un alelo adicional (ej. especifico de una
             poblacion de interes), se admite sin problema anexandolo al
             string por defecto (ver ``--alelo-extra`` en ``pipeline.py``).
@@ -190,62 +264,51 @@ def predict_netmhciipan(
     if not valid_peptides:
         return pd.DataFrame(columns=_OUTPUT_COLUMNS)
 
+    short_peptides = [p for p in valid_peptides if len(p) <= _MAX_PEPTIDE_MODE_LENGTH]
+    long_peptides = [p for p in valid_peptides if len(p) > _MAX_PEPTIDE_MODE_LENGTH]
+    if long_peptides:
+        logger.info(
+            "%d peptido(s) > %d aa se evaluaran en modo proteina (ventana deslizante interna "
+            "de NetMHCIIpan) para evitar el buffer overflow conocido del modo peptido exacto "
+            "con entradas largas.",
+            len(long_peptides), _MAX_PEPTIDE_MODE_LENGTH,
+        )
+
     n_alleles = len([a for a in allele_panel.split(",") if a])
     output_dir.mkdir(parents=True, exist_ok=True)
-    persisted_xls = output_dir / "netmhciipan_raw.xls"
 
+    result_frames = []
     with tempfile.TemporaryDirectory(prefix="netmhciipan_") as tmp:
         tmp_dir = Path(tmp)
-        pep_path = tmp_dir / "peptides.pep"
-        xls_path = tmp_dir / "netmhciipan_output.xls"
 
-        pep_path.write_text("\n".join(valid_peptides) + "\n", encoding="utf-8")
-
-        cmd = [
-            str(binary), "-p", "-f", str(pep_path),
-            "-a", allele_panel,
-            "-xls", "-xlsfile", str(xls_path),
-        ]
-        logger.info("Ejecutando NetMHCIIpan-4.3 local sobre %d peptido(s), %d alelo(s): %s", len(valid_peptides), n_alleles, " ".join(cmd))
-        try:
-            proc = subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=Settings.NETMHCIIPAN_TIMEOUT_SECONDS)
-        except subprocess.CalledProcessError as exc:
-            raise ImmunogenicityExecutionError(
-                f"NetMHCIIpan-4.3 termino con exit code {exc.returncode}: "
-                f"{(exc.stderr or '<sin stderr>')[:2000]}"
-            ) from exc
-        except subprocess.TimeoutExpired as exc:
-            raise ImmunogenicityExecutionError(
-                f"NetMHCIIpan-4.3 excedio el tiempo limite de {Settings.NETMHCIIPAN_TIMEOUT_SECONDS}s."
-            ) from exc
-
-        if not xls_path.is_file():
-            # El wrapper 'netMHCIIpan' (tcsh) NO propaga exit code != 0 cuando
-            # el binario interno ($NETMHCIIpan/bin/NetMHCIIpan-4.3) no se
-            # encuentra: solo imprime un aviso y termina con exit 0. Causa
-            # tipica: la linea 'NMHOME' del script quedo con una ruta
-            # absoluta desactualizada (p. ej. tras mover/renombrar la carpeta
-            # del proyecto). subprocess.run(check=True) no detecta esto por
-            # si solo, asi que se valida aqui explicitamente en vez de dejar
-            # que pandas falle con un FileNotFoundError confuso.
-            raise ImmunogenicityExecutionError(
-                f"NetMHCIIpan-4.3 termino sin error (exit 0) pero no genero el archivo "
-                f"de salida esperado en '{xls_path}'. Esto normalmente indica que el "
-                f"binario interno no se encontro porque la linea 'NMHOME' dentro de "
-                f"'{Settings.NETMHCIIPAN_HOME / Settings.NETMHCIIPAN_BINARY_NAME}' apunta "
-                f"a una ruta desactualizada (p. ej. si moviste la carpeta del proyecto). "
-                f"Edita esa linea con la ruta absoluta ACTUAL de "
-                f"'{Settings.NETMHCIIPAN_HOME.resolve()}' y vuelve a intentarlo. "
-                f"Salida del proceso: {(proc.stdout or '<vacia>')[:1000]}"
+        if short_peptides:
+            pep_path = tmp_dir / "peptides.pep"
+            pep_path.write_text("\n".join(short_peptides) + "\n", encoding="utf-8")
+            xls_path = tmp_dir / "peptide_mode_output.xls"
+            proc = _run_netmhciipan(
+                binary, ["-p", "-f", str(pep_path)], allele_panel, xls_path, Settings.NETMHCIIPAN_TIMEOUT_SECONDS
             )
+            _require_xls_output(xls_path, proc, mode_desc="modo peptido exacto")
+            result_frames.append(_parse_xls(xls_path, n_alleles))
+            shutil.copyfile(xls_path, output_dir / "netmhciipan_raw_peptide_mode.xls")
 
-        result = _parse_xls(xls_path, n_alleles)
-        shutil.copyfile(xls_path, persisted_xls)
+        if long_peptides:
+            fasta_path = tmp_dir / "fragments.fasta"
+            with fasta_path.open("w", encoding="utf-8") as fh:
+                for i, seq in enumerate(long_peptides):
+                    fh.write(f">candidato_{i}\n{seq}\n")
+            xls_path = tmp_dir / "protein_mode_output.xls"
+            proc = _run_netmhciipan(binary, ["-f", str(fasta_path)], allele_panel, xls_path, Settings.NETMHCIIPAN_TIMEOUT_SECONDS)
+            _require_xls_output(xls_path, proc, mode_desc="modo proteina (ventana deslizante)")
+            result_frames.append(_parse_xls(xls_path, n_alleles))
+            shutil.copyfile(xls_path, output_dir / "netmhciipan_raw_protein_mode.xls")
 
-    return result
+    if not result_frames:
+        return pd.DataFrame(columns=_OUTPUT_COLUMNS)
+    return pd.concat(result_frames, ignore_index=True)
 
 
-def print_th_report(report_df: pd.DataFrame, allele_panel: str = IEDB_DR_PANEL) -> None:
+def print_th_report(report_df: pd.DataFrame, allele_panel: str = IEDB_REFERENCE_PANEL) -> None:
     """Imprime el informe final de promiscuidad T-helper (MHC-II)."""
     if report_df.empty:
         print("No hay peptidos candidatos de la Fase 4 para evaluar contra el panel HLA-DR.")
