@@ -2,11 +2,12 @@
 
 Responsabilidad exclusiva: leer un FASTA tal como llega del usuario, separarlo
 en registros (cabecera, secuencia) y producir una version saneada -mayusculas,
-sin saltos de linea internos, sin caracteres no canonicos- que sea segura para
-enviar a BepiPred (Fase 2), a BLASTp (Fase 4) y a los motores de inmunogenicidad
-(Fase 5). El descarte de un registro individual por quedar vacio tras el
-saneamiento es recuperable (ver ``InvalidSequenceError``); un FASTA sin ningun
-'>' es un error fatal (ver ``FastaFormatError``).
+sin saltos de linea internos- que sea segura para enviar a BepiPred (Fase 2),
+a BLASTp (Fase 4) y a los motores de inmunogenicidad (Fase 5). El descarte de
+un registro individual genuinamente vacio es recuperable (ver
+``InvalidSequenceError``); un FASTA sin ningun '>', un registro con residuos
+no canonicos o dos registros con el mismo accession son errores fatales (ver
+``FastaFormatError``).
 """
 
 from dataclasses import dataclass
@@ -19,8 +20,9 @@ from src.utils.logger_config import setup_logger
 logger = setup_logger(__name__)
 
 # Alfabeto canonico de los 20 aminoacidos estandar. Cualquier otro caracter
-# (ambiguedades IUPAC como X/B/Z/J/U/O, gaps '-', stops '*', digitos, etc.)
-# se elimina en el saneamiento.
+# (ambiguedades IUPAC como X/B/Z/J/U/O, gaps '-', stops '*', digitos, etc.) se
+# rechaza en el saneamiento en vez de eliminarse o sustituirse (ver
+# `sanitize_sequence`).
 CANONICAL_AMINOACIDS = set("ACDEFGHIKLMNPQRSTVWY")
 
 
@@ -31,7 +33,6 @@ class FastaRecord:
     header: str
     accession: str
     sequence: str
-    removed_chars: int
 
 
 def parse_fasta(path: Path) -> List[Tuple[str, str]]:
@@ -82,22 +83,39 @@ def parse_fasta(path: Path) -> List[Tuple[str, str]]:
     return records
 
 
-def sanitize_sequence(raw_sequence: str) -> Tuple[str, int]:
-    """Normaliza una secuencia cruda: mayusculas + solo aminoacidos canonicos.
+def sanitize_sequence(raw_sequence: str) -> Tuple[str, List[str]]:
+    """Normaliza a mayusculas y detecta (sin corregir) residuos no canonicos.
+
+    Deliberadamente NO elimina ni sustituye los caracteres no canonicos
+    (ambiguedades IUPAC como X/B/Z/J, selenocisteina U, pirrolisina O, gaps
+    '-', stops '*', digitos, etc.): borrarlos desplaza la numeracion de
+    posicion y fusiona residuos que en la proteina real no son vecinos,
+    pudiendo fabricar un "epitopo" quimerico en la costura (confirmado
+    empiricamente con GPX1_HUMAN real, selenoproteina con 'U' en su secuencia
+    canonica de UniProt: la version anterior de este saneamiento borraba la
+    'U' y esa costura fabricada fue marcada como epitopo). Sustituirlos por
+    un marcador tampoco es viable: BepiPred-3.0 rechaza en bloque (exit code
+    1) cualquier caracter fuera de los 20 aminoacidos estandar, incluida 'X'
+    (confirmado empiricamente). La unica opcion robusta es rechazar el
+    registro por completo (ver :func:`load_and_sanitize`) y que sea el
+    investigador quien decida como resolver ese residuo antes de correr el
+    pipeline.
 
     Args:
         raw_sequence: Secuencia de aminoacidos sin procesar.
 
     Returns:
-        Tupla ``(secuencia_limpia, n_caracteres_eliminados)``.
+        Tupla ``(secuencia_en_mayusculas, caracteres_no_canonicos_encontrados)``,
+        con la lista de caracteres invalidos en orden de aparicion (vacia si
+        la secuencia es 100% canonica).
     """
     upper = raw_sequence.upper()
-    clean = "".join(c for c in upper if c in CANONICAL_AMINOACIDS)
-    return clean, len(upper) - len(clean)
+    invalid_chars = [c for c in upper if c not in CANONICAL_AMINOACIDS]
+    return upper, invalid_chars
 
 
 def load_and_sanitize(path: Path) -> List[FastaRecord]:
-    """Lee y sanea un FASTA completo, descartando registros que queden vacios.
+    """Lee y sanea un FASTA completo, descartando registros vacios y rechazando residuos no canonicos.
 
     Args:
         path: Ruta al archivo FASTA de entrada (dentro de ``fasta_inputs/``).
@@ -106,31 +124,59 @@ def load_and_sanitize(path: Path) -> List[FastaRecord]:
         Lista de :class:`FastaRecord` saneados.
 
     Raises:
-        FastaFormatError: Si el archivo no tiene sintaxis FASTA valida (fatal).
-        InvalidSequenceError: Si NINGUN registro sobrevive el saneamiento
-            (fatal a nivel de archivo). El descarte de registros individuales
-            solo se loggea como warning y no detiene el resto del lote.
+        FastaFormatError: Si el archivo no tiene sintaxis FASTA valida (fatal);
+            si algun registro contiene residuos no canonicos (fatal: ver
+            :func:`sanitize_sequence` para por que no se eliminan ni se
+            sustituyen automaticamente); o si dos o mas registros comparten
+            el mismo accession (primer token de la cabecera). Este ultimo
+            caso es fatal por diseno: las Fases 3 y 4 agrupan todo por
+            accession (``groupby``) asumiendo que identifica una unica
+            secuencia fisica; si dos proteinas distintas comparten accession,
+            esa agrupacion las fusiona en una cadena unica y una ventana de
+            epitopo puede caer exactamente sobre la costura entre ambas,
+            fabricando un peptido quimerico que no existe en ninguna de las
+            dos proteinas reales (confirmado empiricamente). Se detecta y se
+            detiene aqui, antes de que el resto del pipeline corra.
+        InvalidSequenceError: Si NINGUN registro tiene secuencia (fatal a
+            nivel de archivo). El descarte de registros individuales
+            genuinamente vacios solo se loggea como warning y no detiene el
+            resto del lote.
     """
     raw_records = parse_fasta(path)
     sane_records: List[FastaRecord] = []
 
     for header, raw_seq in raw_records:
-        clean_seq, removed = sanitize_sequence(raw_seq)
-        if not clean_seq:
-            logger.warning(
-                "Registro '%s' descartado: no quedaron residuos canonicos tras el saneamiento.",
-                header,
-            )
+        if not raw_seq:
+            logger.warning("Registro '%s' descartado: no tiene ninguna secuencia asociada.", header)
             continue
 
+        upper_seq, invalid_chars = sanitize_sequence(raw_seq)
+        if invalid_chars:
+            raise FastaFormatError(
+                f"Registro '{header}' en '{path.name}' contiene {len(invalid_chars)} residuo(s) no "
+                f"canonico(s) ({sorted(set(invalid_chars))}): BepiPred-3.0 rechaza en bloque cualquier "
+                "caracter fuera de los 20 aminoacidos estandar (ambiguedades IUPAC X/B/Z/J, "
+                "selenocisteina U, pirrolisina O, gaps '-', stops '*', digitos, etc. no estan "
+                "soportados). Sustituye manualmente ese residuo por su mejor aproximacion canonica "
+                "(o elimina el registro) en el FASTA de entrada y vuelve a intentarlo."
+            )
+
         accession = header.split()[0] if header else "UNKNOWN"
-        sane_records.append(
-            FastaRecord(header=header, accession=accession, sequence=clean_seq, removed_chars=removed)
-        )
+        sane_records.append(FastaRecord(header=header, accession=accession, sequence=upper_seq))
 
     if not sane_records:
-        raise InvalidSequenceError(
-            f"Ninguna secuencia valida en '{path.name}' tras eliminar caracteres no canonicos."
+        raise InvalidSequenceError(f"'{path.name}' no contiene ningun registro con secuencia.")
+
+    accession_counts: dict = {}
+    for record in sane_records:
+        accession_counts[record.accession] = accession_counts.get(record.accession, 0) + 1
+    duplicates = sorted(acc for acc, count in accession_counts.items() if count > 1)
+    if duplicates:
+        raise FastaFormatError(
+            f"'{path.name}' contiene registros con accession duplicado: {duplicates}. "
+            "Cada accession debe identificar una unica secuencia fisica (las Fases 3/4 agrupan "
+            "por accession); renombra las cabeceras duplicadas en el FASTA de entrada y vuelve a "
+            "intentarlo."
         )
 
     return sane_records

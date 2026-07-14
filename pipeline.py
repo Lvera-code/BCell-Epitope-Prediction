@@ -125,14 +125,9 @@ def fase_1_saneamiento(input_path: Path, output_dir: Path) -> Tuple[List[FastaRe
 
     records = load_and_sanitize(input_path)
     for record in records:
-        estado = (
-            "OK"
-            if record.removed_chars == 0
-            else f"OK (se eliminaron {record.removed_chars} caracter(es) no canonico(s))"
-        )
         print(
             f"Archivo: {input_path.name} | Registro: {record.accession} | "
-            f"Validacion: {estado} | Longitud final: {len(record.sequence)} aa"
+            f"Validacion: OK | Longitud: {len(record.sequence)} aa"
         )
 
     clean_path = output_dir / f"{input_path.stem}_clean.fasta"
