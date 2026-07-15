@@ -4,19 +4,20 @@ Orquestador de terminal (`pipeline.py`) que procesa una secuencia de proteína
 (FASTA) a través de 5 fases estrictas hasta producir una lista de péptidos
 candidatos a vacuna, validados por antigenicidad (unión anotada de dos
 motores independientes), ausencia de homología con el proteoma humano
-(autoinmunidad) e inmunogenicidad T-helper (presentación MHC-II /
-HLA-DR/DQ/DP, célula CD4+). La predicción MHC-I (CD8+, vía MHCflurry o
-NetMHCpan) fue descartada metodológicamente: ver
-`src/engines/netmhciipan_engine.py`.
+(riesgo de autoinmunidad) e inmunogenicidad T-helper (presentación MHC-II /
+HLA-DR/DQ/DP, célula CD4+). Todas las fases corren **100% en local**
+(subprocess sobre binarios/paquetes instalados en tu máquina): el pipeline
+nunca hace una llamada de red durante la inferencia. Predice exclusivamente
+presentación T-helper (MHC-II/CD4+); no incluye predicción MHC-I/CD8+.
 
 ## Flujo de trabajo (5 fases)
 
-1. **Saneamiento FASTA** — valida y limpia la secuencia de entrada.
-2. **Antigenicidad** — dos motores independientes ejecutados **100% en
-   local**, cada uno con su propio auto-caché en CSV: BepiPred-3.0
-   (subprocess sobre el código fuente oficial de DTU Health Tech) y EpiDope
-   (subprocess directo sobre el binario del entorno conda dedicado, código
-   abierto, sin licencia académica).
+1. **Saneamiento FASTA** — valida y limpia la(s) secuencia(s) de entrada
+   (`fasta_inputs/`, admite FASTA multi-registro con varias proteínas).
+2. **Antigenicidad** — dos motores independientes ejecutados en local, cada
+   uno con su propio auto-caché en CSV: BepiPred-3.0 (subprocess sobre el
+   código fuente oficial de DTU Health Tech) y EpiDope (subprocess sobre el
+   binario del entorno conda dedicado, código abierto).
 3. **Mapeo de epítopos y unión lógica anotada** — para cada motor, una
    ventana deslizante local (9 aa, tolerante a hasta 2 residuos por debajo
    del umbral por ventana, con fusión de ventanas solapadas/adyacentes)
@@ -31,17 +32,42 @@ NetMHCpan) fue descartada metodológicamente: ver
 4. **Filtro de tolerancia** — BLASTp local contra el proteoma humano, con
    E-value seleccionado dinámicamente por longitud del péptido (laxo para
    péptidos cortos, estricto para dominios/proteínas completas), descarta
-   péptidos con alta homología (riesgo de autoinmunidad).
-5. **Promiscuidad T-helper (MHC-II)** — NetMHCIIpan-4.3 ejecutado **100% en
-   local** (subprocess) contra un panel de 27 alelos HLA-DR/DQ/DP de
-   referencia del IEDB (`IEDB_REFERENCE_PANEL`). Cada péptido se enruta
-   según su longitud: `<= 40 aa` en modo péptido exacto (una fila de salida
-   por péptido); `> 40 aa` en modo proteína (NetMHCIIpan desliza
-   internamente una ventana y evalúa todos los núcleos de unión candidatos
-   dentro del fragmento — el modo péptido exacto revienta con un *buffer
-   overflow* del binario para entradas > 56 aa). Un péptido/núcleo se
-   aprueba solo si clasifica como aglutinador fuerte o débil (SB/WB, %Rank
-   por defecto de NetMHCIIpan) en al menos 3 alelos distintos del panel.
+   péptidos con alta homología (`status = 'Autoinmunidad'`, umbral
+   `BLAST_IDENTITY_THRESHOLD`, 75% por defecto).
+5. **Promiscuidad T-helper (MHC-II)** — NetMHCIIpan-4.3 ejecutado en local
+   contra un panel de 27 alelos HLA-DR/DQ/DP de referencia del IEDB
+   (`IEDB_REFERENCE_PANEL`). Cada péptido se enruta según su longitud:
+   `<= 40 aa` en modo péptido exacto (una fila de salida por péptido);
+   `> 40 aa` en modo proteína (NetMHCIIpan desliza internamente una ventana
+   de 15 aa y evalúa todos los núcleos de unión candidatos dentro del
+   fragmento — el modo péptido exacto revienta con un *buffer overflow* del
+   binario para entradas > 55 aa con el panel de 27 alelos que usa este
+   pipeline, de ahí el margen de seguridad de 40).
+
+   **Fiabilidad para síntesis/validación experimental.** NetMHCIIpan marca
+   un alelo como `Inverted=1` cuando su procedimiento de alineación del
+   núcleo de unión ajusta mejor leyendo el péptido en reversa que en su
+   sentido real — no hay evidencia estructural de que MHC-II presente
+   péptidos "al revés"; se trata como un artefacto/limitación del
+   alineador, de menor confianza que un ajuste en orientación normal. Este
+   pipeline **descarta por completo** los alelos invertidos antes de
+   calcular nada: no cuentan para la promiscuidad ni pueden ser el alelo
+   "ganador" que determina el núcleo de 9 aa reportado. Un péptido se
+   aprueba (`'Candidato Valido'`) solo si clasifica como aglutinador fuerte
+   o débil (SB/WB, umbrales de %Rank por defecto de NetMHCIIpan) en al
+   menos `NETMHCIIPAN_MIN_PROMISCUOUS_ALLELES` (3 por defecto) alelos
+   **en orientación normal** del panel.
+
+   **Deduplicación de ventanas del modo proteína.** Al deslizar la ventana
+   de 15 aa un residuo a la vez, un mismo núcleo de 9 aa suele "ganar" en
+   varias ventanas consecutivas — no son epítopos distintos, son la misma
+   predicción vista desde offsets vecinos. Las ventanas se agrupan por
+   `(accession, núcleo de 9 aa, promiscuidad)` **exactos**: dentro de cada
+   grupo con más de una fila se conserva únicamente la de mejor (menor)
+   %Rank. Si el núcleo difiere aunque sea en 1 aminoácido, o si la
+   promiscuidad difiere (con el mismo núcleo), las filas **no** se
+   fusionan: son predicciones distintas y ambas se reportan, para no perder
+   ninguna variante con soporte de unión real.
 
 Todos los resultados intermedios y el reporte final se guardan en
 `fasta_outputs/`.
@@ -58,11 +84,8 @@ pip install -r requirements.txt
 
 ### 2. BepiPred-3.0 local (obligatorio para la Fase 2)
 
-> ⚠️ **Se abandonó la estrategia vía API/nube (BioLib)** por la latencia
-> impredecible de los cold-start de los contenedores ESM-2 bajo carga
-> pública (peticiones que no llegaban a completar ni tras ~1h de espera). La
-> Fase 2 ahora ejecuta BepiPred-3.0 **enteramente en tu máquina** vía
-> `subprocess`, sin ninguna llamada de red.
+La Fase 2 ejecuta BepiPred-3.0 enteramente en tu máquina vía `subprocess`,
+sin ninguna llamada de red.
 
 **a) Descarga manual obligatoria.** Por restricciones de licencia académica,
 DTU Health Tech no permite redistribuir el código fuente de BepiPred-3.0: no
@@ -74,7 +97,7 @@ mismo desde:
 **b) Colócalo en la raíz del proyecto** de forma que quede así:
 
 ```
-DiffSBDD/
+<raiz-del-proyecto>/
 └── bepipred-3.0b.src/
     └── BepiPred3_src/
         ├── bepipred3_CLI.py
@@ -97,7 +120,7 @@ pip install -r bepipred-3.0b.src/BepiPred3_src/requirements.txt
 deactivate
 ```
 
-> ⚠️ **Nota (confirmado en Python 3.10+):** los pines exactos del
+> **Nota (confirmado en Python 3.10+):** los pines exactos del
 > `requirements.txt` de BepiPred (de 2022) no tienen wheels precompiladas
 > para Python 3.10+ y fallan al compilar `numpy==1.20.2` desde código fuente
 > (`Broken toolchain: cannot link a simple C program`) si no tienes un
@@ -132,7 +155,7 @@ antiguo y muy sensible a versiones exactas (Python 3.6, TensorFlow 1.13,
 Keras 2.3, PyTorch 0.4, AllenNLP 0.7.2 para embeddings ELMo) incompatible con
 el resto del pipeline: requiere un entorno conda dedicado, mismo patrón que
 `.venv-bepipred`. Los pesos del modelo y los embeddings ELMo vienen
-empaquetados en el propio repo — la inferencia es **100% local**, sin
+empaquetados en el propio repo de EpiDope — la inferencia es 100% local, sin
 ninguna llamada de red ni API externa.
 
 **a) Crea el entorno conda dedicado** a partir del `epidope.yml` oficial del
@@ -165,7 +188,7 @@ indicando exactamente estos comandos, en vez de fallar con una traza opaca.
 
 ### 4. NCBI BLAST+ y base de datos del proteoma humano (obligatorio para la Fase 4)
 
-La Fase 4 corre **BLASTp en local**, nunca en la nube. Necesitas:
+La Fase 4 corre BLASTp en local, nunca en la nube. Necesitas:
 
 **a) Instalar el binario `blastp` / `makeblastdb`** (paquete NCBI BLAST+):
 
@@ -213,9 +236,6 @@ blastp` con E-value 0.1; `> 100 aa` usa `-task blastp` con E-value 0.05
 Configurable vía `BLAST_SHORT_PEPTIDE_MAX_LEN`, `BLAST_MEDIUM_PEPTIDE_MAX_LEN`
 y `BLAST_EVALUE_SHORT` / `BLAST_EVALUE_MEDIUM` / `BLAST_EVALUE_LONG`.
 
-Sin este paso, la Fase 4 se detiene con un error explicando exactamente qué
-falta (`blastp` en el PATH o la base de datos en `reference_db/`).
-
 ### 5. NetMHCIIpan-4.3 local (obligatorio para la Fase 5)
 
 Binario propietario de DTU Health Tech (predicción MHC-II / HLA-DR),
@@ -230,13 +250,13 @@ separado: el paquete `.tar.gz` que entrega DTU ya incluye la carpeta
 **b) Instalación.**
 ```bash
 tar -xvf netMHCIIpan-4.3.Linux.tar.gz
-mv netMHCIIpan-4.3 /ruta/al/proyecto/DiffSBDD/netMHCIIpan-4.3
+mv netMHCIIpan-4.3 /ruta/al/proyecto/netMHCIIpan-4.3
 ```
 Edita la línea `NMHOME` al inicio del script `netMHCIIpan-4.3/netMHCIIpan`
 con la ruta absoluta de instalación (paso manual obligatorio según el propio
 instructivo de DTU, no se puede resolver por variable de entorno):
 ```tcsh
-setenv NMHOME /ruta/absoluta/a/DiffSBDD/netMHCIIpan-4.3
+setenv NMHOME /ruta/absoluta/al/proyecto/netMHCIIpan-4.3
 ```
 
 **c) Dependencia de sistema.** El script `netMHCIIpan` es un wrapper en
@@ -247,19 +267,20 @@ tcsh` en Debian/Ubuntu).
 `IEDB_REFERENCE_PANEL` (27 alelos HLA-DR/DRB3/DRB4/DRB5/DQ/DP más
 representativos de referencia poblacional del IEDB, ver
 `src/engines/netmhciipan_engine.py`) para estimar cobertura poblacional
-amplia. Un péptido se aprueba (`'Candidato Valido'`) solo si clasifica SB o
-WB en al menos `NETMHCIIPAN_MIN_PROMISCUOUS_ALLELES` (3 por defecto) alelos
-distintos del panel.
+amplia.
 
 ## Uso
 
 ```bash
-# Coloca tu(s) FASTA en fasta_inputs/, luego:
+# Coloca tu(s) FASTA en fasta_inputs/ (admite multi-registro), luego:
 python pipeline.py --input fasta_inputs/secuencia.fasta
 
 # El panel de 27 alelos HLA-DR/DQ/DP (IEDB_REFERENCE_PANEL) se evalúa siempre
-# por defecto, sin necesidad de especificar nada. Para anexar un alelo extra:
-python pipeline.py --input fasta_inputs/secuencia.fasta --alelo-extra "DRB1_1602"
+# por defecto, sin necesidad de especificar nada. Para anexar alelo(s) extra
+# (formato NetMHCIIpan, separados por coma SIN espacios; se valida el formato
+# de inmediato, antes de correr cualquier fase):
+python pipeline.py --input fasta_inputs/secuencia.fasta \
+    --alelo-extra "DRB1_1602,HLA-DQA10501-DQB10201"
 
 # Los umbrales/longitud mínima de la Fase 3 son independientes por motor
 # (las escalas de score de BepiPred y EpiDope no son comparables):
@@ -268,7 +289,21 @@ python pipeline.py --input fasta_inputs/secuencia.fasta \
     --epidope-threshold 0.818 --epidope-min-length 9
 ```
 
-Resultados en `fasta_outputs/`:
+Corre `python pipeline.py --help` para ver todos los flags disponibles
+(umbral/E-value de BLAST, carpeta de salida, etc.), todos con su valor por
+defecto documentado.
+
+### Salida en consola
+
+Las tablas de la Fase 5 resaltan en color el núcleo de unión de 9 aa dentro
+de la ventana de 15 aa evaluada (solo en terminal, no afecta el CSV). Cuando
+el FASTA de entrada tiene varias proteínas (varios `accession`), la tabla
+final se ordena por proteína/posición y separa cada una con una línea
+divisoria, para no leerlas como una lista continua.
+
+### Archivos generados en `fasta_outputs/`
+
+`<nombre>` es el nombre del FASTA de entrada sin extensión (`--input`).
 
 | Archivo | Fase | Contenido |
 |---|---|---|
@@ -277,8 +312,40 @@ Resultados en `fasta_outputs/`:
 | `<nombre>_epidope_raw.csv` | 2 | Scores crudos por residuo de EpiDope (caché) |
 | `<nombre>_bepipred_epitopes.csv` | 3 | Regiones de epítopo mapeadas localmente (BepiPred-3.0) |
 | `<nombre>_epidope_epitopes.csv` | 3 | Regiones de epítopo mapeadas localmente (EpiDope) |
-| `<nombre>_union_epitopes.csv` | 3 | Unión anotada BepiPred ∪ EpiDope (columna `origen`: `Consenso`/`BepiPred`/`EpiDope`), entrada de la Fase 4 |
-| `<nombre>_blast_report.csv` | 4 | Veredicto de tolerancia (Segura / Autoinmunidad) |
-| `netmhciipan_raw_peptide_mode.xls` | 5 | Salida cruda de NetMHCIIpan-4.3 en modo péptido exacto (multi-alelo), para trazabilidad |
-| `netmhciipan_raw_protein_mode.xls` | 5 | Salida cruda de NetMHCIIpan-4.3 en modo proteína/ventana deslizante (péptidos > 40 aa), para trazabilidad |
-| `candidatos_finales.csv` | 5 | **Reporte final** de candidatos con promiscuidad HLA-DR/DQ/DP y veredicto |
+| `<nombre>_union_epitopes.csv` | 3 | Unión anotada BepiPred ∪ EpiDope (columna `origen`), entrada de la Fase 4 |
+| `<nombre>_blast_report.csv` | 4 | Veredicto de tolerancia (Segura / Autoinmunidad) por región |
+| `netmhciipan_raw_peptide_mode.xls` | 5 | Salida cruda de NetMHCIIpan-4.3, modo péptido exacto (`<= 40` aa), para trazabilidad. Solo se genera si hubo al menos un péptido en ese rango |
+| `netmhciipan_raw_protein_mode.xls` | 5 | Salida cruda de NetMHCIIpan-4.3, modo proteína/ventana deslizante (`> 40` aa), para trazabilidad. Solo se genera si hubo al menos un fragmento en ese rango |
+| `candidatos_finales.csv` | 5 | **Reporte final** (ver formato abajo) |
+
+### Formato de `candidatos_finales.csv`
+
+Es la salida de la Fase 5 después del cruce con la Fase 3/4 (traceback) y la
+deduplicación de ventanas redundantes: solo contiene candidatos con
+`veredicto == 'Candidato Valido'`, ya enriquecidos con su región de origen.
+
+| Columna | Significado |
+|---|---|
+| `accession` | Identificador de la proteína de origen (primer token de la cabecera FASTA) |
+| `sequence_f5` | Péptido/ventana evaluado por NetMHCIIpan (péptido completo en modo exacto, o la ventana de 15 aa ganadora en modo proteína) |
+| `core_9aa` | Núcleo de unión de 9 aa del alelo con mejor %Rank **en orientación normal** (los alelos invertidos nunca determinan este valor) |
+| `start` / `end` | Coordenadas absolutas en la proteína de origen (1-indexado), recalculadas por traceback contra la región de la Fase 3/4 |
+| `origen` | De dónde viene la región de la Fase 3: `'Consenso'` (BepiPred + EpiDope), `'BepiPred'` o `'EpiDope'` |
+| `n_alelos_promiscuos` | Cuántos alelos del panel (de 27, o más si usaste `--alelo-extra`) clasifican el péptido como SB/WB **en orientación normal** — este número decide el veredicto |
+| `n_alelos_evaluados` | Tamaño total del panel evaluado |
+| `min_rank_el` | Mejor (menor) %Rank entre los alelos en orientación normal |
+| `bepipred_score` / `epidope_score` | Score medio de antigenicidad de la Fase 3 de cada motor (`NaN` si ese motor no detectó esa región) |
+
+## Tests
+
+La suite de tests (`tests/`, `pytest`) cubre la lógica pura de cada fase —
+fusión de regiones en Fase 3, selección de task/E-value en Fase 4, parseo
+del `.xls` de NetMHCIIpan y exclusión de alelos invertidos, traceback de
+coordenadas, deduplicación de ventanas y validación de `--alelo-extra` en
+Fase 5 — sin depender de BepiPred, EpiDope, BLAST+ ni NetMHCIIpan
+instalados: no invoca ningún subprocess real.
+
+```bash
+pip install -r requirements-dev.txt
+pytest
+```

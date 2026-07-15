@@ -45,6 +45,7 @@ import pandas as pd
 from src.config.settings import Settings
 from src.utils.exceptions import BlastExecutionError
 from src.utils.logger_config import setup_logger
+from src.utils.table_format import Column, print_fixed_width_table
 
 logger = setup_logger(__name__)
 
@@ -259,17 +260,14 @@ def print_blast_report(blast_df: pd.DataFrame) -> None:
         return
 
     seq_width = max(30, blast_df["sequence"].str.len().max() + 2)
-    header = (
-        f"{'Secuencia':<{seq_width}}{'Tarea BLAST':<14}{'E-value':>10}"
-        f"{'Identidad max (%)':>18}{'Veredicto':>16}"
-    )
-    print(header)
-    print("-" * len(header))
-    for row in blast_df.itertuples(index=False):
-        print(
-            f"{row.sequence:<{seq_width}}{row.blast_task:<14}{row.blast_evalue:>10.3g}"
-            f"{row.max_pident:>18.2f}{row.status:>16}"
-        )
+    columns = [
+        Column("Secuencia", lambda r: r.sequence, seq_width, "<"),
+        Column("Tarea BLAST", lambda r: r.blast_task, 14, "<"),
+        Column("E-value", lambda r: f"{r.blast_evalue:.3g}", 10, ">"),
+        Column("Identidad max (%)", lambda r: f"{r.max_pident:.2f}", 18, ">"),
+        Column("Veredicto", lambda r: r.status, 16, ">"),
+    ]
+    print_fixed_width_table(blast_df.itertuples(index=False), columns)
 
     n_safe = int((blast_df["status"] == "Segura").sum())
     n_rejected = int((blast_df["status"] == "Autoinmunidad").sum())

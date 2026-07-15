@@ -2,6 +2,7 @@
 logs/
 __pycache__/
 *.pyc
+.pytest_cache/
 
 # Herramienta BepiPred-3.0 (Fase 2, ejecucion local): paquete de codigo fuente
 # con licencia academica de DTU Health Tech, descarga manual obligatoria (ver

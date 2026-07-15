@@ -1,0 +1,7 @@
+# Dependencias SOLO para desarrollo/tests (no necesarias para correr pipeline.py).
+# Instalar ademas de requirements.txt: pip install -r requirements-dev.txt
+#
+# La suite de tests (tests/) cubre unicamente logica pura (parseo, fusion de
+# regiones, calculo de umbrales, validacion de argumentos): no requiere
+# BepiPred-3.0, EpiDope, BLAST+ ni NetMHCIIpan instalados.
+pytest>=8.0

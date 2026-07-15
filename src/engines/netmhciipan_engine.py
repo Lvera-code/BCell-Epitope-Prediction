@@ -21,21 +21,43 @@ pasado tal cual al flag ``-a`` de NetMHCIIpan. Un peptido se reporta como
 ``'Candidato Valido'`` (T-helper promiscuo) solo si clasifica como
 aglutinador fuerte (SB) o debil (WB), segun los umbrales de %Rank POR
 DEFECTO del propio NetMHCIIpan-4.3, en al menos
-``Settings.NETMHCIIPAN_MIN_PROMISCUOUS_ALLELES`` alelos distintos del panel.
+``Settings.NETMHCIIPAN_MIN_PROMISCUOUS_ALLELES`` alelos distintos del panel
+CON REGISTRO DE UNION EN ORIENTACION NORMAL.
+
+Fiabilidad para sintesis/validacion experimental - alelos invertidos se
+DESCARTAN por completo, no solo del veredicto (ADR 2026-07-15, revisada
+2026-07-15): NetMHCIIpan marca ``Inverted=1`` en un alelo cuando su
+procedimiento de alineacion del core (entrenado por Gibbs sampling sobre
+datos de eluido por espectrometria de masas) ajusta mejor leyendo el
+peptido en reversa que en su sentido N->C real. No hay evidencia
+estructural de que MHC-II presente peptidos "al reves"; se trata como un
+artefacto/limitacion del alineador, de menor confianza que un ajuste en
+orientacion normal. Como este pipeline alimenta sintesis y validacion
+experimental (costosa e irreversible una vez lanzada), un alelo invertido
+se trata como si NO existiera para efectos de reporte: no cuenta para la
+promiscuidad, y tampoco puede ser el alelo "ganador" que determina
+``core_9aa``/``min_rank_el`` (se excluye de ese calculo desde el origen,
+no se calcula-y-descarta despues). Asi, todo numero que llega a la tabla
+final (consola y CSV) es, por construccion, de un alelo en orientacion
+normal; no hace falta exponer un desglose normal/invertido en la salida
+porque el invertido nunca entra a la cuenta.
 """
 
 import os
+import re
 import shutil
 import subprocess
 import tempfile
 from pathlib import Path
 from typing import List
 
+import numpy as np
 import pandas as pd
 
 from src.config.settings import Settings
 from src.utils.exceptions import ImmunogenicityExecutionError
 from src.utils.logger_config import setup_logger
+from src.utils.table_format import Column, print_fixed_width_table
 
 logger = setup_logger(__name__)
 
@@ -53,6 +75,61 @@ IEDB_REFERENCE_PANEL = (
     "HLA-DPA10301-DPB10402,HLA-DPA10201-DPB10501,HLA-DPA10201-DPB11401"
 )
 
+# Formato de alelo aceptado por el flag '-a' de NetMHCIIpan-4.3 para
+# HLA-DR/DQ/DP humano (los 3 patrones que efectivamente aparecen en
+# IEDB_REFERENCE_PANEL, verificado: los 27 alelos del panel matchean este
+# regex sin excepcion):
+#   * DRB1/3/4/5: 'DRB[1345]_' + 4 digitos, ej. 'DRB1_0101'.
+#   * DQ:  'HLA-DQA1' + 4 digitos + '-DQB1' + 4 digitos, ej. 'HLA-DQA10501-DQB10201'.
+#   * DP:  'HLA-DPA1' + 4 digitos + '-DPB1' + 4 digitos, ej. 'HLA-DPA10201-DPB10101'.
+_ALLELE_PATTERN = re.compile(r"(DRB[1345]_\d{4}|HLA-DQA1\d{4}-DQB1\d{4}|HLA-DPA1\d{4}-DPB1\d{4})")
+
+
+def validate_allele_extra(value: str) -> str:
+    """Valida el formato de un string de alelos HLA-DR/DQ/DP adicionales (``--alelo-extra``).
+
+    Pensado para usarse como validacion TEMPRANA (p. ej. como ``type=`` de
+    ``argparse`` en ``pipeline.py``), antes de correr ninguna fase del
+    pipeline: sin esto, un alelo mal escrito recien se detecta al final de
+    la Fase 5 (al parsear el ``.xls`` de NetMHCIIpan, ver ``_parse_xls``),
+    despues de haber corrido BepiPred/EpiDope/BLASTp para nada.
+
+    Args:
+        value: String de alelos separados por coma SIN espacios (formato
+            NetMHCIIpan), ej. ``"DRB1_1602"`` o
+            ``"DRB1_1602,HLA-DQA10501-DQB10201"``.
+
+    Returns:
+        ``value`` sin modificar, si es valido (permite usarlo directo como
+        ``type=`` de ``argparse.add_argument``).
+
+    Raises:
+        ValueError: Si ``value`` esta vacio, tiene espacios, tiene tokens
+            vacios (comas dobles o al inicio/final), o algun alelo no seria
+            aceptado por NetMHCIIpan-4.3 (ver ``_ALLELE_PATTERN``). El
+            mensaje incluye el/los token(s) invalidos y el formato esperado.
+    """
+    if not value or not value.strip():
+        raise ValueError("--alelo-extra no puede ser una cadena vacia.")
+    if " " in value:
+        raise ValueError(
+            f"--alelo-extra ('{value}') no puede contener espacios: NetMHCIIpan pasa el "
+            "string tal cual a su flag '-a' y un espacio rompe el parseo del alelo "
+            "siguiente. Separa los alelos solo con comas, ej. 'DRB1_1602,DRB1_1301'."
+        )
+
+    tokens = value.split(",")
+    invalid = [t for t in tokens if not _ALLELE_PATTERN.fullmatch(t)]
+    if invalid:
+        raise ValueError(
+            f"--alelo-extra contiene {len(invalid)} alelo(s) con formato invalido: "
+            f"{invalid}. Formatos aceptados por NetMHCIIpan-4.3 (HLA-DR/DQ/DP humano): "
+            "'DRB1_0101' / 'DRB3_0101' / 'DRB4_0101' / 'DRB5_0101' (4 digitos tras el "
+            "guion bajo), 'HLA-DQA10501-DQB10201' o 'HLA-DPA10201-DPB10101' (4 digitos "
+            "en cada bloque). Ejemplo completo valido: 'DRB1_1602,HLA-DQA10501-DQB10201'."
+        )
+    return value
+
 # Footprint minimo del core de union a MHC-II: NetMHCIIpan descarta (o
 # calcula sobre un core mas corto que el peptido, degradando la prediccion)
 # peptidos mas cortos que esto.
@@ -60,9 +137,14 @@ _MIN_PEPTIDE_LENGTH = 9
 
 # Longitud maxima segura para el modo peptido exacto ('-p', -inptype 1). El
 # binario NetMHCIIpan-4.3 (Linux_x86_64) revienta con "*** buffer overflow
-# detected ***" (SIGABRT, core dump) en ese modo para entradas mayores a 56
-# aminoacidos -confirmado empiricamente: 56 aa OK, 57 aa crash, reproducible
-# con contenido aleatorio, no depende de la secuencia concreta-. El wrapper
+# detected ***" (SIGABRT, core dump) en ese modo para entradas demasiado
+# largas -confirmado empiricamente contra el panel real de 27 alelos de
+# IEDB_REFERENCE_PANEL: 55 aa OK, 56 aa crash, reproducible con contenido
+# aleatorio, no depende de la secuencia concreta-. El umbral exacto de
+# crash puede variar segun el panel de alelos evaluado (el tamano de ``-a``
+# influye en el buffer interno del binario), asi que este numero es valido
+# especificamente para el panel de 27 alelos que usa este pipeline; si se
+# cambia el panel de referencia, conviene re-verificarlo. El wrapper
 # 'netMHCIIpan' (tcsh) NO propaga ese crash como exit code distinto de cero
 # (ver ``_require_xls_output``), asi que sin este enrutamiento el pipeline
 # fallaria con un error generico e indescifrable. Peptidos mas largos que
@@ -70,11 +152,21 @@ _MIN_PEPTIDE_LENGTH = 9
 # internamente una ventana (``-length``, 15 aa por defecto) y evalua todos
 # los nucleos de union candidatos dentro del fragmento -el uso correcto de
 # la herramienta para fragmentos largos, en vez de tratarlos como un unico
-# peptido exacto-. Se deja un margen de seguridad considerable (40, no 56)
+# peptido exacto-. Se deja un margen de seguridad considerable (40, no 55)
 # por si el limite real del binario varia entre builds o paneles de alelos.
 _MAX_PEPTIDE_MODE_LENGTH = 40
 
-_OUTPUT_COLUMNS = ["sequence", "n_alelos_evaluados", "n_alelos_promiscuos", "min_rank_el", "veredicto"]
+_OUTPUT_COLUMNS = [
+    "sequence", "core_9aa", "n_alelos_evaluados", "n_alelos_promiscuos", "min_rank_el", "veredicto",
+]
+
+# Columnas del reporte final enriquecido (Fase 5 + traceback a Fase 3/4),
+# ver ``build_traceback_report``.
+_TRACEBACK_COLUMNS = [
+    "accession", "sequence_f5", "core_9aa", "start", "end", "origen",
+    "n_alelos_promiscuos", "n_alelos_evaluados", "min_rank_el",
+    "bepipred_score", "epidope_score",
+]
 
 
 def _resolve_binary() -> Path:
@@ -113,24 +205,46 @@ def _parse_xls(xls_path: Path, n_alleles: int) -> pd.DataFrame:
     cabecera: una linea de comentario ('#...'), una fila con el nombre de
     cada alelo (una celda por bloque de 4 columnas: Core/Inverted/Score_EL/
     Rank_EL) y la fila real de nombres de columna. ``pandas`` desambigua
-    automaticamente las columnas 'Rank_EL' repetidas como 'Rank_EL',
-    'Rank_EL.1', 'Rank_EL.2', ... (una por alelo, en el mismo orden del
-    panel pasado a '-a').
+    automaticamente 'Rank_EL', 'Core' e 'Inverted' repetidas como 'Rank_EL',
+    'Rank_EL.1', ... / 'Core', 'Core.1', ... / 'Inverted', 'Inverted.1', ...
+    (una por alelo, en el mismo orden del panel pasado a '-a'); como los tres
+    nombres provienen del mismo bloque de 4 columnas por alelo,
+    ``rank_cols[i]``, ``core_cols[i]`` e ``inverted_cols[i]`` siempre
+    corresponden al mismo alelo.
+
+    Alelos invertidos: se descartan por completo antes de cualquier calculo,
+    no solo del veredicto (ver docstring del modulo, seccion "Fiabilidad
+    para sintesis/validacion experimental"). Concretamente, un alelo cuyo
+    ``Inverted == 1`` se excluye tanto de la busqueda del alelo "ganador"
+    (el de menor %Rank, que determina ``core_9aa``/``min_rank_el``) como del
+    conteo de ``n_alelos_promiscuos``: es como si ese alelo no hubiera sido
+    evaluado. Esto garantiza que ``core_9aa`` SIEMPRE es una subcadena
+    literal del peptido de entrada (nunca hace falta revertirlo) y que todo
+    numero devuelto proviene de un registro de union en orientacion normal.
+    Si TODOS los alelos de una fila estan invertidos, no queda ningun alelo
+    normal candidato: ``min_rank_el`` queda en ``inf`` y
+    ``n_alelos_promiscuos`` en 0, por lo que la fila sale ``'Rechazado'`` de
+    forma natural (nunca se inventa un core a partir de un alelo invertido).
 
     Args:
         xls_path: Ruta al .xls crudo generado por NetMHCIIpan.
         n_alleles: Numero de alelos evaluados (debe coincidir con el numero
-            de columnas 'Rank_EL*' encontradas, si no el .xls esta corrupto
-            o el panel no se aplico como se esperaba).
+            de columnas 'Rank_EL*'/'Core*'/'Inverted*' encontradas, si no el
+            .xls esta corrupto o el panel no se aplico como se esperaba).
 
     Returns:
-        DataFrame con columnas ``sequence``, ``n_alelos_evaluados``,
-        ``n_alelos_promiscuos``, ``min_rank_el`` y ``veredicto``
-        (``'Candidato Valido'`` / ``'Rechazado'``).
+        DataFrame con columnas ``sequence``, ``core_9aa``,
+        ``n_alelos_evaluados``, ``n_alelos_promiscuos``, ``min_rank_el`` y
+        ``veredicto`` (``'Candidato Valido'`` / ``'Rechazado'``). ``core_9aa``
+        es el nucleo de union de 9 aa (columna ``Core`` de NetMHCIIpan) del
+        alelo EN ORIENTACION NORMAL con el %Rank mas bajo para ese peptido
+        (los alelos invertidos quedan fuera de esta busqueda desde el
+        origen, ver arriba); ``n_alelos_promiscuos`` cuenta solo alelos
+        normales SB/WB, que es tambien el criterio del ``veredicto``.
 
     Raises:
         ImmunogenicityExecutionError: Si el .xls no se puede parsear o no
-            contiene el numero esperado de columnas 'Rank_EL'.
+            contiene el numero esperado de columnas 'Rank_EL'/'Core'/'Inverted'.
     """
     try:
         raw = pd.read_csv(xls_path, sep="\t", skiprows=2)
@@ -138,22 +252,51 @@ def _parse_xls(xls_path: Path, n_alleles: int) -> pd.DataFrame:
         raise ImmunogenicityExecutionError(f"No se pudo parsear la salida de NetMHCIIpan en '{xls_path}': {exc}") from exc
 
     rank_cols = [c for c in raw.columns if c == "Rank_EL" or c.startswith("Rank_EL.")]
-    if len(rank_cols) != n_alleles or "Peptide" not in raw.columns:
+    core_cols = [c for c in raw.columns if c == "Core" or c.startswith("Core.")]
+    inverted_cols = [c for c in raw.columns if c == "Inverted" or c.startswith("Inverted.")]
+    if (
+        len(rank_cols) != n_alleles
+        or len(core_cols) != n_alleles
+        or len(inverted_cols) != n_alleles
+        or "Peptide" not in raw.columns
+    ):
         raise ImmunogenicityExecutionError(
             f"El formato de salida .xls de NetMHCIIpan no coincide con lo esperado: "
-            f"se encontraron {len(rank_cols)} columna(s) 'Rank_EL' para {n_alleles} "
-            f"alelo(s) evaluado(s). Columnas encontradas: {list(raw.columns)}."
+            f"se encontraron {len(rank_cols)} columna(s) 'Rank_EL', {len(core_cols)} "
+            f"columna(s) 'Core' y {len(inverted_cols)} columna(s) 'Inverted' para "
+            f"{n_alleles} alelo(s) evaluado(s). Columnas encontradas: {list(raw.columns)}."
         )
 
-    is_binder = raw[rank_cols] <= Settings.NETMHCIIPAN_RANK_WEAK
-    n_alelos_promiscuos = is_binder.sum(axis=1)
+    rank_matrix = raw[rank_cols].to_numpy()
+    core_matrix = raw[core_cols].to_numpy()
+    is_inverted = raw[inverted_cols].to_numpy().astype(bool)
+    row_idx = np.arange(len(raw))
+
+    # Los alelos invertidos se excluyen ANTES de buscar el "ganador": se les
+    # asigna %Rank=+inf para que argmin() nunca los elija, asi que
+    # ``best_allele_idx`` (y por tanto ``core_9aa``/``min_rank_el``) sale
+    # siempre de un alelo en orientacion normal. Si TODOS los alelos de una
+    # fila estan invertidos, la fila entera queda en +inf: ``min_rank_el``
+    # sale ``inf`` y ``core_9aa`` corresponde a un alelo sin ningun binder
+    # real, lo cual es correcto porque esa fila sera 'Rechazado' de todas
+    # formas (``n_alelos_promiscuos`` normal tambien sera 0).
+    rank_matrix_normal = np.where(is_inverted, np.inf, rank_matrix)
+    best_allele_idx = rank_matrix_normal.argmin(axis=1)
+    best_core = core_matrix[row_idx, best_allele_idx]
+
+    # Promiscuidad: solo cuentan alelos normales (no invertidos) con
+    # Rank_EL <= NETMHCIIPAN_RANK_WEAK. Ver docstring del modulo, seccion
+    # "Fiabilidad para sintesis/validacion experimental".
+    is_binder_normal = (rank_matrix_normal <= Settings.NETMHCIIPAN_RANK_WEAK)
+    n_alelos_promiscuos = is_binder_normal.sum(axis=1)
 
     result = pd.DataFrame(
         {
             "sequence": raw["Peptide"],
+            "core_9aa": best_core,
             "n_alelos_evaluados": n_alleles,
             "n_alelos_promiscuos": n_alelos_promiscuos,
-            "min_rank_el": raw[rank_cols].min(axis=1),
+            "min_rank_el": rank_matrix_normal.min(axis=1),
         }
     )
     result["veredicto"] = result["n_alelos_promiscuos"].apply(
@@ -182,7 +325,7 @@ def _run_netmhciipan(
 def _require_xls_output(xls_path: Path, proc: subprocess.CompletedProcess, mode_desc: str) -> None:
     """Valida que el .xls prometido exista: el wrapper tcsh no propaga fallos internos como exit != 0.
 
-    Causas conocidas: (a) modo peptido exacto con una entrada > 56 aa
+    Causas conocidas: (a) modo peptido exacto con una entrada > 55 aa
     (buffer overflow del binario, ver ``_MAX_PEPTIDE_MODE_LENGTH`` -
     ``predict_netmhciipan`` ya enruta para evitar esto-), (b) la linea
     'NMHOME' dentro del script wrapper apunta a una ruta desactualizada
@@ -225,7 +368,8 @@ def predict_netmhciipan(
       nucleo candidato especifico (mas corto que el fragmento original), no
       el fragmento completo. Es el uso correcto de la herramienta para
       fragmentos largos (el modo peptido exacto revienta con "buffer
-      overflow" en el binario para entradas > 56 aa).
+      overflow" en el binario para entradas > 55 aa, ver
+      ``_MAX_PEPTIDE_MODE_LENGTH``).
 
     Args:
         peptides: Peptidos candidatos que superaron la Fase 4. Los mas
@@ -242,10 +386,13 @@ def predict_netmhciipan(
             string por defecto (ver ``--alelo-extra`` en ``pipeline.py``).
 
     Returns:
-        DataFrame con columnas ``sequence``, ``n_alelos_evaluados``,
-        ``n_alelos_promiscuos``, ``min_rank_el`` y ``veredicto``
-        (``'Candidato Valido'`` / ``'Rechazado'``). Vacio si ningun peptido
-        de entrada alcanza la longitud minima.
+        DataFrame con columnas ``sequence``, ``core_9aa``,
+        ``n_alelos_evaluados``, ``n_alelos_promiscuos``, ``min_rank_el`` y
+        ``veredicto`` (``'Candidato Valido'`` / ``'Rechazado'``). Los alelos
+        invertidos ya estan excluidos de todos estos numeros desde
+        ``_parse_xls`` (ver docstring del modulo), asi que no aparecen en
+        ningun lado de la salida. Vacio si ningun peptido de entrada alcanza
+        la longitud minima.
 
     Raises:
         ImmunogenicityExecutionError: Si el script local no esta instalado o
@@ -309,24 +456,249 @@ def predict_netmhciipan(
 
 
 def print_th_report(report_df: pd.DataFrame, allele_panel: str = IEDB_REFERENCE_PANEL) -> None:
-    """Imprime el informe final de promiscuidad T-helper (MHC-II)."""
+    """Imprime el informe final de promiscuidad T-helper (MHC-II).
+
+    Solo lista los peptidos/ventanas con ``veredicto == 'Candidato Valido'``
+    -los rechazados (incluyendo cualquiera que solo hubiera pasado gracias a
+    alelos invertidos) ya fueron descartados por ``_parse_xls`` y no aportan
+    nada a un reporte pensado para sintesis/validacion experimental-. El
+    resumen final si usa el total evaluado como denominador, para que quede
+    claro que proporcion del barrido supero el filtro.
+    """
     if report_df.empty:
         print("No hay peptidos candidatos de la Fase 4 para evaluar contra el panel HLA-DR.")
         return
 
+    valid_df = report_df[report_df["veredicto"] == "Candidato Valido"]
     n_alleles = len([a for a in allele_panel.split(",") if a])
-    seq_width = max(20, report_df["sequence"].str.len().max() + 2)
-    header = (
-        f"{'Secuencia':<{seq_width}}{'Alelos promiscuos':>19}{'/':>1}{'panel':<7}"
-        f"{'Min %Rank':>12}{'Veredicto':>18}"
-    )
-    print(header)
-    print("-" * len(header))
-    for row in report_df.itertuples(index=False):
-        print(
-            f"{row.sequence:<{seq_width}}{row.n_alelos_promiscuos:>19}{'/':>1}{n_alleles:<7}"
-            f"{row.min_rank_el:>12.3f}{row.veredicto:>18}"
-        )
 
-    n_ok = int((report_df["veredicto"] == "Candidato Valido").sum())
+    if valid_df.empty:
+        print("Ningun peptido/ventana supero el umbral de promiscuidad T-helper (ver Resumen).")
+    else:
+        seq_width = max(20, valid_df["sequence"].str.len().max() + 2)
+        columns = [
+            Column("Secuencia", lambda r: r.sequence, seq_width, "<"),
+            Column("Alelos promiscuos", lambda r: str(r.n_alelos_promiscuos), 19, ">"),
+            Column("/", lambda r: "/", 1, ">"),
+            Column("panel", lambda r, n=n_alleles: str(n), 7, "<"),
+            Column("Min %Rank", lambda r: f"{r.min_rank_el:.3f}", 12, ">"),
+            Column("Candidatos", lambda r: r.veredicto, 18, ">"),
+        ]
+        print_fixed_width_table(valid_df.itertuples(index=False), columns)
+
+    n_ok = len(valid_df)
     print(f"\nResumen Fase 5: {n_ok}/{len(report_df)} candidato(s) T-helper promiscuo(s) aprobado(s).")
+
+
+def _deduplicate_protein_mode_windows(traceback_df: pd.DataFrame) -> pd.DataFrame:
+    """Colapsa ventanas redundantes del modo proteina que no aportan informacion nueva.
+
+    El modo proteina (``predict_netmhciipan``, fragmentos > 40 aa) desliza una
+    ventana de 15 aa un residuo a la vez, asi que un mismo nucleo de union de
+    9 aa suele "ganar" (ser el alelo de mejor %Rank) en varias ventanas
+    consecutivas -no son epitopos distintos, son la misma prediccion vista
+    desde offsets vecinos-. Regla de fusion (acordada explicitamente, NO es
+    solapamiento de posiciones sino coincidencia EXACTA de dos valores):
+
+    * Se agrupan las filas por ``(accession, core_9aa, n_alelos_promiscuos)``
+      -mismo nucleo de 9 aa LETRA POR LETRA y misma cuenta de promiscuidad-.
+      De cada grupo con mas de una fila se conserva unicamente la de menor
+      ``min_rank_el`` (el aglutinador mas fuerte); las demas se descartan sin
+      dejar rastro (no se reconstruye ningun fragmento nuevo, se queda tal
+      cual una de las ventanas originales).
+    * Si el core difiere aunque sea en 1 aminoacido, o si la promiscuidad
+      difiere (aunque el core sea identico), las filas NO se fusionan: cada
+      una es una prediccion distinta y ambas se reportan. Esto es deliberado
+      para no perder informacion relevante para sintesis/validacion
+      experimental: dos ventanas con el mismo core pero distinta
+      promiscuidad reflejan una diferencia real en cuantos alelos HLA
+      reconocen ese registro exacto de union.
+
+    Args:
+        traceback_df: Tabla ya trazada a la Fase 3/4 (columnas
+            ``_TRACEBACK_COLUMNS``), antes de deduplicar.
+
+    Returns:
+        Mismo esquema que ``traceback_df``, con las filas redundantes
+        colapsadas. Vacio si ``traceback_df`` esta vacio.
+    """
+    if traceback_df.empty:
+        return traceback_df
+
+    best_idx = traceback_df.groupby(
+        ["accession", "core_9aa", "n_alelos_promiscuos"], sort=False
+    )["min_rank_el"].idxmin()
+    return traceback_df.loc[best_idx].sort_index().reset_index(drop=True)
+
+
+def build_traceback_report(report_df: pd.DataFrame, parent_df: pd.DataFrame) -> pd.DataFrame:
+    """Cruza los 'Candidato Valido' de la Fase 5 con su region de origen en la Fase 3/4.
+
+    En modo proteina (fragmentos > ``_MAX_PEPTIDE_MODE_LENGTH``, ver
+    ``predict_netmhciipan``), ``report_df['sequence']`` es un nucleo mas
+    corto que el fragmento de la Fase 3/4 del que proviene (NetMHCIIpan lo
+    obtuvo deslizando una ventana internamente), asi que no hay una relacion
+    1:1 por posicion entre ambas tablas. Para recuperar accession/origen/
+    coordenadas reales se busca cada ``sequence`` de la Fase 5 como
+    subcadena literal dentro de ``parent_df['sequence']`` (la region completa
+    de la union anotada, Fase 3) y se recalcula la posicion absoluta sumando
+    el indice del match al ``start`` original de esa region. En modo peptido
+    exacto (fragmentos cortos) esta busqueda tambien funciona: el match cae
+    en el indice 0 porque ``sequence`` es identica al peptido padre completo.
+
+    Tras el traceback, las ventanas redundantes del modo proteina se colapsan
+    via ``_deduplicate_protein_mode_windows`` (ver su docstring para la regla
+    exacta de fusion).
+
+    Args:
+        report_df: Salida de ``predict_netmhciipan`` (incluye rechazados;
+            aqui se filtra a ``veredicto == 'Candidato Valido'``).
+        parent_df: Tabla de la Fase 3/4 (``union_df`` o el ``safe_df`` de
+            Fase 4, que conserva todas sus columnas): debe tener
+            ``accession``, ``start``, ``sequence``, ``origen``,
+            ``bepipred_score``, ``epidope_score`` por region.
+
+    Returns:
+        DataFrame con columnas ``_TRACEBACK_COLUMNS`` (una fila por match
+        candidato-region no redundante; normalmente 1:1, pero si el mismo
+        nucleo aparece en mas de una region de ``parent_df`` se reporta una
+        fila por cada una en vez de elegir arbitrariamente). Los candidatos
+        que no se logran ubicar en ninguna region padre (no deberia ocurrir
+        en condiciones normales) se omiten con un warning en el log, para no
+        reportar coordenadas inventadas.
+    """
+    if report_df.empty or parent_df.empty:
+        return pd.DataFrame(columns=_TRACEBACK_COLUMNS)
+
+    valid_df = report_df[report_df["veredicto"] == "Candidato Valido"]
+    if valid_df.empty:
+        return pd.DataFrame(columns=_TRACEBACK_COLUMNS)
+
+    records = []
+    for candidate in valid_df.itertuples(index=False):
+        matches = parent_df[parent_df["sequence"].str.contains(candidate.sequence, regex=False, na=False)]
+        if matches.empty:
+            logger.warning(
+                "No se pudo trazar el candidato '%s' de vuelta a ninguna region de la Fase 3/4; "
+                "se omite del reporte final enriquecido.",
+                candidate.sequence,
+            )
+            continue
+        for parent in matches.itertuples(index=False):
+            offset = parent.sequence.find(candidate.sequence)
+            start_real = parent.start + offset
+            end_real = start_real + len(candidate.sequence) - 1
+            records.append(
+                {
+                    "accession": parent.accession,
+                    "sequence_f5": candidate.sequence,
+                    "core_9aa": candidate.core_9aa,
+                    "start": start_real,
+                    "end": end_real,
+                    "origen": parent.origen,
+                    "n_alelos_promiscuos": candidate.n_alelos_promiscuos,
+                    "n_alelos_evaluados": candidate.n_alelos_evaluados,
+                    "min_rank_el": candidate.min_rank_el,
+                    "bepipred_score": parent.bepipred_score,
+                    "epidope_score": parent.epidope_score,
+                }
+            )
+
+    traceback_df = pd.DataFrame.from_records(records, columns=_TRACEBACK_COLUMNS)
+    return _deduplicate_protein_mode_windows(traceback_df)
+
+
+# Resaltado ANSI (negrita + amarillo) del nucleo de 9 aa dentro de la
+# columna de secuencia F5 en ``print_traceback_table``. Solo afecta la
+# impresion en terminal, nunca el CSV persistido. Un solo color: no hace
+# falta distinguir invertidos porque ``core_9aa`` (ver ``_parse_xls``) nunca
+# proviene de un alelo invertido -se excluyen desde el calculo, no se
+# resaltan de otro color en la salida-.
+_CORE_ANSI_START = "\033[1;33m"
+_CORE_ANSI_END = "\033[0m"
+
+
+def print_traceback_table(traceback_df: pd.DataFrame) -> None:
+    """Imprime la tabla de candidatos validos enriquecida con su traceback a la Fase 3.
+
+    El nucleo de union de 9 aa se resalta en color directamente dentro de la
+    columna de secuencia F5, para ubicarlo de un vistazo sin cruzar a la
+    columna 'Core (9 aa)'.
+
+    El color se inyecta DESPUES de que ``pandas`` ya formateo y alineo toda
+    la tabla como texto plano (``to_string()``), nunca antes: los codigos
+    ANSI no ocupan espacio visible en la terminal pero SI cuentan para
+    ``len()``, asi que insertarlos en las celdas antes de formatear
+    desalinea el ancho de columna que calcula pandas (confirmado
+    empiricamente: una celda coloreada mas corta que sus vecinas en texto
+    plano se ve como la mas larga para pandas, y descoloca toda la columna
+    y las que le siguen a la derecha). En vez de eso, se ubica la posicion
+    exacta del core dentro de cada linea ya formateada -buscando primero
+    dentro de que rango de esa linea cae la secuencia F5, para no confundir
+    el match con la propia columna 'Core (9 aa)' si contiene el mismo texto-
+    y se inyecta el color ahi, sin anadir ni quitar ningun caracter visible.
+    ``core_9aa`` siempre proviene de un alelo en orientacion normal (ver
+    ``_parse_xls``), asi que siempre es una subcadena literal de la
+    secuencia F5 -nunca cae en el fallback sin color por un core invertido-.
+
+    Cuando la corrida cubre varias proteinas de entrada (FASTA multi-registro,
+    p. ej. ``fasta_inputs/MonkeyPox/mpxv_targets.fasta`` con 6 accessions),
+    las filas se ordenan por ``accession``/``start`` -en vez de dejarlas en
+    el orden interno de ``predict_netmhciipan`` (peptidos cortos en modo
+    exacto primero, largos despues, sin relacion con el orden de las
+    proteinas de entrada)- y se imprime una linea separadora cada vez que
+    cambia el accession, para que cada proteina se lea como un bloque
+    propio en vez de una lista continua.
+    """
+    if traceback_df.empty:
+        print("No hay candidatos validos con traceback a la Fase 3 para mostrar.")
+        return
+
+    display_df = traceback_df.sort_values(["accession", "start"]).reset_index(drop=True)
+    display_df["Promiscuidad"] = (
+        display_df["n_alelos_promiscuos"].astype(str) + "/" + display_df["n_alelos_evaluados"].astype(str)
+    )
+    display_df = display_df.rename(
+        columns={
+            "accession": "Accession",
+            "sequence_f5": "15-mero/peptido (Secuencia F5)",
+            "core_9aa": "Core (9 aa)",
+            "start": "Start",
+            "end": "End",
+            "origen": "Origen",
+            "min_rank_el": "Min %Rank",
+        }
+    )
+    seq_col = "15-mero/peptido (Secuencia F5)"
+    core_col = "Core (9 aa)"
+    columns_order = [
+        "Accession", seq_col, core_col, "Start", "End",
+        "Origen", "Promiscuidad", "Min %Rank",
+    ]
+    display_df = display_df[columns_order].reset_index(drop=True)
+
+    # max_colwidth=None desactiva el truncado con '...' de pandas: con el
+    # texto truncado, la busqueda de la secuencia completa dentro de la
+    # linea (mas abajo) fallaria y se perderia el resaltado.
+    lines = display_df.to_string(index=False, max_colwidth=None).split("\n")
+    header_line = lines[0]
+    separator = "-" * len(header_line)
+    print(header_line)
+    print(separator)
+
+    accessions = display_df["Accession"].tolist()
+    rows = zip(lines[1:], display_df[seq_col], display_df[core_col], accessions)
+    prev_accession = None
+    for line, sequence, core, accession in rows:
+        if prev_accession is not None and accession != prev_accession:
+            print(separator)
+        prev_accession = accession
+
+        seq_start = line.find(sequence)
+        core_offset = sequence.find(core) if seq_start != -1 else -1
+        if core_offset == -1:
+            print(line)
+            continue
+        core_start = seq_start + core_offset
+        core_end = core_start + len(core)
+        print(f"{line[:core_start]}{_CORE_ANSI_START}{line[core_start:core_end]}{_CORE_ANSI_END}{line[core_end:]}")

@@ -23,8 +23,13 @@ Flujo estricto de 5 fases, cada una consumiendo la salida de la anterior:
     5. Prediccion de presentacion T-helper (MHC-II) via NetMHCIIpan-4.3 LOCAL
        contra un panel de 27 alelos HLA-DR/DQ/DP de referencia
        (IEDB_REFERENCE_PANEL); reporta como candidato final solo los
-       peptidos "promiscuos" (SB/WB en >= 3 alelos del panel)
-       (``src.engines.netmhciipan_engine``).
+       peptidos "promiscuos" (SB/WB en >= 3 alelos del panel EN ORIENTACION
+       DE UNION NORMAL -los alelos que solo aglutinan via un registro
+       invertido, de menor confianza, no cuentan para el veredicto pero se
+       reportan aparte, pensado para minimizar falsos positivos que lleguen
+       a sintesis/validacion experimental-), enriquecidos con su nucleo de
+       union de 9 aa y su traceback de coordenadas/origen a la region de la
+       Fase 3 de la que provienen (``src.engines.netmhciipan_engine``).
 
 Todos los artefactos intermedios y el reporte final se guardan en
 ``fasta_outputs/``. Requiere: instalacion local de BepiPred-3.0 en
@@ -57,7 +62,14 @@ from src.engines.epidope_engine import RESIDUE_COLUMN as EPIDOPE_RESIDUE_COLUMN
 from src.engines.bepipred_engine import ACCESSION_COLUMN as BEPIPRED_ACCESSION_COLUMN
 from src.engines.bepipred_engine import RESIDUE_COLUMN_CANDIDATES as BEPIPRED_RESIDUE_CANDIDATES
 from src.engines.epitope_mapping import build_sequence_lookup, print_epitope_table
-from src.engines.netmhciipan_engine import IEDB_REFERENCE_PANEL, predict_netmhciipan, print_th_report
+from src.engines.netmhciipan_engine import (
+    IEDB_REFERENCE_PANEL,
+    build_traceback_report,
+    predict_netmhciipan,
+    print_th_report,
+    print_traceback_table,
+    validate_allele_extra,
+)
 from src.utils.exceptions import PipelineError
 from src.utils.fasta_parser import FastaRecord, load_and_sanitize, write_fasta
 from src.utils.logger_config import setup_logger
@@ -65,6 +77,25 @@ from src.utils.logger_config import setup_logger
 logger = setup_logger(__name__)
 
 _SEPARATOR = "=" * 70
+
+
+def _alelo_extra_type(value: str) -> str:
+    """Wrapper de ``validate_allele_extra`` para usar como ``type=`` de argparse.
+
+    Validacion TEMPRANA: se ejecuta al parsear los argumentos, antes de que
+    corra ninguna fase del pipeline. Asi, un alelo mal escrito en
+    ``--alelo-extra`` se rechaza de inmediato con un mensaje accionable, en
+    vez de recien fallar al final de la Fase 5 (tras haber corrido
+    BepiPred/EpiDope/BLASTp para nada) con un error generico de formato de
+    ``.xls``. ``argparse`` descarta el mensaje de un ``ValueError`` plano y
+    lo reemplaza por uno generico ("invalid _alelo_extra_type value: ..."),
+    asi que aqui se traduce a ``ArgumentTypeError``, que si preserva el
+    mensaje detallado de ``validate_allele_extra``.
+    """
+    try:
+        return validate_allele_extra(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
 
 
 def parse_args(argv: List[str] = None) -> argparse.Namespace:
@@ -79,12 +110,13 @@ def parse_args(argv: List[str] = None) -> argparse.Namespace:
         help="Ruta al FASTA de entrada (dentro de fasta_inputs/).",
     )
     parser.add_argument(
-        "--alelo-extra", default=None,
+        "--alelo-extra", default=None, type=_alelo_extra_type,
         help="Alelo(s) HLA-DR/DQ/DP adicionales a anexar al panel por defecto de la "
         "Fase 5 (IEDB_REFERENCE_PANEL, 27 alelos). Formato NetMHCIIpan, separados "
         "por coma sin espacios (ej. 'DRB1_1602' o 'HLA-DQA10501-DQB10201'). No "
         "especificar este flag no requiere ninguna otra accion: el panel por "
-        "defecto siempre se evalua.",
+        "defecto siempre se evalua. Se valida el formato al momento de parsear "
+        "este flag, antes de correr cualquier fase.",
     )
     parser.add_argument(
         "--output-dir", default=str(Settings.FASTA_OUTPUT_DIR),
@@ -267,8 +299,19 @@ def fase_5_th_promiscuidad(
 ) -> pd.DataFrame:
     """Fase 5: evalua promiscuidad T-helper (MHC-II) de los peptidos 'Seguros' de la Fase 4.
 
+    El reporte final (consola y ``candidatos_finales.csv``) no es la salida
+    cruda de NetMHCIIpan: los 'Candidato Valido' se enriquecen con su
+    traceback a la region de origen de la Fase 3/4 (accession, coordenadas
+    reales, origen BepiPred/EpiDope/Consenso, bepipred_score/epidope_score) y
+    su nucleo de union de 9 aa, via ``build_traceback_report`` -necesario
+    porque en modo proteina (fragmentos largos) NetMHCIIpan devuelve nucleos
+    mas cortos que el fragmento evaluado, no el fragmento completo-.
+
     Args:
-        safe_df: Peptidos con ``status == 'Segura'`` provenientes de la Fase 4.
+        safe_df: Peptidos con ``status == 'Segura'`` provenientes de la Fase 4
+            (conserva ``accession``/``start``/``sequence``/``origen``/
+            ``bepipred_score``/``epidope_score`` de la Fase 3, usadas como
+            tabla padre del traceback).
         output_dir: Carpeta donde persistir el reporte final y el .xls crudo.
         allele_extra: Alelo(s) HLA-DR/DQ/DP adicionales (formato NetMHCIIpan,
             separados por coma sin espacios) a anexar a
@@ -283,9 +326,9 @@ def fase_5_th_promiscuidad(
 
     if safe_df.empty:
         print("No hay peptidos 'Seguros' provenientes de la Fase 4 para evaluar.")
-        report = pd.DataFrame(columns=["sequence", "n_alelos_evaluados", "n_alelos_promiscuos", "min_rank_el", "veredicto"])
-        report.to_csv(final_path, index=False)
-        return report
+        traceback_df = build_traceback_report(pd.DataFrame(), safe_df)
+        traceback_df.to_csv(final_path, index=False)
+        return traceback_df
 
     peptides = safe_df["sequence"].tolist()
     print(f"Panel HLA-DR: {allele_panel} | Peptidos a evaluar: {len(peptides)}")
@@ -297,9 +340,12 @@ def fase_5_th_promiscuidad(
     else:
         print_th_report(report, allele_panel=allele_panel)
 
-    report.to_csv(final_path, index=False)
+    traceback_df = build_traceback_report(report, safe_df)
+    print_traceback_table(traceback_df)
+
+    traceback_df.to_csv(final_path, index=False)
     print(f"-> Reporte final guardado en: {final_path}")
-    return report
+    return traceback_df
 
 
 def main(argv: List[str] = None) -> int:

@@ -36,6 +36,8 @@ from typing import Dict, List, Optional
 
 import pandas as pd
 
+from src.utils.table_format import Column, print_fixed_width_table
+
 MIN_FINAL_PEPTIDE_LENGTH = 9
 
 _UNION_COLUMNS = [
@@ -196,13 +198,20 @@ def print_union_table(union_df: pd.DataFrame) -> None:
         )
         return
 
-    header = f"{'accession':<28}{'start':>7}{'end':>7}{'len':>6}  {'origen':<10}{'bp_score':>10}{'ed_score':>10}  sequence"
-    print(header)
-    print("-" * len(header))
-    for row in union_df.itertuples(index=False):
-        bp = f"{row.bepipred_score:>10.4f}" if pd.notna(row.bepipred_score) else f"{'-':>10}"
-        ed = f"{row.epidope_score:>10.4f}" if pd.notna(row.epidope_score) else f"{'-':>10}"
-        print(f"{row.accession:<28}{row.start:>7}{row.end:>7}{row.length:>6}  {row.origen:<10}{bp}{ed}  {row.sequence}")
+    def _score(value: float) -> str:
+        return f"{value:.4f}" if pd.notna(value) else "-"
+
+    columns = [
+        Column("accession", lambda r: r.accession, 28, "<"),
+        Column("start", lambda r: str(r.start), 7, ">"),
+        Column("end", lambda r: str(r.end), 7, ">"),
+        Column("len", lambda r: str(r.length), 6, ">"),
+        Column("origen", lambda r: r.origen, 10, "<", prefix="  "),
+        Column("bp_score", lambda r: _score(r.bepipred_score), 10, ">"),
+        Column("ed_score", lambda r: _score(r.epidope_score), 10, ">"),
+        Column("sequence", lambda r: r.sequence, 0, "<", prefix="  "),
+    ]
+    print_fixed_width_table(union_df.itertuples(index=False), columns)
 
     n_consenso = int((union_df["origen"] == "Consenso").sum())
     n_bepipred = int((union_df["origen"] == "BepiPred").sum())
