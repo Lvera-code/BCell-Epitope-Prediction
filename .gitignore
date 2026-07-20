@@ -43,3 +43,28 @@ produccion_resultados/
 # Cualquier tarball residual en la raiz (descargas de paquetes con licencia
 # academica como BepiPred o NetMHCIIpan, nunca deben commitearse).
 *.tar.gz
+
+# Herramienta DiscoTope-3.0 (Fase 2, motor estructural 1/2, ejecucion local):
+# clon de github.com/Magnushhoie/DiscoTope-3.0, incluye pesos del ensemble
+# XGBoost propio (models/, descomprimido de models.zip). Regenerable via
+# 'git clone' (ver README.md - Seccion de Instalacion), nunca debe subirse.
+DiscoTope-3.0/
+
+# Entorno virtual dedicado para las dependencias de DiscoTope-3.0.
+.venv-discotope/
+
+# Nota: el cache de pesos de ESM-IF1 (torch hub) vive FUERA del repo por
+# defecto (Settings.DISCOTOPE_WEIGHTS_CACHE_DIR = ~/.cache/..., no una ruta
+# relativa dentro del proyecto), asi que no necesita entrada aqui.
+
+# Herramienta ScanNet (Fase 2, motor estructural 2/2, ejecucion local): clon
+# de github.com/jertubiana/ScanNet, incluye pesos pre-entrenados del modelo
+# de epitopos (models/). Regenerable via 'git clone' (ver README.md -
+# Seccion de Instalacion), nunca debe subirse.
+ScanNet/
+
+# Entorno virtual dedicado para las dependencias antiguas de ScanNet (Python
+# 3.6.12). En la practica se crea con conda, no con 'python3 -m venv' (ver
+# Settings.SCANNET_PYTHON_BIN); este patron cubre ambos casos si se usa
+# dentro de la raiz del proyecto.
+.venv-scannet/

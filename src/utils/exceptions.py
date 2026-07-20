@@ -93,3 +93,46 @@ class ImmunogenicityExecutionError(EngineExecutionError):
     (exit code distinto de cero, timeout) y formato de salida .xls
     inesperado.
     """
+
+
+class DiscoTopeExecutionError(EngineExecutionError):
+    """Fallo al ejecutar DiscoTope-3.0 localmente (Fase 2, motor estructural).
+
+    Cubre entorno ``.venv-discotope`` ausente/incompleto, pesos de ESM-IF1 no
+    cacheados (ver ``Settings.DISCOTOPE_WEIGHTS_CACHE_DIR``) y fallos del
+    propio subproceso (exit code distinto de cero, timeout, formato de salida
+    inesperado), traducidos a un mensaje accionable.
+    """
+
+
+class ScanNetExecutionError(EngineExecutionError):
+    """Fallo al ejecutar ScanNet localmente (Fase 2, motor estructural).
+
+    Cubre ambos runtimes (``Settings.SCANNET_RUNTIME``): entorno
+    ``.venv-scannet`` ausente para el runtime ``venv``, o daemon/imagen Docker
+    ausente para el runtime ``docker``. Tambien cubre fallos del propio
+    proceso (exit code distinto de cero, timeout, formato de salida
+    inesperado).
+    """
+
+
+class StructureParsingError(PipelineError):
+    """Fallo al parsear una estructura de entrada (PDB/mmCIF) en Fase 1.5.
+
+    Cubre archivos corruptos o sin sintaxis valida, ausencia de cualquier
+    cadena proteica con al menos un residuo de aminoacido valido en la
+    estructura, y fallos al resolver la estrategia de seleccion de cadena
+    configurada (``Settings.PDB_CHAIN_SELECTION_STRATEGY``). Es fatal: no hay
+    manera segura de continuar sin una cadena de referencia valida.
+    """
+
+
+class InputRoutingError(PipelineError):
+    """Fallo al determinar el tipo de un archivo de entrada, o combinacion no soportada.
+
+    Cubre tanto un archivo cuyo tipo (FASTA vs estructura) no puede
+    determinarse con confianza por extension ni por contenido, como una
+    combinacion ``input_type``/``PDB_PROCESSING_MODE`` sin motores definidos
+    en ``ENGINE_REGISTRY`` (ver ``src.engines.engine_registry.active_engines_for``).
+    Es fatal: detiene el pipeline antes de correr cualquier fase.
+    """

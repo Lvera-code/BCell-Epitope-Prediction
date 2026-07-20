@@ -160,13 +160,26 @@ _OUTPUT_COLUMNS = [
     "sequence", "core_9aa", "n_alelos_evaluados", "n_alelos_promiscuos", "min_rank_el", "veredicto",
 ]
 
-# Columnas del reporte final enriquecido (Fase 5 + traceback a Fase 3/4),
-# ver ``build_traceback_report``.
-_TRACEBACK_COLUMNS = [
+# Columnas fijas del reporte final enriquecido (Fase 5 + traceback a Fase
+# 3/4), ver ``build_traceback_report``. Las columnas '{motor}_score' NO estan
+# fijas aqui: se detectan dinamicamente desde ``parent_df`` (ver
+# ``_traceback_columns``), porque el subconjunto de motores activos -y por
+# tanto de columnas '{motor}_score' presentes en la tabla de consenso de Fase
+# 3, ver ``src.engines.consensus.build_annotated_union_table``- varia segun
+# el camino de entrada (Camino 1: bepipred/epidope; Camino 2: discotope/
+# scannet; Camino 3: los 4). Antes de esa generalizacion esta lista incluia
+# 'bepipred_score'/'epidope_score' fijos, lo que rompia con un
+# ``AttributeError`` en el Camino 2 (sin esas dos columnas en absoluto).
+_TRACEBACK_BASE_COLUMNS = [
     "accession", "sequence_f5", "core_9aa", "start", "end", "origen",
     "n_alelos_promiscuos", "n_alelos_evaluados", "min_rank_el",
-    "bepipred_score", "epidope_score",
 ]
+
+
+def _traceback_columns(parent_df: pd.DataFrame) -> List[str]:
+    """Columnas fijas mas '{motor}_score' por cada motor presente en ``parent_df``."""
+    score_columns = [c for c in parent_df.columns if c.endswith("_score")]
+    return _TRACEBACK_BASE_COLUMNS + score_columns
 
 
 def _resolve_binary() -> Path:
@@ -349,6 +362,7 @@ def predict_netmhciipan(
     peptides: List[str],
     output_dir: Path,
     allele_panel: str = IEDB_REFERENCE_PANEL,
+    filename_prefix: str = "",
 ) -> pd.DataFrame:
     """Fase 5: evalua promiscuidad T-helper (MHC-II) via NetMHCIIpan-4.3 local.
 
@@ -384,6 +398,13 @@ def predict_netmhciipan(
             necesita cubrir un alelo adicional (ej. especifico de una
             poblacion de interes), se admite sin problema anexandolo al
             string por defecto (ver ``--alelo-extra`` en ``pipeline.py``).
+        filename_prefix: Prefijo (tipicamente ``f"{input_stem}_"``) para los
+            .xls crudos persistidos en ``output_dir``. Sin esto, dos
+            corridas seguidas con inputs distintos pisan el mismo archivo
+            (``netmhciipan_raw_peptide_mode.xls``/``..._protein_mode.xls``,
+            sin nombre de accession) -- confirmado como una fuente real de
+            confusion probando multiples PDBs/FASTA seguidos en la misma
+            ``fasta_outputs/``.
 
     Returns:
         DataFrame con columnas ``sequence``, ``core_9aa``,
@@ -437,7 +458,7 @@ def predict_netmhciipan(
             )
             _require_xls_output(xls_path, proc, mode_desc="modo peptido exacto")
             result_frames.append(_parse_xls(xls_path, n_alleles))
-            shutil.copyfile(xls_path, output_dir / "netmhciipan_raw_peptide_mode.xls")
+            shutil.copyfile(xls_path, output_dir / f"{filename_prefix}netmhciipan_raw_peptide_mode.xls")
 
         if long_peptides:
             fasta_path = tmp_dir / "fragments.fasta"
@@ -448,7 +469,7 @@ def predict_netmhciipan(
             proc = _run_netmhciipan(binary, ["-f", str(fasta_path)], allele_panel, xls_path, Settings.NETMHCIIPAN_TIMEOUT_SECONDS)
             _require_xls_output(xls_path, proc, mode_desc="modo proteina (ventana deslizante)")
             result_frames.append(_parse_xls(xls_path, n_alleles))
-            shutil.copyfile(xls_path, output_dir / "netmhciipan_raw_protein_mode.xls")
+            shutil.copyfile(xls_path, output_dir / f"{filename_prefix}netmhciipan_raw_protein_mode.xls")
 
     if not result_frames:
         return pd.DataFrame(columns=_OUTPUT_COLUMNS)
@@ -482,7 +503,6 @@ def print_th_report(report_df: pd.DataFrame, allele_panel: str = IEDB_REFERENCE_
             Column("/", lambda r: "/", 1, ">"),
             Column("panel", lambda r, n=n_alleles: str(n), 7, "<"),
             Column("Min %Rank", lambda r: f"{r.min_rank_el:.3f}", 12, ">"),
-            Column("Candidatos", lambda r: r.veredicto, 18, ">"),
         ]
         print_fixed_width_table(valid_df.itertuples(index=False), columns)
 
@@ -515,8 +535,8 @@ def _deduplicate_protein_mode_windows(traceback_df: pd.DataFrame) -> pd.DataFram
       reconocen ese registro exacto de union.
 
     Args:
-        traceback_df: Tabla ya trazada a la Fase 3/4 (columnas
-            ``_TRACEBACK_COLUMNS``), antes de deduplicar.
+        traceback_df: Tabla ya trazada a la Fase 3/4 (columnas de
+            ``_traceback_columns``), antes de deduplicar.
 
     Returns:
         Mismo esquema que ``traceback_df``, con las filas redundantes
@@ -555,24 +575,31 @@ def build_traceback_report(report_df: pd.DataFrame, parent_df: pd.DataFrame) -> 
             aqui se filtra a ``veredicto == 'Candidato Valido'``).
         parent_df: Tabla de la Fase 3/4 (``union_df`` o el ``safe_df`` de
             Fase 4, que conserva todas sus columnas): debe tener
-            ``accession``, ``start``, ``sequence``, ``origen``,
-            ``bepipred_score``, ``epidope_score`` por region.
+            ``accession``, ``start``, ``sequence``, ``origen`` y al menos una
+            columna ``'{motor}_score'`` por region (ver
+            ``_traceback_columns``: el subconjunto exacto de motores presentes
+            varia segun el camino de entrada, no se asume cuales existen).
 
     Returns:
-        DataFrame con columnas ``_TRACEBACK_COLUMNS`` (una fila por match
-        candidato-region no redundante; normalmente 1:1, pero si el mismo
-        nucleo aparece en mas de una region de ``parent_df`` se reporta una
-        fila por cada una en vez de elegir arbitrariamente). Los candidatos
-        que no se logran ubicar en ninguna region padre (no deberia ocurrir
-        en condiciones normales) se omiten con un warning en el log, para no
-        reportar coordenadas inventadas.
+        DataFrame con columnas ``_TRACEBACK_BASE_COLUMNS`` mas
+        ``'{motor}_score'`` por cada motor presente en ``parent_df`` (una
+        fila por match candidato-region no redundante; normalmente 1:1, pero
+        si el mismo nucleo aparece en mas de una region de ``parent_df`` se
+        reporta una fila por cada una en vez de elegir arbitrariamente). Los
+        candidatos que no se logran ubicar en ninguna region padre (no
+        deberia ocurrir en condiciones normales) se omiten con un warning en
+        el log, para no reportar coordenadas inventadas.
     """
+    columns = _traceback_columns(parent_df)
+
     if report_df.empty or parent_df.empty:
-        return pd.DataFrame(columns=_TRACEBACK_COLUMNS)
+        return pd.DataFrame(columns=columns)
 
     valid_df = report_df[report_df["veredicto"] == "Candidato Valido"]
     if valid_df.empty:
-        return pd.DataFrame(columns=_TRACEBACK_COLUMNS)
+        return pd.DataFrame(columns=columns)
+
+    score_columns = [c for c in columns if c.endswith("_score")]
 
     records = []
     for candidate in valid_df.itertuples(index=False):
@@ -588,23 +615,22 @@ def build_traceback_report(report_df: pd.DataFrame, parent_df: pd.DataFrame) -> 
             offset = parent.sequence.find(candidate.sequence)
             start_real = parent.start + offset
             end_real = start_real + len(candidate.sequence) - 1
-            records.append(
-                {
-                    "accession": parent.accession,
-                    "sequence_f5": candidate.sequence,
-                    "core_9aa": candidate.core_9aa,
-                    "start": start_real,
-                    "end": end_real,
-                    "origen": parent.origen,
-                    "n_alelos_promiscuos": candidate.n_alelos_promiscuos,
-                    "n_alelos_evaluados": candidate.n_alelos_evaluados,
-                    "min_rank_el": candidate.min_rank_el,
-                    "bepipred_score": parent.bepipred_score,
-                    "epidope_score": parent.epidope_score,
-                }
-            )
+            record = {
+                "accession": parent.accession,
+                "sequence_f5": candidate.sequence,
+                "core_9aa": candidate.core_9aa,
+                "start": start_real,
+                "end": end_real,
+                "origen": parent.origen,
+                "n_alelos_promiscuos": candidate.n_alelos_promiscuos,
+                "n_alelos_evaluados": candidate.n_alelos_evaluados,
+                "min_rank_el": candidate.min_rank_el,
+            }
+            for score_col in score_columns:
+                record[score_col] = getattr(parent, score_col)
+            records.append(record)
 
-    traceback_df = pd.DataFrame.from_records(records, columns=_TRACEBACK_COLUMNS)
+    traceback_df = pd.DataFrame.from_records(records, columns=columns)
     return _deduplicate_protein_mode_windows(traceback_df)
 
 

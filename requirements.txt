@@ -5,6 +5,12 @@
 pandas>=1.5.0
 numpy>=1.22.0
 
+# Fase 1.5 (estructura, PDB/mmCIF): parseo 100% local via gemmi (sin llamadas
+# de red). A diferencia de BepiPred/EpiDope, no requiere entorno aislado: es
+# una libreria liviana y sin conflictos de dependencias con el resto del
+# pipeline.
+gemmi>=0.6.0
+
 # NOTA: la Fase 2 (BepiPred-3.0) NO se instala aqui. Se ejecuta como
 # subproceso local contra un paquete descargado manualmente por licencia
 # academica (bepipred-3.0b.src/, gitignored). Sus dependencias (fair-esm,

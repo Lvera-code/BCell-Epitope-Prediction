@@ -131,6 +131,143 @@ class Settings:
     FASTA_INPUT_DIR: Path = Path(_env_str("FASTA_INPUT_DIR", "fasta_inputs"))
     FASTA_OUTPUT_DIR: Path = Path(_env_str("FASTA_OUTPUT_DIR", "fasta_outputs"))
 
+    # --- Fase 1.5: Extraccion de estructura (PDB/mmCIF via gemmi, LOCAL) ---
+    # Estrategia de seleccion de cadena cuando el archivo de entrada tiene mas
+    # de una cadena proteica (ver `src/utils/structure_parser.py`). Nunca
+    # implicita: la cadena elegida siempre se loggea con su motivo.
+    #   'longest'  -> se elige la cadena con mas residuos en su polimero
+    #                 (`chain.get_polymer().length()` via gemmi).
+    #   'explicit' -> se usa PDB_EXPLICIT_CHAIN_ID (obligatorio en ese caso).
+    PDB_CHAIN_SELECTION_STRATEGY: str = _env_str("PDB_CHAIN_SELECTION_STRATEGY", "longest")
+    PDB_EXPLICIT_CHAIN_ID: str = _env_str("PDB_EXPLICIT_CHAIN_ID", "")
+
+    # Modo de procesamiento para input de tipo estructura (ver
+    # `src/engines/engine_registry.py::active_engines_for`):
+    #   'structure_only'         -> solo corren los motores estructurales
+    #                               (DiscoTope-3.0 + ScanNet).
+    #   'structure_and_sequence' -> ademas se deriva un FASTA canonico (ATMSEQ)
+    #                               de la estructura y se pasa tambien a
+    #                               BepiPred-3.0 + EpiDope.
+    # Default 'structure_and_sequence': maximiza cobertura (los 4 motores)
+    # cuando el input es un PDB, salvo que se pida lo contrario explicitamente
+    # (Setting o '--pdb-mode' en pipeline.py).
+    PDB_PROCESSING_MODE: str = _env_str("PDB_PROCESSING_MODE", "structure_and_sequence")
+
+    # --- Fase 2 (motor estructural 1/2): DiscoTope-3.0, ejecucion LOCAL ---
+    # Mismo grupo (DTU Health Tech) que BepiPred-3.0, pero a diferencia de
+    # este SI es instalable directo via git+pip (licencia Creative Commons,
+    # sin solicitud academica separada): github.com/Magnushhoie/DiscoTope-3.0.
+    # Entorno aislado dedicado (.venv-discotope) por el mismo motivo que
+    # BepiPred/EpiDope: stack de dependencias propio (pytorch-geometric,
+    # xgboost, biotite) que puede chocar con el resto del pipeline.
+    DISCOTOPE_INSTALL_PATH: Path = Path(_env_str("DISCOTOPE_INSTALL_PATH", "DiscoTope-3.0"))
+    DISCOTOPE_PYTHON_BIN: str = _env_str("DISCOTOPE_PYTHON_BIN", str(Path(".venv-discotope/bin/python")))
+    # ESM-IF1 (inverse folding) descarga sus pesos via el cache de torch hub
+    # en tiempo de inferencia. Se redirige ese cache (variable de entorno
+    # TORCH_HOME) a una ruta persistente FUERA del repo del proyecto, para no
+    # volver a descargarlos en cada corrida (ver `_build_env` en
+    # discotope_engine.py). Los pesos del ensemble XGBoost propio de
+    # DiscoTope-3.0 (`models.zip`) NO se cachean aqui: se descomprimen una
+    # sola vez dentro de DISCOTOPE_INSTALL_PATH siguiendo la guia oficial del
+    # repo, igual que BepiPred-3.0 con su paquete descargado.
+    DISCOTOPE_WEIGHTS_CACHE_DIR: Path = Path(
+        _env_str("DISCOTOPE_WEIGHTS_CACHE_DIR", str(Path.home() / ".cache" / "bcell-epitope-pipeline" / "discotope-weights"))
+    )
+    DISCOTOPE_STRUC_TYPE: str = _env_str("DISCOTOPE_STRUC_TYPE", "solved")  # 'solved' | 'alphafold'
+    DISCOTOPE_TIMEOUT_SECONDS: int = _env_int("DISCOTOPE_TIMEOUT_SECONDS", 1800)
+    DISCOTOPE_DOWNLOAD_URL: str = "https://github.com/Magnushhoie/DiscoTope-3.0/"
+
+    # Umbral y longitud minima aplicados LOCALMENTE en Fase 3 (misma logica de
+    # ventana deslizante que BepiPred/EpiDope) sobre 'calibrated_score' (ver
+    # ADR "Por que calibrated_score" en discotope_engine.py) -- NO sobre
+    # 'DiscoTope-3.0_score' cruda como en una version anterior de este motor
+    # (esa version SI requeria una calibracion casera de una sola estructura
+    # de ejemplo; ver historial de git para esa version si hace falta).
+    #
+    # 0.90 ES EL UMBRAL OFICIAL publicado por los autores para
+    # 'calibrated_score' (nivel "moderate" del flag CLI
+    # '--calibrated_score_epi_threshold', confirmado via el paper: Hoie et
+    # al., Frontiers in Immunology 2024). Los autores publican 3 niveles de
+    # referencia con recall esperado, todos validos segun el objetivo:
+    #   0.40 -> "low"      (~70% recall, mas candidatos, mas falsos positivos)
+    #   0.90 -> "moderate" (default, balance recall/precision)
+    #   1.51 -> "higher"   (mayor precision, menos candidatos)
+    # Ajustable via DISCOTOPE_THRESHOLD sin tocar codigo si se prefiere otro
+    # nivel de la tabla oficial.
+    DISCOTOPE_THRESHOLD: float = _env_float("DISCOTOPE_THRESHOLD", 0.90)
+    DISCOTOPE_MIN_EPITOPE_LENGTH: int = _env_int("DISCOTOPE_MIN_EPITOPE_LENGTH", 9)
+    DISCOTOPE_WINDOW_SIZE: int = _env_int("DISCOTOPE_WINDOW_SIZE", 9)
+    DISCOTOPE_MAX_GAP_RESIDUES: int = _env_int("DISCOTOPE_MAX_GAP_RESIDUES", 2)
+
+    DISCOTOPE_OUTPUT_DIR: Path = Path(_env_str("DISCOTOPE_OUTPUT_DIR", "produccion_resultados/discotope3"))
+
+    # --- Fase 2 (motor estructural 2/2): ScanNet, ejecucion LOCAL ---
+    # A diferencia de DiscoTope-3.0, ScanNet (github.com/jertubiana/ScanNet)
+    # no requiere ningun software externo mas alla de su propio stack Python
+    # (numpy/numba/scikit-learn/tensorflow/keras, Python 3.6.12) -- pero ese
+    # stack SI es antiguo e incompatible con el resto del pipeline, mismo
+    # motivo que EpiDope para requerir entorno aislado dedicado
+    # (.venv-scannet). Runtime alternativo via Docker (imagen oficial
+    # 'jertubiana/scannet'), pensado para evitar tener que resolver ese stack
+    # antiguo a mano.
+    #
+    # AMBOS runtimes fueron instalados y validados empiricamente (2026-07-20,
+    # ver ADR en scannet_engine.py): 'docker pull jertubiana/scannet' +
+    # 'docker inspect' confirmaron WORKDIR=/ScanNet (el default de
+    # SCANNET_DOCKER_WORKDIR, sin ajuste necesario) y una corrida real dio
+    # resultados identicos byte a byte al runtime 'venv' sobre el mismo PDB.
+    SCANNET_RUNTIME: str = _env_str("SCANNET_RUNTIME", "docker")  # 'docker' | 'venv'
+    SCANNET_INSTALL_PATH: Path = Path(_env_str("SCANNET_INSTALL_PATH", "ScanNet"))
+    # NOTA (confirmado al instalar/validar realmente el runtime 'venv'): pese
+    # al nombre de la variable, en la practica NINGUN sistema moderno trae ya
+    # un interprete Python 3.6.12 instalado (requisito exacto de ScanNet) del
+    # que un simple 'python3 -m venv' pueda partir. Lo que si funciona de
+    # forma reproducible es crear el entorno con conda, que SI distribuye
+    # builds de Python 3.6.12: 'conda create -n scannet_env python=3.6.12'
+    # seguido de 'pip install -r ScanNet/requirements.txt' dentro de ese
+    # entorno. SCANNET_PYTHON_BIN admite cualquier interprete (venv o conda);
+    # el default de abajo asume conda por ser la ruta que de verdad funciono.
+    SCANNET_PYTHON_BIN: str = _env_str(
+        "SCANNET_PYTHON_BIN", str(Path.home() / "miniconda3" / "envs" / "scannet_env" / "bin" / "python")
+    )
+    SCANNET_DOCKER_IMAGE: str = _env_str("SCANNET_DOCKER_IMAGE", "jertubiana/scannet")
+    SCANNET_DOCKER_WORKDIR: str = _env_str("SCANNET_DOCKER_WORKDIR", "/ScanNet")
+    SCANNET_TIMEOUT_SECONDS: int = _env_int("SCANNET_TIMEOUT_SECONDS", 1800)
+    SCANNET_DOWNLOAD_URL: str = "https://github.com/jertubiana/ScanNet"
+
+    # Umbral y longitud minima aplicados LOCALMENTE en Fase 3 sobre 'Binding
+    # site probability' (columna cruda del CSV oficial, escala 0.00-1.00 por
+    # residuo, salida sigmoide del modelo).
+    #
+    # INVESTIGADO A FONDO (2026-07-20): a diferencia de DiscoTope-3.0 (que SI
+    # publica un umbral oficial via 'calibrated_score', ver
+    # DISCOTOPE_THRESHOLD), los autores de ScanNet NO publican un punto de
+    # corte fijo para el modelo de epitopos (revisado el paper, el repo
+    # completo y su propio 'utilities/chimera.py': los unicos numeros que
+    # usan son un gradiente de 8 colores para visualizacion, 0.05-1.00, no un
+    # umbral de clasificacion). Tiene sentido: el score bruto de ScanNet varia
+    # mucho de una cadena a otra (en la cadena de prueba real, max=0.291;
+    # nada garantiza que otra cadena no llegue a 0.7) -un numero absoluto fijo
+    # nunca generaliza bien entre proteinas distintas.
+    #
+    # Por eso el comportamiento por defecto de `extract_epitopes` (ver
+    # scannet_engine.py) NO usa este valor fijo: calcula un umbral ADAPTATIVO
+    # por accession, como el percentil `SCANNET_THRESHOLD_PERCENTILE` de los
+    # scores de ESA cadena especifica -mismo principio que 'calibrated_score'
+    # de DiscoTope-3.0 (normalizar por la distribucion propia de cada
+    # antigeno en vez de un corte absoluto universal), aplicado aqui porque
+    # ScanNet no lo hace por si solo-. SCANNET_THRESHOLD se conserva como
+    # override MANUAL (fijo, no adaptativo) para quien prefiera un numero
+    # exacto y reproducible entre corridas -- ver '--scannet-threshold' en
+    # pipeline.py.
+    SCANNET_THRESHOLD_PERCENTILE: float = _env_float("SCANNET_THRESHOLD_PERCENTILE", 90.0)
+    SCANNET_THRESHOLD: float = _env_float("SCANNET_THRESHOLD", 0.10)
+    SCANNET_MIN_EPITOPE_LENGTH: int = _env_int("SCANNET_MIN_EPITOPE_LENGTH", 9)
+    SCANNET_WINDOW_SIZE: int = _env_int("SCANNET_WINDOW_SIZE", 9)
+    SCANNET_MAX_GAP_RESIDUES: int = _env_int("SCANNET_MAX_GAP_RESIDUES", 2)
+
+    SCANNET_OUTPUT_DIR: Path = Path(_env_str("SCANNET_OUTPUT_DIR", "produccion_resultados/scannet"))
+
     # --- Fase 4: Filtro de tolerancia inmunologica (BLASTp local) ---
     # Prefijo (sin extension) de la base de datos BLAST del proteoma humano,
     # generada localmente con 'makeblastdb'. NUNCA se hardcodea: se lee de la
@@ -141,6 +278,20 @@ class Settings:
     # blast_engine.py), igual que la validacion de instalacion de BepiPred.
     BLAST_HUMAN_DB: str = _env_str("BLAST_HUMAN_DB", "reference_db/human_proteome_db")
     BLAST_IDENTITY_THRESHOLD: float = _env_float("BLAST_IDENTITY_THRESHOLD", 75.0)
+    # CONFIRMADO EMPIRICAMENTE (2026-07-20, PDBs reales 1fv2/7c4s/7lkh via
+    # DiscoTope-3.0/ScanNet): 'max_pident' original tomaba el %identidad
+    # maximo de CUALQUIER hit de BLAST, sin considerar cuanto del peptido
+    # realmente cubria ese alineamiento. Con 'blastp-short' + evalue=50 (laxo
+    # a proposito, ver BLAST_EVALUE_SHORT), un fragmento de 5-6 aa 100%
+    # identico dentro de un peptido de 14-31 aa es estadisticamente esperable
+    # por puro azar contra el proteoma humano completo (~11M residuos: un
+    # 5-mero especifico se espera ~3 veces solo por azar) y contaba exactamente
+    # igual que un homologo real de longitud completa -- rechazando por
+    # "Autoinmunidad" casi cualquier peptido corto, real o no. Un hit solo
+    # cuenta para 'max_pident' si su longitud de alineamiento cubre al menos
+    # esta fraccion de la longitud del peptido consultado (ver
+    # `_max_identity_by_query` en blast_engine.py).
+    BLAST_MIN_QUERY_COVERAGE: float = _env_float("BLAST_MIN_QUERY_COVERAGE", 0.9)
     # E-value seleccionado dinamicamente por tramo de longitud del peptido
     # (ver `_select_evalue` en blast_engine.py). La estadistica de BLAST
     # penaliza a los peptidos cortos: con el e-value por defecto de blastp
@@ -192,3 +343,6 @@ class Settings:
         cls.EPIDOPE_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
         cls.FASTA_INPUT_DIR.mkdir(parents=True, exist_ok=True)
         cls.FASTA_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        cls.DISCOTOPE_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        cls.DISCOTOPE_WEIGHTS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        cls.SCANNET_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)

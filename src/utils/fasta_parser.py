@@ -114,6 +114,28 @@ def sanitize_sequence(raw_sequence: str) -> Tuple[str, List[str]]:
     return upper, invalid_chars
 
 
+def is_bepipred_compatible(sequence: str) -> Tuple[bool, List[str]]:
+    """Indica si ``sequence`` puede enviarse a BepiPred-3.0/EpiDope sin ser rechazada.
+
+    Reutiliza el mismo alfabeto canonico que ``load_and_sanitize`` (nunca se
+    relaja: confirmado empiricamente -reintentado el 2026-07-20 contra la
+    instalacion local real- que BepiPred-3.0 sigue rechazando en bloque,
+    exit code 1, cualquier caracter fuera de los 20 aminoacidos estandar,
+    incluida 'X'). Pensada para el Camino 3 (PDB -> FASTA derivado, ver
+    ``src.utils.structure_parser``): a diferencia de un FASTA subido por el
+    usuario (Camino 1, donde un residuo no canonico sigue siendo fatal via
+    ``load_and_sanitize``), un residuo no mapeable en la extraccion ATMSEQ de
+    una estructura ('X') no debe abortar todo el pipeline -solo excluir esa
+    accession de BepiPred/EpiDope, dejando correr igual los motores
+    estructurales (DiscoTope-3.0/ScanNet) sobre el PDB original-.
+
+    Returns:
+        Tupla ``(compatible, caracteres_no_canonicos_unicos_ordenados)``.
+    """
+    _, invalid_chars = sanitize_sequence(sequence)
+    return not invalid_chars, sorted(set(invalid_chars))
+
+
 def load_and_sanitize(path: Path) -> List[FastaRecord]:
     """Lee y sanea un FASTA completo, descartando registros vacios y rechazando residuos no canonicos.
 
@@ -162,6 +184,19 @@ def load_and_sanitize(path: Path) -> List[FastaRecord]:
             )
 
         accession = header.split()[0] if header else "UNKNOWN"
+        if "/" in accession or "\\" in accession:
+            sane_accession = accession.replace("/", "_").replace("\\", "_")
+            logger.warning(
+                "Accession '%s' en '%s' contiene un separador de ruta ('/' o '\\'): "
+                "renombrado a '%s'. Motivo: BepiPred-3.0 construye el path de sus "
+                "encodings ESM-2 concatenando el accession crudo con el operador '/' "
+                "de pathlib (bepipred3.py::get_esm2_represention_on_accs_seqs), asi que "
+                "cualquier '/' en el accession crea un subdirectorio inesperado que "
+                "nunca se crea con mkdir y hace fallar el subproceso con "
+                "'Parent directory ... does not exist' (confirmado empiricamente).",
+                accession, path.name, sane_accession,
+            )
+            accession = sane_accession
         sane_records.append(FastaRecord(header=header, accession=accession, sequence=upper_seq))
 
     if not sane_records:

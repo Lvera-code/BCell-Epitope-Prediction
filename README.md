@@ -1,34 +1,72 @@
 # Pipeline de Descubrimiento de Epítopos Vacunales
 
-Orquestador de terminal (`pipeline.py`) que procesa una secuencia de proteína
-(FASTA) a través de 5 fases estrictas hasta producir una lista de péptidos
-candidatos a vacuna, validados por antigenicidad (unión anotada de dos
-motores independientes), ausencia de homología con el proteoma humano
-(riesgo de autoinmunidad) e inmunogenicidad T-helper (presentación MHC-II /
-HLA-DR/DQ/DP, célula CD4+). Todas las fases corren **100% en local**
-(subprocess sobre binarios/paquetes instalados en tu máquina): el pipeline
-nunca hace una llamada de red durante la inferencia. Predice exclusivamente
-presentación T-helper (MHC-II/CD4+); no incluye predicción MHC-I/CD8+.
+Orquestador de terminal (`pipeline.py`) que procesa un FASTA de secuencia o
+una estructura (PDB/mmCIF) a través de 5 fases estrictas hasta producir una
+lista de péptidos candidatos a vacuna, validados por antigenicidad (unión
+anotada de hasta 4 motores independientes: 2 de secuencia + 2
+estructurales), ausencia de homología con el proteoma humano (riesgo de
+autoinmunidad) e inmunogenicidad T-helper (presentación MHC-II / HLA-DR/DQ/DP,
+célula CD4+). Todas las fases corren **100% en local** (subprocess sobre
+binarios/paquetes instalados en tu máquina): el pipeline nunca hace una
+llamada de red durante la inferencia. Predice exclusivamente presentación
+T-helper (MHC-II/CD4+); no incluye predicción MHC-I/CD8+.
+
+## Tres caminos de entrada
+
+El tipo de archivo pasado a `--input` se detecta automáticamente
+(`src/utils/input_router.py`) y decide qué motores de Fase 2 corren:
+
+| Camino | Input | Motores activos | Notas |
+|---|---|---|---|
+| **1** | FASTA | BepiPred-3.0 + EpiDope | Comportamiento original, sin cambios |
+| **2** | PDB/mmCIF, `--pdb-mode structure_only` | DiscoTope-3.0 + ScanNet | BepiPred/EpiDope nunca se invocan |
+| **3** | PDB/mmCIF, `--pdb-mode structure_and_sequence` (default para input de estructura) | Los 4 motores | Se deriva un FASTA canónico (ATMSEQ) de la estructura para BepiPred/EpiDope |
+
+Para input de estructura, la Fase 1 (saneamiento FASTA) se reemplaza por la
+**Fase 1.5** (`src/utils/structure_parser.py`, vía `gemmi`): elige una cadena
+de referencia (`PDB_CHAIN_SELECTION_STRATEGY`, `'longest'` por defecto),
+extrae su secuencia **ATMSEQ** (la realmente resuelta en los átomos, no
+`SEQRES`) resolviendo residuos modificados vía el CCD (MSE→M, SEP→S, etc.), y
+construye un mapeo de posiciones PDB↔FASTA. Si esa secuencia derivada trae
+algún residuo no canónico sin mapeo (`X`), el pipeline **no aborta**: excluye
+solo a BepiPred-3.0/EpiDope de esa corrida (con aviso claro) porque BepiPred
+los rechaza en bloque, pero los motores estructurales corren igual sobre el
+PDB.
 
 ## Flujo de trabajo (5 fases)
 
-1. **Saneamiento FASTA** — valida y limpia la(s) secuencia(s) de entrada
-   (`fasta_inputs/`, admite FASTA multi-registro con varias proteínas).
-2. **Antigenicidad** — dos motores independientes ejecutados en local, cada
-   uno con su propio auto-caché en CSV: BepiPred-3.0 (subprocess sobre el
-   código fuente oficial de DTU Health Tech) y EpiDope (subprocess sobre el
-   binario del entorno conda dedicado, código abierto).
-3. **Mapeo de epítopos y unión lógica anotada** — para cada motor, una
+1. **Saneamiento FASTA / extracción de estructura** — Camino 1: valida y
+   limpia la(s) secuencia(s) de entrada (`fasta_inputs/`, admite FASTA
+   multi-registro). Caminos 2/3: Fase 1.5, ver arriba.
+2. **Antigenicidad** — hasta 4 motores independientes ejecutados en local
+   según el camino de entrada (ver tabla arriba), cada uno con su propio
+   auto-caché en CSV: BepiPred-3.0 y EpiDope (motores de secuencia, FASTA →
+   score por residuo) y DiscoTope-3.0 y ScanNet (motores estructurales, PDB
+   de una sola cadena → score por residuo).
+3. **Mapeo de epítopos y unión lógica anotada** — para cada motor activo, una
    ventana deslizante local (9 aa, tolerante a hasta 2 residuos por debajo
-   del umbral por ventana, con fusión de ventanas solapadas/adyacentes)
+   del umbral por ventana, con fusión de ventanas solapadas/adyacentes;
+   umbral independiente por motor, las escalas no son comparables entre sí)
    sobre sus scores de antigenicidad. Luego, TODA región detectada por
-   BepiPred y/o por EpiDope avanza a la Fase 4 (`src/engines/consensus.py`):
+   cualquier motor activo avanza a la Fase 4 (`src/engines/consensus.py`):
    las regiones que solapan entre motores se **fusionan** (`start` mínimo,
    `end` máximo, sin recortar a la intersección, incluye fusión transitiva
-   de cadenas de regiones), quedando marcadas en la columna `origen` como
-   `'Consenso'` (fusión de ambos motores), `'BepiPred'` o `'EpiDope'` (un
-   solo motor). Filtro de longitud inquebrantable: se descarta cualquier
-   región final menor a 9 aa antes de la Fase 4.
+   de cadenas de regiones), quedando marcadas en la columna `origen` con
+   abreviaturas de 2 letras por motor contribuyente: `Bp` (BepiPred), `Ed`
+   (EpiDope), `Dt` (DiscoTope-3.0), `Sn` (ScanNet). Un único motor se
+   reporta solo (p. ej. `'Bp'`); dos o tres se unen con `'+'` (p. ej.
+   `'Bp+Ed'`, `'Dt+Sn'`, `'Bp+Dt'` — cualquier combinación, no solo los
+   pares "naturales", para poder distinguirlas todas sin ambigüedad).
+   Única excepción: cuando los 4 motores contribuyen a la vez, la etiqueta
+   es `'Consenso total'` en vez de `'Bp+Ed+Dt+Sn'`. Filtro de longitud
+   inquebrantable: se descarta
+   cualquier región final menor a 9 aa antes de la Fase 4.
+
+   *Nota biológica:* DiscoTope-3.0/ScanNet puntúan epítopos conformacionales
+   (parches 3D potencialmente discontinuos en la secuencia lineal);
+   colapsarlos a regiones contiguas vía ventana deslizante es una
+   simplificación deliberada para que Fase 4/5 sigan operando sobre péptidos
+   lineales sintetizables.
 4. **Filtro de tolerancia** — BLASTp local contra el proteoma humano, con
    E-value seleccionado dinámicamente por longitud del péptido (laxo para
    péptidos cortos, estricto para dominios/proteínas completas), descarta
@@ -236,6 +274,17 @@ blastp` con E-value 0.1; `> 100 aa` usa `-task blastp` con E-value 0.05
 Configurable vía `BLAST_SHORT_PEPTIDE_MAX_LEN`, `BLAST_MEDIUM_PEPTIDE_MAX_LEN`
 y `BLAST_EVALUE_SHORT` / `BLAST_EVALUE_MEDIUM` / `BLAST_EVALUE_LONG`.
 
+**e) Filtro de cobertura mínima de alineamiento.** El e-value laxo de
+`blastp-short` (pensado para no perder homólogos cortos reales) tiene un
+efecto secundario: un fragmento minúsculo (5-6 aa) 100% idéntico dentro de
+un péptido de 9-30 aa es estadísticamente esperable *por puro azar* contra
+el proteoma humano completo (~11M residuos), no una homología real —
+CONFIRMADO EMPÍRICAMENTE (2026-07-20) que sin filtrar esto, casi cualquier
+péptido corto se rechazaba por "Autoinmunidad" sin importar su origen. Un
+hit solo cuenta hacia `max_pident` si su alineamiento cubre al menos
+`BLAST_MIN_QUERY_COVERAGE` (90% por defecto) de la longitud del péptido
+consultado.
+
 ### 5. NetMHCIIpan-4.3 local (obligatorio para la Fase 5)
 
 Binario propietario de DTU Health Tech (predicción MHC-II / HLA-DR),
@@ -269,27 +318,132 @@ representativos de referencia poblacional del IEDB, ver
 `src/engines/netmhciipan_engine.py`) para estimar cobertura poblacional
 amplia.
 
+### 6. DiscoTope-3.0 local (opcional, motor estructural 1/2 — Caminos 2/3)
+
+A diferencia de BepiPred-3.0/NetMHCIIpan-4.3, **DiscoTope-3.0 es instalable
+directo vía git+pip** (licencia Creative Commons, sin solicitud académica
+separada): [github.com/Magnushhoie/DiscoTope-3.0](https://github.com/Magnushhoie/DiscoTope-3.0/).
+Fija un stack propio (`torch`, `torch_geometric`, `xgboost`, `biotite`)
+incompatible con el resto del pipeline: requiere entorno aislado dedicado,
+mismo patrón que `.venv-bepipred`.
+
+> **Nota (confirmado en este entorno):** `biotite==1.6.*` (pin exacto del
+> `requirements.txt` oficial) no tiene wheel para Python < 3.11. Si tu
+> `python3` por defecto es 3.10 o menor, crea el venv con un intérprete más
+> nuevo (`python3.12`, etc.) — si tu sistema no tiene `python3.12-venv`
+> instalado y no querés usar `sudo`, `pip install --user virtualenv` seguido
+> de `python3 -m virtualenv -p python3.12 .venv-discotope` funciona sin
+> privilegios de administrador.
+
+```bash
+git clone https://github.com/Magnushhoie/DiscoTope-3.0/
+python3 -m venv .venv-discotope   # o virtualenv -p python3.12, ver nota arriba
+.venv-discotope/bin/pip install -r DiscoTope-3.0/requirements.txt
+.venv-discotope/bin/pip install ./DiscoTope-3.0
+
+# Los pesos del ensemble XGBoost propio vienen en el repo, comprimidos:
+cd DiscoTope-3.0 && python3 -c "import zipfile; zipfile.ZipFile('models.zip').extractall('.')" && cd ..
+```
+
+Variables de entorno (todas opcionales, con default razonable):
+`DISCOTOPE_INSTALL_PATH` (default `DiscoTope-3.0/`), `DISCOTOPE_PYTHON_BIN`
+(default `.venv-discotope/bin/python`), `DISCOTOPE_WEIGHTS_CACHE_DIR`
+(cache persistente de los pesos de ESM-IF1 —descargados automáticamente en
+la primera corrida, ~350 MB— fuera del repo por defecto:
+`~/.cache/bcell-epitope-pipeline/discotope-weights`, para no volver a
+descargarlos en cada entorno nuevo).
+
+### 7. ScanNet local (opcional, motor estructural 2/2 — Caminos 2/3)
+
+[github.com/jertubiana/ScanNet](https://github.com/jertubiana/ScanNet), sin
+software externo más allá de su propio stack Python, pero uno **muy
+antiguo**: Python 3.6.12 exacto, TensorFlow 1.14, Keras 2.2.5. Los pesos
+pre-entrenados (~43 MB) ya vienen en el repo, no hace falta descargarlos
+aparte.
+
+> **Ningún sistema moderno trae ya Python 3.6.12 preinstalado.** La forma
+> reproducible de conseguirlo (confirmada en este entorno) es con **conda**,
+> no con un venv común (que necesita partir de un intérprete ya instalado):
+
+```bash
+git clone https://github.com/jertubiana/ScanNet
+conda create -n scannet_env python=3.6.12 -y
+conda run -n scannet_env pip install -r ScanNet/requirements.txt
+```
+
+Si instalaste el entorno conda con el nombre `scannet_env` (el usado arriba),
+**no hace falta exportar nada**: `./run.sh` (ver "Uso" abajo) detecta ese
+entorno automáticamente y usa el runtime `venv` en vez del default
+`docker`. Si le pusiste otro nombre, o preferís invocar `pipeline.py`
+directo sin pasar por `run.sh`:
+
+```bash
+export SCANNET_PYTHON_BIN=$HOME/miniconda3/envs/mi_entorno/bin/python
+export SCANNET_RUNTIME=venv   # default es 'docker' (ver abajo)
+```
+
+**Alternativa Docker** (`SCANNET_RUNTIME=docker`, imagen oficial
+`jertubiana/scannet`): evita resolver el stack antiguo a mano. **Validado
+empíricamente** (2026-07-20: `docker pull jertubiana/scannet` + corrida real
+contra un PDB, resultados idénticos byte a byte al runtime `venv`) — el
+`WORKDIR` de la imagen es efectivamente `/ScanNet` (default de
+`SCANNET_DOCKER_WORKDIR`, confirmado con `docker inspect`), y tanto `python`
+como `python3` resuelven al intérprete correcto (3.6.12) dentro de la
+imagen. Es la alternativa mas simple para quien no quiera lidiar con conda:
+
+```bash
+docker pull jertubiana/scannet
+export SCANNET_RUNTIME=docker   # ya es el default; explicito solo si algo mas lo cambio
+```
+
+Variables de entorno: `SCANNET_RUNTIME` (`docker` default | `venv`),
+`SCANNET_INSTALL_PATH` (default `ScanNet/`), `SCANNET_PYTHON_BIN`,
+`SCANNET_DOCKER_IMAGE` (default `jertubiana/scannet`),
+`SCANNET_DOCKER_WORKDIR`.
+
 ## Uso
+
+`./run.sh` es un wrapper fino sobre `pipeline.py` (mismos argumentos) que
+autodetecta las instalaciones locales de BepiPred-3.0 y ScanNet (venv/conda)
+si están en su ubicación por defecto, para no tener que exportar nada a
+mano. DiscoTope-3.0 nunca necesita exports: sus defaults ya son relativos a
+la raíz del proyecto. Preferilo sobre invocar `python pipeline.py` directo
+salvo que necesites apuntar a instalaciones en otras rutas (ahí sí usá las
+variables de entorno de las Secciones 2-7).
 
 ```bash
 # Coloca tu(s) FASTA en fasta_inputs/ (admite multi-registro), luego:
-python pipeline.py --input fasta_inputs/secuencia.fasta
+./run.sh --input fasta_inputs/secuencia.fasta
+
+# Input de estructura (Caminos 2/3, requiere DiscoTope-3.0/ScanNet instalados,
+# ver Secciones 6 y 7). El tipo de archivo se detecta automáticamente:
+./run.sh --input fasta_inputs/estructura.pdb --pdb-mode structure_only
+./run.sh --input fasta_inputs/estructura.pdb
+# Sin --pdb-mode, se usa Settings.PDB_PROCESSING_MODE (default 'structure_and_sequence'),
+# asi que la segunda linea de arriba ya corre los 4 motores sin necesitar el flag.
 
 # El panel de 27 alelos HLA-DR/DQ/DP (IEDB_REFERENCE_PANEL) se evalúa siempre
 # por defecto, sin necesidad de especificar nada. Para anexar alelo(s) extra
 # (formato NetMHCIIpan, separados por coma SIN espacios; se valida el formato
 # de inmediato, antes de correr cualquier fase):
-python pipeline.py --input fasta_inputs/secuencia.fasta \
+./run.sh --input fasta_inputs/secuencia.fasta \
     --alelo-extra "DRB1_1602,HLA-DQA10501-DQB10201"
 
 # Los umbrales/longitud mínima de la Fase 3 son independientes por motor
-# (las escalas de score de BepiPred y EpiDope no son comparables):
-python pipeline.py --input fasta_inputs/secuencia.fasta \
+# (las escalas de score no son comparables entre sí):
+./run.sh --input fasta_inputs/secuencia.fasta \
     --bepipred-threshold 0.1512 --bepipred-min-length 9 \
-    --epidope-threshold 0.818 --epidope-min-length 9
+    --epidope-threshold 0.818 --epidope-min-length 9 \
+    --discotope-threshold 0.90 --discotope-min-length 9 \
+    --scannet-min-length 9
+# ScanNet es distinto: por defecto (sin --scannet-threshold) usa un umbral
+# ADAPTATIVO por percentil, calculado por accession (ScanNet no publica un
+# umbral absoluto oficial, a diferencia de DiscoTope-3.0). Para forzar un
+# valor fijo en vez del adaptativo:
+./run.sh --input fasta_inputs/estructura.pdb --scannet-threshold 0.15
 ```
 
-Corre `python pipeline.py --help` para ver todos los flags disponibles
+Corre `python pipeline.py --help` (o `./run.sh --help`) para ver todos los flags disponibles
 (umbral/E-value de BLAST, carpeta de salida, etc.), todos con su valor por
 defecto documentado.
 
@@ -303,22 +457,29 @@ divisoria, para no leerlas como una lista continua.
 
 ### Archivos generados en `fasta_outputs/`
 
-`<nombre>` es el nombre del FASTA de entrada sin extensión (`--input`).
+`<nombre>` es el nombre del archivo de entrada sin extensión (`--input`).
 
 | Archivo | Fase | Contenido |
 |---|---|---|
-| `<nombre>_clean.fasta` | 1 | FASTA saneado enviado a las fases siguientes |
+| `<nombre>_clean.fasta` | 1 | (Camino 1) FASTA saneado enviado a las fases siguientes |
+| `<nombre>_derived.fasta` | 1.5 | (Caminos 2/3) FASTA canónico ATMSEQ derivado de la estructura |
+| `<nombre>_chain_<cadena>.pdb` | 1.5 | (Caminos 2/3) PDB de una sola cadena (la elegida), input real de los motores estructurales |
+| `<nombre>_position_mapping.csv` | 1.5 | (Caminos 2/3) Mapeo de posiciones PDB↔FASTA derivado |
 | `<nombre>_bepipred_raw.csv` | 2 | Scores crudos por residuo de BepiPred-3.0 (caché) |
 | `<nombre>_epidope_raw.csv` | 2 | Scores crudos por residuo de EpiDope (caché) |
+| `<nombre>_discotope_raw.csv` | 2 | Scores crudos por residuo de DiscoTope-3.0 (caché) |
+| `<nombre>_scannet_raw.csv` | 2 | Scores crudos por residuo de ScanNet (caché) |
 | `<nombre>_bepipred_epitopes.csv` | 3 | Regiones de epítopo mapeadas localmente (BepiPred-3.0) |
 | `<nombre>_epidope_epitopes.csv` | 3 | Regiones de epítopo mapeadas localmente (EpiDope) |
-| `<nombre>_union_epitopes.csv` | 3 | Unión anotada BepiPred ∪ EpiDope (columna `origen`), entrada de la Fase 4 |
+| `<nombre>_discotope_epitopes.csv` | 3 | Regiones de epítopo mapeadas localmente (DiscoTope-3.0) |
+| `<nombre>_scannet_epitopes.csv` | 3 | Regiones de epítopo mapeadas localmente (ScanNet) |
+| `<nombre>_union_epitopes.csv` | 3 | Unión anotada de los motores activos (columna `origen`), entrada de la Fase 4 |
 | `<nombre>_blast_report.csv` | 4 | Veredicto de tolerancia (Segura / Autoinmunidad) por región |
-| `netmhciipan_raw_peptide_mode.xls` | 5 | Salida cruda de NetMHCIIpan-4.3, modo péptido exacto (`<= 40` aa), para trazabilidad. Solo se genera si hubo al menos un péptido en ese rango |
-| `netmhciipan_raw_protein_mode.xls` | 5 | Salida cruda de NetMHCIIpan-4.3, modo proteína/ventana deslizante (`> 40` aa), para trazabilidad. Solo se genera si hubo al menos un fragmento en ese rango |
-| `candidatos_finales.csv` | 5 | **Reporte final** (ver formato abajo) |
+| `<nombre>_netmhciipan_raw_peptide_mode.xls` | 5 | Salida cruda de NetMHCIIpan-4.3, modo péptido exacto (`<= 40` aa), para trazabilidad. Solo se genera si hubo al menos un péptido en ese rango |
+| `<nombre>_netmhciipan_raw_protein_mode.xls` | 5 | Salida cruda de NetMHCIIpan-4.3, modo proteína/ventana deslizante (`> 40` aa), para trazabilidad. Solo se genera si hubo al menos un fragmento en ese rango |
+| `<nombre>_candidatos_finales.csv` | 5 | **Reporte final** (ver formato abajo) |
 
-### Formato de `candidatos_finales.csv`
+### Formato de `<nombre>_candidatos_finales.csv`
 
 Es la salida de la Fase 5 después del cruce con la Fase 3/4 (traceback) y la
 deduplicación de ventanas redundantes: solo contiene candidatos con
@@ -330,20 +491,23 @@ deduplicación de ventanas redundantes: solo contiene candidatos con
 | `sequence_f5` | Péptido/ventana evaluado por NetMHCIIpan (péptido completo en modo exacto, o la ventana de 15 aa ganadora en modo proteína) |
 | `core_9aa` | Núcleo de unión de 9 aa del alelo con mejor %Rank **en orientación normal** (los alelos invertidos nunca determinan este valor) |
 | `start` / `end` | Coordenadas absolutas en la proteína de origen (1-indexado), recalculadas por traceback contra la región de la Fase 3/4 |
-| `origen` | De dónde viene la región de la Fase 3: `'Consenso'` (BepiPred + EpiDope), `'BepiPred'` o `'EpiDope'` |
+| `origen` | Motores de la Fase 3 que detectaron la región, abreviados (`Bp`/`Ed`/`Dt`/`Sn`) y unidos por `'+'` (p. ej. `'Bp'`, `'Bp+Ed'`, `'Dt+Sn'`, `'Bp+Dt'`); `'Consenso total'` si contribuyen los 4 |
 | `n_alelos_promiscuos` | Cuántos alelos del panel (de 27, o más si usaste `--alelo-extra`) clasifican el péptido como SB/WB **en orientación normal** — este número decide el veredicto |
 | `n_alelos_evaluados` | Tamaño total del panel evaluado |
 | `min_rank_el` | Mejor (menor) %Rank entre los alelos en orientación normal |
-| `bepipred_score` / `epidope_score` | Score medio de antigenicidad de la Fase 3 de cada motor (`NaN` si ese motor no detectó esa región) |
+| `<motor>_score` | Una columna por cada motor activo en esa corrida (p. ej. `bepipred_score`, `discotope_score`, ...): score medio de antigenicidad de la Fase 3 (`NaN` si ese motor no detectó esa región) |
 
 ## Tests
 
 La suite de tests (`tests/`, `pytest`) cubre la lógica pura de cada fase —
-fusión de regiones en Fase 3, selección de task/E-value en Fase 4, parseo
-del `.xls` de NetMHCIIpan y exclusión de alelos invertidos, traceback de
-coordenadas, deduplicación de ventanas y validación de `--alelo-extra` en
-Fase 5 — sin depender de BepiPred, EpiDope, BLAST+ ni NetMHCIIpan
-instalados: no invoca ningún subprocess real.
+enrutamiento de input (FASTA vs. estructura), extracción de estructura
+(residuos modificados, selección de cadena), unión anotada de N motores en
+Fase 3, selección de task/E-value en Fase 4, parseo del `.xls` de
+NetMHCIIpan y exclusión de alelos invertidos, traceback de coordenadas,
+deduplicación de ventanas y validación de `--alelo-extra`/`--pdb-mode` — sin
+depender de BepiPred, EpiDope, DiscoTope-3.0, ScanNet, BLAST+ ni NetMHCIIpan
+instalados: no invoca ningún subprocess real (los tests de integración de
+los 3 caminos mockean los 4 motores).
 
 ```bash
 pip install -r requirements-dev.txt

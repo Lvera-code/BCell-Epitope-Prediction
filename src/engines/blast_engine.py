@@ -178,10 +178,57 @@ def _run_blastp_batch(
         return pd.read_csv(out_path, sep="\t", names=_OUTFMT6_COLUMNS)
 
 
+def _max_identity_by_query(
+    hits: pd.DataFrame, query_lengths: pd.Series, min_query_coverage: float
+) -> pd.Series:
+    """Maxima identidad por query, ignorando hits cuyo alineamiento no cubre lo suficiente.
+
+    Logica pura (sin subprocess ni binarios), separada de
+    :func:`run_blastp_filter` para poder testearla sin 'blastp' instalado
+    (mismo criterio del resto de este modulo, ver docstring de
+    ``tests/test_blast_engine.py``).
+
+    CONFIRMADO EMPIRICAMENTE (ver ADR en ``Settings.BLAST_MIN_QUERY_COVERAGE``):
+    sin este filtro, un fragmento de 5-6 aa 100% identico dentro de un
+    peptido de 14-31 aa -estadisticamente esperable por azar contra el
+    proteoma humano completo, no una homologia real- contaba igual que un
+    homologo autentico de longitud completa, rechazando casi cualquier
+    peptido corto por "Autoinmunidad" sin importar si de verdad se parecia a
+    algo humano.
+
+    Args:
+        hits: DataFrame en formato ``-outfmt 6`` (columnas ``_OUTFMT6_COLUMNS``),
+            con ``qseqid`` en formato ``'peptide_{idx}'`` donde ``idx`` es un
+            indice presente en ``query_lengths``.
+        query_lengths: ``indice -> longitud (aa)`` del peptido consultado
+            (``epitopes_df["sequence"].str.len()`` en :func:`run_blastp_filter`).
+        min_query_coverage: Fraccion minima (0-1) de la longitud del peptido
+            que un alineamiento debe cubrir para contar hacia la maxima
+            identidad (``Settings.BLAST_MIN_QUERY_COVERAGE`` por defecto).
+
+    Returns:
+        Serie indexada por ``qseqid`` con la maxima identidad entre los hits
+        que superan ``min_query_coverage``. Vacia si ``hits`` esta vacio o
+        ningun hit cubre lo suficiente.
+    """
+    if hits.empty:
+        return pd.Series(dtype=float)
+
+    hit_query_idx = hits["qseqid"].str.replace("peptide_", "", regex=False).astype(int)
+    hit_query_length = hit_query_idx.map(query_lengths)
+    coverage = hits["length"] / hit_query_length
+    covered_hits = hits[coverage >= min_query_coverage]
+
+    if covered_hits.empty:
+        return pd.Series(dtype=float)
+    return covered_hits.groupby("qseqid")["pident"].max()
+
+
 def run_blastp_filter(
     epitopes_df: pd.DataFrame,
     db_path: str = Settings.BLAST_HUMAN_DB,
     identity_threshold: float = Settings.BLAST_IDENTITY_THRESHOLD,
+    min_query_coverage: float = Settings.BLAST_MIN_QUERY_COVERAGE,
 ) -> pd.DataFrame:
     """Ejecuta BLASTp local sobre cada peptido de ``epitopes_df`` y anota tolerancia.
 
@@ -206,6 +253,13 @@ def run_blastp_filter(
             (por defecto, ``Settings.BLAST_HUMAN_DB``).
         identity_threshold: Porcentaje de identidad (exclusivo) por encima del
             cual un peptido se descarta por riesgo de autoinmunidad.
+        min_query_coverage: Fraccion minima (0-1) de la longitud del peptido
+            que un alineamiento de BLAST debe cubrir para contar hacia
+            ``max_pident`` (ver :func:`_max_identity_by_query` y el ADR en
+            ``Settings.BLAST_MIN_QUERY_COVERAGE``): sin este filtro, un
+            fragmento minusculo 100% identico (estadisticamente esperable
+            por azar contra un proteoma completo) rechazaba peptidos que no
+            se parecen realmente a nada humano.
 
     Returns:
         Copia de ``epitopes_df`` con columnas nuevas: ``blast_task`` (tarea
@@ -242,7 +296,7 @@ def run_blastp_filter(
     non_empty_frames = [df for df in hits_frames if not df.empty]
     hits = pd.concat(non_empty_frames, ignore_index=True) if non_empty_frames else pd.DataFrame(columns=_OUTFMT6_COLUMNS)
 
-    max_identity_per_query = hits.groupby("qseqid")["pident"].max() if not hits.empty else pd.Series(dtype=float)
+    max_identity_per_query = _max_identity_by_query(hits, lengths, min_query_coverage)
 
     result["max_pident"] = [
         float(max_identity_per_query.get(f"peptide_{idx}", 0.0)) for idx in result.index

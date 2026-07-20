@@ -1,23 +1,41 @@
 #!/usr/bin/env python3
 """Orquestador CLI del pipeline de descubrimiento de epitopos vacunales.
 
-Flujo estricto de 5 fases, cada una consumiendo la salida de la anterior:
+Tres caminos de entrada, seleccionados automaticamente segun el tipo de
+archivo (``src.utils.input_router``) y, para input de estructura, segun
+``Settings.PDB_PROCESSING_MODE``/``--pdb-mode`` (ver
+``src.engines.engine_registry.active_engines_for``):
 
-    1. Saneamiento del FASTA de entrada (``src.utils.fasta_parser``).
-    2. Prediccion de antigenicidad por residuo via DOS motores independientes
-       EJECUTADOS EN LOCAL: BepiPred-3.0 (subprocess sobre el codigo fuente
-       oficial, ``src.engines.bepipred_engine``) y EpiDope (subprocess via
-       conda, codigo abierto, ``src.engines.epidope_engine``). Cada motor
-       tiene auto-cache propio en ``fasta_outputs/``.
+    Camino 1 (input FASTA):
+        Fase 1 (saneamiento) -> Fase 2 con BepiPred-3.0 + EpiDope.
+        Comportamiento identico al pipeline original, sin cambios.
+    Camino 2 (input PDB/mmCIF, PDB_PROCESSING_MODE='structure_only'):
+        Fase 1.5 (extraccion de estructura) -> Fase 2 con DiscoTope-3.0 +
+        ScanNet UNICAMENTE. BepiPred-3.0/EpiDope nunca se invocan.
+    Camino 3 (input PDB/mmCIF, PDB_PROCESSING_MODE='structure_and_sequence'):
+        Fase 1.5 -> Fase 2 con los 4 motores. El FASTA canonico (ATMSEQ)
+        derivado en Fase 1.5 se pasa tambien a BepiPred-3.0/EpiDope, EXCEPTO
+        si contiene residuos no canonicos (ver ``is_bepipred_compatible``):
+        en ese caso se omiten solo esos dos motores para esta corrida (con
+        aviso claro), sin frenar los motores estructurales ni el resto del
+        pipeline (confirmado empiricamente que BepiPred-3.0 rechaza en
+        bloque, exit code 1, cualquier caracter fuera de los 20 aminoacidos
+        estandar -ver ``src.utils.fasta_parser``-).
+
+A partir de Fase 2, el resto del flujo es identico para los 3 caminos:
+
+    2. Prediccion de antigenicidad por residuo via los motores activos para
+       este camino, EJECUTADOS EN LOCAL (subprocess). Cada motor tiene
+       auto-cache propio en ``fasta_outputs/``.
     3. Mapeo local de regiones de epitopo contiguas por encima de un umbral
-       para cada motor (misma fuente que Fase 2, ``src.engines.epitope_mapping``),
-       y UNION LOGICA ANOTADA entre ambos (``src.engines.consensus``): TODA
-       region detectada por BepiPred y/o por EpiDope avanza a la Fase 4;
-       las regiones que solapan entre motores se FUSIONAN (start minimo, end
-       maximo, sin recortar a la interseccion) y quedan etiquetadas como
-       ``'Consenso'`` en la columna ``origen`` (``'BepiPred'``/``'EpiDope'``
-       si solo un motor la detecto). Filtro de longitud inquebrantable: se
-       descarta cualquier region final menor a 9 aa antes de la Fase 4.
+       para cada motor activo (``src.engines.epitope_mapping``), y UNION
+       LOGICA ANOTADA entre todos ellos (``src.engines.consensus``): TODA
+       region detectada por CUALQUIER motor activo avanza a la Fase 4; las
+       regiones que solapan entre motores se FUSIONAN (start minimo, end
+       maximo, sin recortar a la interseccion) y quedan etiquetadas en
+       ``origen`` con TODOS los motores contribuyentes. Filtro de longitud
+       inquebrantable: se descarta cualquier region final menor a 9 aa antes
+       de la Fase 4.
     4. Filtro de tolerancia inmunologica: BLASTp local contra el proteoma
        humano, descarta homologos de alta identidad (``src.engines.blast_engine``).
     5. Prediccion de presentacion T-helper (MHC-II) via NetMHCIIpan-4.3 LOCAL
@@ -32,35 +50,42 @@ Flujo estricto de 5 fases, cada una consumiendo la salida de la anterior:
        Fase 3 de la que provienen (``src.engines.netmhciipan_engine``).
 
 Todos los artefactos intermedios y el reporte final se guardan en
-``fasta_outputs/``. Requiere: instalacion local de BepiPred-3.0 en
-``bepipred-3.0b.src/`` y de EpiDope en ``.conda-epidope/`` (descarga/instalacion
-manual, ver README.md), NCBI BLAST+ con el proteoma humano indexado en
-``reference_db/``, y NetMHCIIpan-4.3 instalado localmente en
-``netMHCIIpan-4.3/`` (descarga manual bajo licencia academica DTU Health
-Tech, ver README.md).
+``fasta_outputs/``. Requiere, segun los motores que active cada camino:
+instalacion local de BepiPred-3.0 en ``bepipred-3.0b.src/`` y de EpiDope en
+``.conda-epidope/``, DiscoTope-3.0 en ``DiscoTope-3.0/`` (entorno
+``.venv-discotope``) y ScanNet (``.venv-scannet`` o Docker), NCBI BLAST+ con
+el proteoma humano indexado en ``reference_db/``, y NetMHCIIpan-4.3 instalado
+localmente en ``netMHCIIpan-4.3/`` (descarga manual bajo licencia academica
+DTU Health Tech). Ver README.md - Seccion de Instalacion.
 
 Ejemplo:
     python pipeline.py --input fasta_inputs/secuencia.fasta
+    python pipeline.py --input fasta_inputs/estructura.pdb --pdb-mode structure_only
 """
 
 import argparse
+import hashlib
 import sys
 from pathlib import Path
-from typing import List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 
 from src.config.settings import Settings
 from src.engines.bepipred_engine import BepiPredEngine
 from src.engines.bepipred_engine import extract_epitopes as extract_bepipred_epitopes
+from src.engines.bepipred_engine import ACCESSION_COLUMN as BEPIPRED_ACCESSION_COLUMN
+from src.engines.bepipred_engine import RESIDUE_COLUMN_CANDIDATES as BEPIPRED_RESIDUE_CANDIDATES
 from src.engines.blast_engine import print_blast_report, run_blastp_filter
 from src.engines.consensus import build_annotated_union_table, print_union_table
+from src.engines.discotope_engine import DiscoTopeEngine
+from src.engines.discotope_engine import extract_epitopes as extract_discotope_epitopes
+from src.engines.discotope_engine import print_epitope_table as print_discotope_epitope_table
+from src.engines.engine_registry import ENGINE_REGISTRY, active_engines_for
 from src.engines.epidope_engine import EpidopeEngine
 from src.engines.epidope_engine import extract_epitopes as extract_epidope_epitopes
 from src.engines.epidope_engine import ACCESSION_COLUMN as EPIDOPE_ACCESSION_COLUMN
 from src.engines.epidope_engine import RESIDUE_COLUMN as EPIDOPE_RESIDUE_COLUMN
-from src.engines.bepipred_engine import ACCESSION_COLUMN as BEPIPRED_ACCESSION_COLUMN
-from src.engines.bepipred_engine import RESIDUE_COLUMN_CANDIDATES as BEPIPRED_RESIDUE_CANDIDATES
 from src.engines.epitope_mapping import build_sequence_lookup, print_epitope_table
 from src.engines.netmhciipan_engine import (
     IEDB_REFERENCE_PANEL,
@@ -70,9 +95,14 @@ from src.engines.netmhciipan_engine import (
     print_traceback_table,
     validate_allele_extra,
 )
+from src.engines.scannet_engine import ScanNetEngine
+from src.engines.scannet_engine import extract_epitopes as extract_scannet_epitopes
+from src.engines.scannet_engine import print_epitope_table as print_scannet_epitope_table
 from src.utils.exceptions import PipelineError
-from src.utils.fasta_parser import FastaRecord, load_and_sanitize, write_fasta
+from src.utils.fasta_parser import FastaRecord, is_bepipred_compatible, load_and_sanitize, write_fasta
+from src.utils.input_router import route_input
 from src.utils.logger_config import setup_logger
+from src.utils.structure_parser import StructureRecord, parse_structure
 
 logger = setup_logger(__name__)
 
@@ -102,12 +132,20 @@ def parse_args(argv: List[str] = None) -> argparse.Namespace:
     """Define y parsea los argumentos de linea de comandos del pipeline."""
     parser = argparse.ArgumentParser(
         prog="pipeline.py",
-        description="Pipeline de descubrimiento de epitopos vacunales (BepiPred-3.0 + EpiDope + BLASTp + MHC).",
+        description="Pipeline de descubrimiento de epitopos vacunales "
+        "(BepiPred-3.0 + EpiDope + DiscoTope-3.0 + ScanNet + BLASTp + MHC).",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
         "--input", required=True,
-        help="Ruta al FASTA de entrada (dentro de fasta_inputs/).",
+        help="Ruta al archivo de entrada (dentro de fasta_inputs/): FASTA, o PDB/mmCIF de "
+        "estructura. El tipo se detecta automaticamente (ver src.utils.input_router).",
+    )
+    parser.add_argument(
+        "--pdb-mode", default=None, choices=["structure_only", "structure_and_sequence"],
+        help="Override puntual de Settings.PDB_PROCESSING_MODE para esta corrida. Solo aplica "
+        "si --input es una estructura (PDB/mmCIF); se ignora para input FASTA. Si no se "
+        "especifica, se usa Settings.PDB_PROCESSING_MODE.",
     )
     parser.add_argument(
         "--alelo-extra", default=None, type=_alelo_extra_type,
@@ -140,6 +178,28 @@ def parse_args(argv: List[str] = None) -> argparse.Namespace:
         help="Longitud minima (aa) de una region de epitopo EpiDope para no ser descartada (Fase 3).",
     )
     parser.add_argument(
+        "--discotope-threshold", type=float, default=Settings.DISCOTOPE_THRESHOLD,
+        help="Umbral de 'calibrated_score' (DiscoTope-3.0) para la ventana deslizante de epitopos "
+        "(Fase 3). El default (0.90, 'moderate') es el nivel oficial publicado por los autores; "
+        "otros niveles documentados: 0.40 ('low', ~70%% recall) y 1.51 ('higher', mas precision).",
+    )
+    parser.add_argument(
+        "--discotope-min-length", type=int, default=Settings.DISCOTOPE_MIN_EPITOPE_LENGTH,
+        help="Longitud minima (aa) de una region de epitopo DiscoTope-3.0 para no ser descartada (Fase 3).",
+    )
+    parser.add_argument(
+        "--scannet-threshold", type=float, default=None,
+        help="Umbral ABSOLUTO fijo de 'Binding site probability' (ScanNet) para la ventana "
+        "deslizante de epitopos (Fase 3). ScanNet no publica un umbral oficial (a diferencia de "
+        "DiscoTope-3.0): si no se especifica este flag (default), se usa un umbral ADAPTATIVO "
+        "calculado por accession como el percentil Settings.SCANNET_THRESHOLD_PERCENTILE (90 por "
+        "defecto) de los scores de esa cadena especifica, en vez de un numero fijo universal.",
+    )
+    parser.add_argument(
+        "--scannet-min-length", type=int, default=Settings.SCANNET_MIN_EPITOPE_LENGTH,
+        help="Longitud minima (aa) de una region de epitopo ScanNet para no ser descartada (Fase 3).",
+    )
+    parser.add_argument(
         "--blast-db", default=Settings.BLAST_HUMAN_DB,
         help="Prefijo de la base de datos BLAST local del proteoma humano (Fase 4). "
         "Tambien configurable via la variable de entorno BLAST_HUMAN_DB.",
@@ -152,7 +212,7 @@ def parse_args(argv: List[str] = None) -> argparse.Namespace:
 
 
 def fase_1_saneamiento(input_path: Path, output_dir: Path) -> Tuple[List[FastaRecord], Path]:
-    """Fase 1: lee, valida y sanea el FASTA de entrada; escribe una copia limpia."""
+    """Fase 1 (Camino 1, input FASTA): lee, valida y sanea el FASTA de entrada; escribe una copia limpia."""
     print(f"\n{_SEPARATOR}\nFASE 1 | Saneamiento del FASTA de entrada\n{_SEPARATOR}")
 
     records = load_and_sanitize(input_path)
@@ -168,96 +228,320 @@ def fase_1_saneamiento(input_path: Path, output_dir: Path) -> Tuple[List[FastaRe
     return records, clean_path
 
 
-def fase_2_antigenicidad(input_stem: str, clean_fasta: Path, output_dir: Path) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    """Fase 2: obtiene scores crudos de antigenicidad de BepiPred-3.0 y EpiDope (ambos locales), con auto-cache en CSV."""
-    print(f"\n{_SEPARATOR}\nFASE 2 | Prediccion de antigenicidad (BepiPred-3.0 + EpiDope, ejecucion local)\n{_SEPARATOR}")
+def fase_1_5_estructura(input_path: Path, output_dir: Path) -> StructureRecord:
+    """Fase 1.5 (Caminos 2/3, input estructura): extrae ATMSEQ y mapeo de posiciones del PDB/mmCIF.
 
-    bepipred_df = _cached_raw_scores(
-        engine_name="BepiPred-3.0",
-        cache_path=output_dir / f"{input_stem}_bepipred_raw.csv",
-        raw_artifacts_dir=output_dir / "_bepipred_raw",
-        clean_fasta=clean_fasta,
-        engine=BepiPredEngine(),
+    Ocurre siempre que el input sea una estructura, sin importar
+    ``PDB_PROCESSING_MODE`` (ver docstring del modulo): lo que varia entre
+    Camino 2 y Camino 3 es si el FASTA derivado aqui se pasa o no a Fase 2
+    para BepiPred-3.0/EpiDope, decidido en ``main()``.
+    """
+    print(f"\n{_SEPARATOR}\nFASE 1.5 | Extraccion de estructura (PDB/mmCIF)\n{_SEPARATOR}")
+
+    record = parse_structure(input_path, output_dir)
+    print(
+        f"Archivo: {input_path.name} | Accession: {record.accession} | "
+        f"Cadena elegida: {record.chain_id} | Longitud ATMSEQ: {len(record.sequence)} aa"
     )
-    epidope_df = _cached_raw_scores(
-        engine_name="EpiDope",
-        cache_path=output_dir / f"{input_stem}_epidope_raw.csv",
-        raw_artifacts_dir=output_dir / "_epidope_raw",
-        clean_fasta=clean_fasta,
-        engine=EpidopeEngine(),
+    print(f"-> FASTA derivado (ATMSEQ) escrito en: {record.fasta_path}")
+    print(f"-> PDB de una sola cadena escrito en: {record.chain_pdb_path}")
+    print(f"-> Mapeo de posiciones (PDB <-> FASTA derivado) escrito junto al FASTA derivado.")
+    return record
+
+
+def fase_2_antigenicidad(
+    active_engines: List[str],
+    input_stem: str,
+    clean_fasta: Optional[Path],
+    structure_record: Optional[StructureRecord],
+    output_dir: Path,
+) -> Dict[str, pd.DataFrame]:
+    """Fase 2: obtiene scores crudos de antigenicidad de cada motor activo, con auto-cache en CSV.
+
+    Args:
+        active_engines: Claves de ``ENGINE_REGISTRY`` a ejecutar (ver
+            ``active_engines_for``), en el mismo orden en que luego se
+            etiqueta ``origen`` en Fase 3.
+        clean_fasta: FASTA saneado (Camino 1) o FASTA derivado de Fase 1.5
+            (Camino 3). Requerido si algun motor activo consume ``'fasta'``.
+        structure_record: Resultado de Fase 1.5. Requerido si algun motor
+            activo consume ``'pdb'``.
+
+    Returns:
+        Diccionario ``nombre_motor -> DataFrame de scores crudos``, solo con
+        las claves de ``active_engines`` que efectivamente corrieron.
+    """
+    print(
+        f"\n{_SEPARATOR}\nFASE 2 | Prediccion de antigenicidad "
+        f"({' + '.join(active_engines)}, ejecucion local)\n{_SEPARATOR}"
     )
-    return bepipred_df, epidope_df
+
+    raw_dfs: Dict[str, pd.DataFrame] = {}
+
+    if "bepipred" in active_engines:
+        raw_dfs["bepipred"] = _cached_raw_scores(
+            engine_name="BepiPred-3.0",
+            cache_path=output_dir / f"{input_stem}_bepipred_raw.csv",
+            raw_artifacts_dir=output_dir / "_bepipred_raw",
+            clean_fasta=clean_fasta,
+            engine=BepiPredEngine(),
+        )
+    if "epidope" in active_engines:
+        raw_dfs["epidope"] = _cached_raw_scores(
+            engine_name="EpiDope",
+            cache_path=output_dir / f"{input_stem}_epidope_raw.csv",
+            raw_artifacts_dir=output_dir / "_epidope_raw",
+            clean_fasta=clean_fasta,
+            engine=EpidopeEngine(),
+        )
+    if "discotope" in active_engines:
+        raw_dfs["discotope"] = _cached_structural_raw_scores(
+            engine_name="DiscoTope-3.0",
+            cache_path=output_dir / f"{input_stem}_discotope_raw.csv",
+            raw_artifacts_dir=output_dir / "_discotope_raw",
+            structure_record=structure_record,
+            engine=DiscoTopeEngine(),
+        )
+    if "scannet" in active_engines:
+        raw_dfs["scannet"] = _cached_structural_raw_scores(
+            engine_name="ScanNet",
+            cache_path=output_dir / f"{input_stem}_scannet_raw.csv",
+            raw_artifacts_dir=output_dir / "_scannet_raw",
+            structure_record=structure_record,
+            engine=ScanNetEngine(),
+        )
+    return raw_dfs
+
+
+def _content_hash(path: Path) -> str:
+    """Hash corto (16 hex) del contenido de ``path``, usado para invalidar caches obsoletos."""
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()[:16]
+
+
+def _hash_sidecar_path(cache_path: Path) -> Path:
+    return cache_path.with_name(cache_path.name + ".inputhash")
 
 
 def _cached_raw_scores(
     engine_name: str, cache_path: Path, raw_artifacts_dir: Path, clean_fasta: Path, engine
 ) -> pd.DataFrame:
-    """Corre ``engine`` sobre ``clean_fasta`` con auto-cache en ``cache_path`` (CSV)."""
-    if cache_path.is_file():
+    """Corre ``engine`` (motor de secuencia) sobre ``clean_fasta`` con auto-cache en ``cache_path`` (CSV).
+
+    El cache se invalida por CONTENIDO, no solo por nombre de archivo:
+    ``cache_path`` va acompañado de un sidecar ``{cache_path}.inputhash`` con
+    el hash del ``clean_fasta`` que lo genero. CONFIRMADO EMPIRICAMENTE
+    (2026-07-20): sin esto, dos corridas del MISMO input_stem con un
+    ``clean_fasta``/cadena distinta (p. ej. 6xc2.pdb corrido una vez con
+    ``PDB_CHAIN_SELECTION_STRATEGY=longest`` -pica la cadena del Fab- y otra
+    con ``explicit``/cadena A -el antigeno real-) reusaba en silencio el CSV
+    crudo de la corrida anterior, mezclando datos de una cadena con los de
+    otra sin ningun aviso. Si el hash no coincide (input cambio) o falta el
+    sidecar (cache de una version anterior sin este mecanismo), se trata como
+    cache-miss y se re-ejecuta.
+    """
+    current_hash = _content_hash(clean_fasta)
+    hash_path = _hash_sidecar_path(cache_path)
+
+    if cache_path.is_file() and hash_path.is_file() and hash_path.read_text().strip() == current_hash:
         df = pd.read_csv(cache_path)
         print(f"[{engine_name}] Cache local detectada en '{cache_path}'. Se omite la re-ejecucion.")
         print(f"[{engine_name}] Origen de los datos: CACHE LOCAL | Dimensiones de la matriz: {df.shape}")
         return df
 
+    if cache_path.is_file():
+        logger.info(
+            "[%s] Cache en '%s' obsoleto (el input cambio de contenido desde que se genero, "
+            "p. ej. otra cadena/estrategia de seleccion): se re-ejecuta.",
+            engine_name, cache_path,
+        )
+
     df = engine.run([str(clean_fasta)], output_dir=raw_artifacts_dir)[0]
 
     df.to_csv(cache_path, index=False)
+    hash_path.write_text(current_hash)
     print(f"[{engine_name}] Origen de los datos: INFERENCIA LOCAL (subprocess) | Dimensiones de la matriz: {df.shape}")
     print(f"[{engine_name}] -> Resultado crudo cacheado en: {cache_path} (para futuras ejecuciones instantaneas)")
     return df
 
 
+def _cached_structural_raw_scores(
+    engine_name: str, cache_path: Path, raw_artifacts_dir: Path, structure_record: StructureRecord, engine
+) -> pd.DataFrame:
+    """Corre ``engine`` (motor estructural) sobre ``structure_record.chain_pdb_path``, con auto-cache.
+
+    A diferencia de ``_cached_raw_scores`` (motores de secuencia), reconcilia
+    el accession que reporta el motor (derivado del nombre del PDB de una
+    sola cadena, p. ej. ``'{accession}_chain_A'``) con el accession real
+    (``structure_record.accession``) ANTES de cachear -- ver ADR en
+    ``discotope_engine.py``/``scannet_engine.py``: ambos motores reportan
+    ``Path(pdb_path).stem`` tal cual, sin ningun ajuste de negocio propio.
+
+    Tambien verifica que el motor haya devuelto una fila por cada residuo de
+    ``structure_record.sequence`` (ATMSEQ). CONFIRMADO EMPIRICAMENTE
+    (2026-07-20, PDB sintetico con un residuo no mapeable al CCD): a
+    diferencia de nuestro propio ``structure_parser`` -que conserva CADA
+    residuo del polimero, usando 'X' cuando no puede resolver una letra-,
+    DiscoTope-3.0 DESCARTA en silencio los residuos que su propio parser no
+    reconoce (3 residuos de entrada -> 2 filas de salida en ese caso). El
+    chequeo de limites de ``consensus._warn_if_out_of_bounds`` NO detecta
+    esto por si solo: solo compara coordenadas de regiones YA extraidas, y si
+    la secuencia es corta o el score no llega al umbral en ningun lado, nunca
+    se llega a comparar nada. Este chequeo es mas temprano y mas fuerte: se
+    dispara apenas se reciben los scores crudos, exista o no una region
+    detectada despues.
+    Ver tambien ``_cached_raw_scores``: el cache tambien se invalida por
+    CONTENIDO de ``structure_record.chain_pdb_path`` (sidecar
+    ``{cache_path}.inputhash``), no solo por nombre de archivo -- mismo bug
+    real confirmado con ``chain_pdb_path`` (una corrida con
+    ``PDB_CHAIN_SELECTION_STRATEGY`` distinta genera un PDB de una sola
+    cadena con contenido distinto bajo el mismo ``input_stem``).
+    """
+    current_hash = _content_hash(structure_record.chain_pdb_path)
+    hash_path = _hash_sidecar_path(cache_path)
+
+    if cache_path.is_file() and hash_path.is_file() and hash_path.read_text().strip() == current_hash:
+        df = pd.read_csv(cache_path)
+        print(f"[{engine_name}] Cache local detectada en '{cache_path}'. Se omite la re-ejecucion.")
+        print(f"[{engine_name}] Origen de los datos: CACHE LOCAL | Dimensiones de la matriz: {df.shape}")
+        _warn_if_residue_count_mismatch(engine_name, df, structure_record)
+        return df
+
+    if cache_path.is_file():
+        logger.info(
+            "[%s] Cache en '%s' obsoleto (el PDB de una sola cadena cambio de contenido desde que "
+            "se genero, p. ej. otra cadena/estrategia de seleccion): se re-ejecuta.",
+            engine_name, cache_path,
+        )
+
+    df = engine.run([str(structure_record.chain_pdb_path)], output_dir=raw_artifacts_dir)[0]
+    df["Accession"] = structure_record.accession
+    _warn_if_residue_count_mismatch(engine_name, df, structure_record)
+
+    df.to_csv(cache_path, index=False)
+    hash_path.write_text(current_hash)
+    print(f"[{engine_name}] Origen de los datos: INFERENCIA LOCAL (subprocess) | Dimensiones de la matriz: {df.shape}")
+    print(f"[{engine_name}] -> Resultado crudo cacheado en: {cache_path} (para futuras ejecuciones instantaneas)")
+    return df
+
+
+def _warn_if_residue_count_mismatch(engine_name: str, raw_df: pd.DataFrame, structure_record: StructureRecord) -> None:
+    """Compara el numero de filas crudas de un motor estructural contra len(ATMSEQ).
+
+    Ver docstring de ``_cached_structural_raw_scores``. Solo loggea (no
+    detiene el pipeline): un desfase indica que las coordenadas de ese motor
+    pueden no alinear 1:1 con ``sequence_lookup``/``position_mapping`` para
+    esta accession -- util para diagnosticar resultados sospechosos, pero no
+    hay una forma segura y generica de re-alinear automaticamente sin mas
+    informacion (ver ADR en ``consensus.py``).
+    """
+    expected = len(structure_record.sequence)
+    actual = len(raw_df)
+    if actual != expected:
+        logger.warning(
+            "Accession '%s': %s devolvio %d fila(s) de score crudo, pero la secuencia ATMSEQ "
+            "derivada tiene %d residuo(s). El motor probablemente descarto o agrego algun "
+            "residuo que su propio parser interpreta distinto a structure_parser (residuos no "
+            "mapeables, backbone incompleto, etc.): las coordenadas de este motor para esta "
+            "accession pueden no corresponder 1:1 a la posicion real en la secuencia -- "
+            "revisar manualmente antes de confiar en las regiones que reporte.",
+            structure_record.accession, engine_name, actual, expected,
+        )
+        print(
+            f"[AVISO] {engine_name} devolvio {actual} fila(s) mientras que la secuencia ATMSEQ "
+            f"tiene {expected} residuo(s) (accession '{structure_record.accession}'): posible "
+            "desalineacion de coordenadas, revisar manualmente."
+        )
+
+
 def fase_3_mapeo_y_union(
-    bepipred_raw_df: pd.DataFrame,
-    epidope_raw_df: pd.DataFrame,
+    raw_dfs: Dict[str, pd.DataFrame],
+    structure_record: Optional[StructureRecord],
     bepipred_threshold: float,
     bepipred_min_length: int,
     epidope_threshold: float,
     epidope_min_length: int,
     output_dir: Path,
     input_stem: str,
+    discotope_threshold: float = Settings.DISCOTOPE_THRESHOLD,
+    discotope_min_length: int = Settings.DISCOTOPE_MIN_EPITOPE_LENGTH,
+    scannet_threshold: Optional[float] = None,
+    scannet_min_length: int = Settings.SCANNET_MIN_EPITOPE_LENGTH,
 ) -> pd.DataFrame:
-    """Fase 3: mapea regiones de epitopo por motor y construye la union logica anotada entre ambos."""
-    print(f"\n{_SEPARATOR}\nFASE 3 | Mapeo logico de regiones de epitopo y union anotada BepiPred U EpiDope\n{_SEPARATOR}")
+    """Fase 3: mapea regiones de epitopo por motor activo y construye la union logica anotada.
 
-    print(f"-- BepiPred-3.0 (umbral={bepipred_threshold}, min_len={bepipred_min_length}) --")
-    bepipred_epitopes_df = extract_bepipred_epitopes(
-        bepipred_raw_df, threshold=bepipred_threshold, min_length=bepipred_min_length
+    ``discotope_threshold``/``scannet_threshold`` siguen el mismo patron que
+    ``bepipred_threshold``/``epidope_threshold`` (configurables por CLI, ver
+    ``parse_args``). Diferencia clave: ``scannet_threshold=None`` (default)
+    activa el umbral ADAPTATIVO por accession (percentil de los scores de
+    esa cadena especifica, ver ``scannet_engine.extract_epitopes``) en vez de
+    un numero fijo -- ScanNet no publica un umbral absoluto oficial, a
+    diferencia de DiscoTope-3.0 (``Settings.DISCOTOPE_THRESHOLD`` = 0.90 es
+    el nivel "moderate" oficial de los autores).
+    """
+    print(
+        f"\n{_SEPARATOR}\nFASE 3 | Mapeo logico de regiones de epitopo y union anotada "
+        f"({' + '.join(raw_dfs.keys())})\n{_SEPARATOR}"
     )
-    print_epitope_table(
-        bepipred_epitopes_df,
-        empty_message=f"No se encontraron regiones >= {bepipred_min_length} aa con score medio >= {bepipred_threshold}.",
-    )
-    bepipred_epitopes_df.to_csv(output_dir / f"{input_stem}_bepipred_epitopes.csv", index=False)
 
-    print(f"\n-- EpiDope (umbral={epidope_threshold}, min_len={epidope_min_length}) --")
-    epidope_epitopes_df = extract_epidope_epitopes(
-        epidope_raw_df, threshold=epidope_threshold, min_length=epidope_min_length
-    )
-    print_epitope_table(
-        epidope_epitopes_df,
-        empty_message=f"No se encontraron regiones >= {epidope_min_length} aa con score medio >= {epidope_threshold}.",
-    )
-    epidope_epitopes_df.to_csv(output_dir / f"{input_stem}_epidope_epitopes.csv", index=False)
+    epitope_dfs: Dict[str, pd.DataFrame] = {}
 
-    print("\n-- Union anotada (fusion de solapes, origen BepiPred/EpiDope/Consenso) --")
-    # Lookup de secuencia completa por accession: una region fusionada puede
-    # exceder el span detectado por cualquiera de los dos motores por
-    # separado, asi que la subsecuencia final se reconstruye desde aqui en
-    # vez de recortar las subsecuencias individuales de cada motor. Se
-    # combinan ambos motores (BepiPred como fuente preferente) porque, tras
-    # el saneamiento de Fase 1, ambos reciben el mismo FASTA y deberian
-    # coincidir residuo a residuo para la misma accession.
-    sequence_lookup = build_sequence_lookup(
-        epidope_raw_df, accession_col=EPIDOPE_ACCESSION_COLUMN, residue_col_candidates=(EPIDOPE_RESIDUE_COLUMN,)
-    )
-    sequence_lookup.update(
-        build_sequence_lookup(
-            bepipred_raw_df, accession_col=BEPIPRED_ACCESSION_COLUMN, residue_col_candidates=BEPIPRED_RESIDUE_CANDIDATES
+    if "bepipred" in raw_dfs:
+        print(f"-- BepiPred-3.0 (umbral={bepipred_threshold}, min_len={bepipred_min_length}) --")
+        df = extract_bepipred_epitopes(raw_dfs["bepipred"], threshold=bepipred_threshold, min_length=bepipred_min_length)
+        print_epitope_table(
+            df, empty_message=f"No se encontraron regiones >= {bepipred_min_length} aa con score medio >= {bepipred_threshold}."
         )
-    )
+        df.to_csv(output_dir / f"{input_stem}_bepipred_epitopes.csv", index=False)
+        epitope_dfs["bepipred"] = df
 
-    union_df = build_annotated_union_table(bepipred_epitopes_df, epidope_epitopes_df, sequence_lookup)
+    if "epidope" in raw_dfs:
+        print(f"\n-- EpiDope (umbral={epidope_threshold}, min_len={epidope_min_length}) --")
+        df = extract_epidope_epitopes(raw_dfs["epidope"], threshold=epidope_threshold, min_length=epidope_min_length)
+        print_epitope_table(
+            df, empty_message=f"No se encontraron regiones >= {epidope_min_length} aa con score medio >= {epidope_threshold}."
+        )
+        df.to_csv(output_dir / f"{input_stem}_epidope_epitopes.csv", index=False)
+        epitope_dfs["epidope"] = df
+
+    if "discotope" in raw_dfs:
+        print(f"\n-- DiscoTope-3.0 (umbral={discotope_threshold} 'calibrated_score', min_len={discotope_min_length}) --")
+        df = extract_discotope_epitopes(raw_dfs["discotope"], threshold=discotope_threshold, min_length=discotope_min_length)
+        print_discotope_epitope_table(df)
+        df.to_csv(output_dir / f"{input_stem}_discotope_epitopes.csv", index=False)
+        epitope_dfs["discotope"] = df
+
+    if "scannet" in raw_dfs:
+        scannet_mode_desc = f"umbral fijo={scannet_threshold}" if scannet_threshold is not None else (
+            f"umbral adaptativo, percentil {Settings.SCANNET_THRESHOLD_PERCENTILE} por accession"
+        )
+        print(f"\n-- ScanNet ({scannet_mode_desc}, min_len={scannet_min_length}) --")
+        df = extract_scannet_epitopes(raw_dfs["scannet"], threshold=scannet_threshold, min_length=scannet_min_length)
+        print_scannet_epitope_table(df)
+        df.to_csv(output_dir / f"{input_stem}_scannet_epitopes.csv", index=False)
+        epitope_dfs["scannet"] = df
+
+    print("\n-- Union anotada (fusion de solapes entre motores activos) --")
+    # Lookup de secuencia completa por accession: una region fusionada puede
+    # exceder el span detectado por cualquiera de los motores por separado,
+    # asi que la subsecuencia final se reconstruye desde aqui en vez de
+    # recortar las subsecuencias individuales de cada motor. Para input de
+    # estructura, la fuente es directamente StructureRecord.sequence (ATMSEQ);
+    # para motores de secuencia, se reconstruye desde sus propios scores
+    # crudos (mismo criterio que el pipeline original).
+    sequence_lookup: Dict[str, str] = {}
+    if structure_record is not None:
+        sequence_lookup[structure_record.accession] = structure_record.sequence
+    if "epidope" in raw_dfs:
+        sequence_lookup.update(
+            build_sequence_lookup(raw_dfs["epidope"], accession_col=EPIDOPE_ACCESSION_COLUMN, residue_col_candidates=(EPIDOPE_RESIDUE_COLUMN,))
+        )
+    if "bepipred" in raw_dfs:
+        sequence_lookup.update(
+            build_sequence_lookup(raw_dfs["bepipred"], accession_col=BEPIPRED_ACCESSION_COLUMN, residue_col_candidates=BEPIPRED_RESIDUE_CANDIDATES)
+        )
+
+    position_mapping = structure_record.position_mapping if structure_record is not None else None
+    union_df = build_annotated_union_table(epitope_dfs, sequence_lookup, position_mapping=position_mapping)
     print_union_table(union_df)
 
     out_path = output_dir / f"{input_stem}_union_epitopes.csv"
@@ -295,24 +579,31 @@ def fase_4_tolerancia(
 
 
 def fase_5_th_promiscuidad(
-    safe_df: pd.DataFrame, output_dir: Path, allele_extra: str = None
+    safe_df: pd.DataFrame, output_dir: Path, input_stem: str, allele_extra: str = None
 ) -> pd.DataFrame:
     """Fase 5: evalua promiscuidad T-helper (MHC-II) de los peptidos 'Seguros' de la Fase 4.
 
-    El reporte final (consola y ``candidatos_finales.csv``) no es la salida
-    cruda de NetMHCIIpan: los 'Candidato Valido' se enriquecen con su
-    traceback a la region de origen de la Fase 3/4 (accession, coordenadas
-    reales, origen BepiPred/EpiDope/Consenso, bepipred_score/epidope_score) y
-    su nucleo de union de 9 aa, via ``build_traceback_report`` -necesario
-    porque en modo proteina (fragmentos largos) NetMHCIIpan devuelve nucleos
-    mas cortos que el fragmento evaluado, no el fragmento completo-.
+    El reporte final (consola y ``<input_stem>_candidatos_finales.csv``) no
+    es la salida cruda de NetMHCIIpan: los 'Candidato Valido' se enriquecen
+    con su traceback a la region de origen de la Fase 3/4 (accession,
+    coordenadas reales, origen y las columnas ``'{motor}_score'`` de los
+    motores que contribuyeron a esa region, detectadas dinamicamente -- ver
+    ``build_traceback_report`` en ``netmhciipan_engine.py``) y su nucleo de
+    union de 9 aa, via ``build_traceback_report`` -necesario porque en modo
+    proteina (fragmentos largos) NetMHCIIpan devuelve nucleos mas cortos que
+    el fragmento evaluado, no el fragmento completo-.
 
     Args:
         safe_df: Peptidos con ``status == 'Segura'`` provenientes de la Fase 4
-            (conserva ``accession``/``start``/``sequence``/``origen``/
-            ``bepipred_score``/``epidope_score`` de la Fase 3, usadas como
-            tabla padre del traceback).
+            (conserva ``accession``/``start``/``sequence``/``origen`` y las
+            columnas ``'{motor}_score'`` de la Fase 3, usadas como tabla
+            padre del traceback).
         output_dir: Carpeta donde persistir el reporte final y el .xls crudo.
+        input_stem: Nombre del archivo de entrada sin extension, usado como
+            prefijo de ``candidatos_finales.csv`` y de los .xls crudos de
+            NetMHCIIpan. CONFIRMADO (2026-07-20): sin este prefijo, corridas
+            sucesivas con inputs distintos pisaban el mismo archivo -- unica
+            salida de todo el pipeline que no llevaba el nombre del input.
         allele_extra: Alelo(s) HLA-DR/DQ/DP adicionales (formato NetMHCIIpan,
             separados por coma sin espacios) a anexar a
             ``IEDB_REFERENCE_PANEL``. Se admiten sin romper el panel por
@@ -322,7 +613,7 @@ def fase_5_th_promiscuidad(
     n_alleles = len(allele_panel.split(","))
     print(f"\n{_SEPARATOR}\nFASE 5 | Promiscuidad T-helper (MHC-II, NetMHCIIpan-4.3 local, {n_alleles} alelo(s) HLA-DR/DQ/DP)\n{_SEPARATOR}")
 
-    final_path = output_dir / "candidatos_finales.csv"
+    final_path = output_dir / f"{input_stem}_candidatos_finales.csv"
 
     if safe_df.empty:
         print("No hay peptidos 'Seguros' provenientes de la Fase 4 para evaluar.")
@@ -333,7 +624,7 @@ def fase_5_th_promiscuidad(
     peptides = safe_df["sequence"].tolist()
     print(f"Panel HLA-DR: {allele_panel} | Peptidos a evaluar: {len(peptides)}")
 
-    report = predict_netmhciipan(peptides, output_dir, allele_panel=allele_panel)
+    report = predict_netmhciipan(peptides, output_dir, allele_panel=allele_panel, filename_prefix=f"{input_stem}_")
 
     if report.empty:
         print("NetMHCIIpan no devolvio resultados evaluables (revisa longitudes minimas: 9 aa).")
@@ -348,27 +639,83 @@ def fase_5_th_promiscuidad(
     return traceback_df
 
 
+def _resolve_active_engines_and_inputs(
+    input_path: Path, output_dir: Path, pdb_mode_override: Optional[str]
+) -> Tuple[List[str], Optional[Path], Optional[StructureRecord]]:
+    """Enruta ``input_path``, corre Fase 1 o Fase 1.5 segun corresponda, y resuelve los motores activos.
+
+    Encapsula la logica de seleccion de camino (1/2/3) descrita en el
+    docstring del modulo, incluyendo el gate no-fatal de Camino 3 (residuos
+    no canonicos en el FASTA derivado -> se excluyen BepiPred-3.0/EpiDope
+    solo para esta corrida, sin frenar el resto del pipeline).
+
+    Returns:
+        Tupla ``(active_engines, clean_fasta, structure_record)``. Exactamente
+        uno de ``clean_fasta``/``structure_record`` es no-``None`` segun el
+        tipo de input detectado (``structure_record`` en Caminos 2 y 3,
+        ``clean_fasta`` siempre que algun motor de secuencia este activo).
+    """
+    routed = route_input(input_path)
+
+    if routed.input_type == "fasta":
+        _, clean_fasta = fase_1_saneamiento(input_path, output_dir)
+        return active_engines_for("fasta", None), clean_fasta, None
+
+    structure_record = fase_1_5_estructura(input_path, output_dir)
+    pdb_mode = pdb_mode_override or Settings.PDB_PROCESSING_MODE
+    active_engines = active_engines_for("structure", pdb_mode)
+
+    clean_fasta: Optional[Path] = None
+    if pdb_mode == "structure_and_sequence":
+        compatible, invalid_chars = is_bepipred_compatible(structure_record.sequence)
+        if compatible:
+            clean_fasta = structure_record.fasta_path
+        else:
+            logger.warning(
+                "Accession '%s': %d residuo(s) no canonico(s) (%s) en el FASTA derivado de la "
+                "estructura -- se excluye a BepiPred-3.0/EpiDope de esta corrida.",
+                structure_record.accession, len(invalid_chars), invalid_chars,
+            )
+            print(
+                f"[AVISO] La secuencia ATMSEQ derivada de '{input_path.name}' tiene "
+                f"{len(invalid_chars)} residuo(s) no canonico(s) ({invalid_chars}): se omite "
+                "BepiPred-3.0/EpiDope para esta corrida (BepiPred-3.0 los rechaza en bloque). "
+                "DiscoTope-3.0/ScanNet corren igual, operan directo sobre el PDB."
+            )
+            active_engines = [
+                key for key in active_engines if ENGINE_REGISTRY[key][1] != "fasta"
+            ]
+
+    return active_engines, clean_fasta, structure_record
+
+
 def main(argv: List[str] = None) -> int:
-    """Punto de entrada: ejecuta las 5 fases en orden y traduce errores a mensajes accionables."""
+    """Punto de entrada: enruta el input, ejecuta las fases correspondientes y traduce errores."""
     args = parse_args(argv)
     input_path = Path(args.input)
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     try:
-        _, clean_fasta = fase_1_saneamiento(input_path, output_dir)
-        bepipred_raw_df, epidope_raw_df = fase_2_antigenicidad(input_path.stem, clean_fasta, output_dir)
+        active_engines, clean_fasta, structure_record = _resolve_active_engines_and_inputs(
+            input_path, output_dir, args.pdb_mode
+        )
+
+        raw_dfs = fase_2_antigenicidad(active_engines, input_path.stem, clean_fasta, structure_record, output_dir)
+
         union_df = fase_3_mapeo_y_union(
-            bepipred_raw_df, epidope_raw_df,
+            raw_dfs, structure_record,
             args.bepipred_threshold, args.bepipred_min_length,
             args.epidope_threshold, args.epidope_min_length,
             output_dir, input_path.stem,
+            discotope_threshold=args.discotope_threshold, discotope_min_length=args.discotope_min_length,
+            scannet_threshold=args.scannet_threshold, scannet_min_length=args.scannet_min_length,
         )
         blast_df = fase_4_tolerancia(
             union_df, args.blast_db, args.identity_threshold, output_dir, input_path.stem
         )
         safe_df = blast_df[blast_df["status"] == "Segura"] if not blast_df.empty else blast_df
-        fase_5_th_promiscuidad(safe_df, output_dir, allele_extra=args.alelo_extra)
+        fase_5_th_promiscuidad(safe_df, output_dir, input_path.stem, allele_extra=args.alelo_extra)
     except PipelineError as exc:
         logger.error("Pipeline detenido: %s", exc)
         print(f"\n[ERROR FATAL] {exc}")

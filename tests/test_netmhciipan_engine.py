@@ -220,6 +220,34 @@ def test_traceback_ignora_filas_rechazadas():
     assert result.iloc[0]["sequence_f5"] == "AAABBBCCC"
 
 
+def test_traceback_camino2_sin_columnas_de_motores_de_secuencia():
+    # Camino 2 (PDB en modo 'structure_only'): la tabla de consenso de Fase 3
+    # solo trae columnas de motores estructurales, sin 'bepipred_score' ni
+    # 'epidope_score' -- build_traceback_report no debe asumir que existen
+    # (antes de generalizar _TRACEBACK_COLUMNS esto rompia con AttributeError).
+    parent = pd.DataFrame(
+        {
+            "accession": ["PDB1"],
+            "start": [1],
+            "end": [12],
+            "sequence": ["AAABBBCCCDDD"],
+            "origen": ["Dt+Sn"],
+            "discotope_score": [0.92],
+            "scannet_score": [0.6],
+        }
+    )
+    report = pd.DataFrame([_report_row("AAABBBCCC", "AAABBBCCC", 3, 0.5)])
+
+    result = build_traceback_report(report, parent)
+
+    assert len(result) == 1
+    assert "bepipred_score" not in result.columns
+    assert "epidope_score" not in result.columns
+    assert result.iloc[0]["discotope_score"] == 0.92
+    assert result.iloc[0]["scannet_score"] == 0.6
+    assert result.iloc[0]["origen"] == "Dt+Sn"
+
+
 # --- Deduplicacion de ventanas del modo proteina -----------------------------------------
 
 
