@@ -1,15 +1,25 @@
 # Pipeline de Descubrimiento de Epítopos Vacunales
 
 Orquestador de terminal (`pipeline.py`) que procesa un FASTA de secuencia o
-una estructura (PDB/mmCIF) a través de 5 fases estrictas hasta producir una
-lista de péptidos candidatos a vacuna, validados por antigenicidad (unión
-anotada de hasta 4 motores independientes: 2 de secuencia + 2
-estructurales), ausencia de homología con el proteoma humano (riesgo de
-autoinmunidad) e inmunogenicidad T-helper (presentación MHC-II / HLA-DR/DQ/DP,
-célula CD4+). Todas las fases corren **100% en local** (subprocess sobre
-binarios/paquetes instalados en tu máquina): el pipeline nunca hace una
-llamada de red durante la inferencia. Predice exclusivamente presentación
-T-helper (MHC-II/CD4+); no incluye predicción MHC-I/CD8+.
+una estructura (PDB/mmCIF) a través de 8 fases hasta producir una lista de
+péptidos candidatos a vacuna, validados por antigenicidad (unión anotada de
+hasta 4 motores independientes: 2 de secuencia + 2 estructurales), ausencia
+de homología con el proteoma humano (riesgo de autoinmunidad), alergenicidad,
+N-glicosilación, inmunogenicidad T-helper (MHC-II/HLA-DR/DQ/DP, CD4+) e
+inmunogenicidad T-citotóxica (MHC-I/HLA-A/B, CD8+, con evidencia de corte
+proteasomal), y cruce con epítopos de anticuerpos ampliamente neutralizantes
+(bnAb) conocidos para entradas de la familia HIV Env. Todas las fases corren
+**100% en local** (subprocess sobre binarios/paquetes instalados en tu
+máquina): el pipeline nunca hace una llamada de red durante la inferencia.
+Cada fase pesada (4/4b/4c/5/5b/6) se auto-cachea por hash de contenido de su
+input — reiniciar una corrida interrumpida con el mismo input/parámetros
+salta directo a la fase que falló, ver "Checkpointing" más abajo.
+
+**Alcance excluido deliberadamente (2026-07-22):** un chequeo de
+alergenicidad/toxicidad/antigenicidad a nivel del **constructo multi-epítopo
+final ya ensamblado** (distinto de las Fases 4b/4c, que evalúan cada péptido
+candidato por separado) sigue sin construirse — depende de un paso de
+ensamblaje de secuencia que hoy no existe en el pipeline. Ver `STATUS.md`.
 
 ## Tres caminos de entrada
 
@@ -33,7 +43,7 @@ solo a BepiPred-3.0/EpiDope de esa corrida (con aviso claro) porque BepiPred
 los rechaza en bloque, pero los motores estructurales corren igual sobre el
 PDB.
 
-## Flujo de trabajo (5 fases)
+## Flujo de trabajo (8 fases)
 
 1. **Saneamiento FASTA / extracción de estructura** — Camino 1: valida y
    limpia la(s) secuencia(s) de entrada (`fasta_inputs/`, admite FASTA
@@ -71,7 +81,23 @@ PDB.
    E-value seleccionado dinámicamente por longitud del péptido (laxo para
    péptidos cortos, estricto para dominios/proteínas completas), descarta
    péptidos con alta homología (`status = 'Autoinmunidad'`, umbral
-   `BLAST_IDENTITY_THRESHOLD`, 75% por defecto).
+   `BLAST_IDENTITY_THRESHOLD`, 75% por defecto). Los péptidos `'Segura'`
+   resultantes alimentan, en paralelo y sin depender entre sí, **todas** las
+   fases siguientes (4b, 4c, 5, 5b, 6) — ninguna de ellas descarta candidatos
+   de otra.
+4b. **Alergenicidad** — AlgPred 2.0 ejecutado en local
+   (`src/engines/algpred_engine.py`) sobre cada péptido `'Segura'`.
+   Puramente informativa: señal de seguridad de la secuencia en sí
+   (potencial reacción tipo I mediada por IgE), no condiciona ninguna otra
+   fase. Reporte propio: `<nombre>_alergenicidad_report.csv`.
+4c. **N-glicosilación** — StackGlyEmbed ejecutado en local
+   (`src/engines/stackglyembed_engine.py`), stack ProteinBERT + ESM-2 650M +
+   ProtT5 ya entrenado. El repo original no trae un scanner de sitios
+   candidatos: este pipeline escanea internamente cada péptido `'Segura'`
+   buscando el sequon canónico N-X-[S/T] (X ≠ Prolina, incluyendo sequones
+   solapados) y evalúa cada sitio encontrado; péptidos sin ningún sequon se
+   omiten (no producen fila). Igual de informativa que 4b. Reporte propio:
+   `<nombre>_glicosilacion_report.csv`.
 5. **Promiscuidad T-helper (MHC-II)** — NetMHCIIpan-4.3 ejecutado en local
    contra un panel de 27 alelos HLA-DR/DQ/DP de referencia del IEDB
    (`IEDB_REFERENCE_PANEL`). Cada péptido se enruta según su longitud:
@@ -106,9 +132,57 @@ PDB.
    promiscuidad difiere (con el mismo núcleo), las filas **no** se
    fusionan: son predicciones distintas y ambas se reportan, para no perder
    ninguna variante con soporte de unión real.
+5b. **Promiscuidad T-citotóxica (MHC-I)** — NetMHCpan-4.2 ejecutado en local
+   (`src/engines/netmhcpan_engine.py`), paralela e independiente de la Fase
+   5 (MHC-II): son vías de presentación antigénica biológicamente distintas
+   (célula presentadora profesional vs. cualquier célula nucleada, CD8+
+   citotóxico vs. CD4+ helper), nunca se fusionan en un único veredicto.
+   Mismo patrón que Fase 5 (panel de referencia — `NETMHCPAN_REFERENCE_PANEL`,
+   12 alelos HLA-A/B de los supertipos de Sidney et al. 2008 —, enrutamiento
+   por longitud, buffer overflow conocido del binario), con sus propios
+   umbrales de %Rank (0.5/2.0, distintos de los de MHC-II: son escalas no
+   comparables). **Anotación adicional de corte proteasomal C-terminal**: cada
+   candidato aceptado se cruza con NetCleave (`src/engines/netcleave_engine.py`)
+   para verificar si hay evidencia de corte EXACTO en el residuo
+   inmediatamente posterior al núcleo de unión — un péptido puede bindear
+   MHC-I fuerte y aun así nunca generarse vía procesamiento antigénico real
+   si el proteasoma no corta ahí. Es una columna informativa
+   (`netcleave_c_term_match`/`netcleave_c_term_score`), no un filtro: el
+   veredicto de NetMHCpan sigue siendo el único criterio de aceptación.
+   Reporte propio: `<nombre>_candidatos_finales_mhc1.csv`.
+6. **Cruce con bnAb conocidos** — LANL HIV Molecular Immunology Database +
+   CATNAP, ejecutado en local sobre CSVs ya descargados
+   (`src/engines/lanl_catnap_engine.py`), sin ningún subprocess (pandas
+   puro). Reemplaza a bNAber, cuyo dominio está muerto/parqueado. Cruza cada
+   péptido `'Segura'` contra los epítopos lineales conocidos de anticuerpos
+   ampliamente neutralizantes (matching por subcadena, umbral mínimo
+   configurable — `LANL_CATNAP_MIN_OVERLAP`, 6 aa por defecto) y anexa
+   potencia de neutralización (IC50, número de virus del panel) desde CATNAP
+   cuando el nombre del anticuerpo coincide. Puramente informativa, no
+   filtra nada. Solo produce matches reales para entradas de la familia HIV
+   Env — un reporte vacío es el resultado esperado para cualquier otra
+   proteína, no un fallo. No hace alineamiento a coordenadas HXB2 ni captura
+   epítopos conformacionales (fuera de alcance de un cruce por secuencia).
+   Reporte propio: `<nombre>_bnab_crossref.csv`.
 
 Todos los resultados intermedios y el reporte final se guardan en
 `fasta_outputs/`.
+
+### Checkpointing
+
+Fases 4/4b/4c/5/5b/6 se auto-cachean por hash de contenido de su input
+(mismo mecanismo que ya usaba la Fase 2 para sus scores crudos): cada una
+guarda un sidecar `<archivo>.inputhash` junto a su CSV final. Si relanzás
+`pipeline.py` con el **mismo** `--input` y los **mismos** parámetros (umbral
+de identidad, alelos extra, etc.), cada fase ya completada se detecta y se
+salta ("`[Fase X] Checkpoint detectado...`" en la consola) en vez de
+recomputar todo desde el principio — útil si una corrida larga se interrumpe
+a mitad de camino (p. ej. por un OOM en una fase pesada como 4c/StackGlyEmbed,
+que carga 3 modelos grandes). Cambiar cualquier parámetro que afecte el
+resultado de una fase invalida su checkpoint automáticamente (y en cascada,
+el de las fases que dependen de ella). El pico de memoria residente del
+proceso se loggea después de las fases más pesadas (nivel `INFO`), para
+diagnosticar en cuál ocurrió un OOM sin depender de herramientas externas.
 
 ## Instalación
 
@@ -401,6 +475,146 @@ Variables de entorno: `SCANNET_RUNTIME` (`docker` default | `venv`),
 `SCANNET_DOCKER_IMAGE` (default `jertubiana/scannet`),
 `SCANNET_DOCKER_WORKDIR`.
 
+### 8. NetMHCpan-4.2 local (obligatorio para la Fase 5b)
+
+Binario propietario de DTU Health Tech (predicción MHC-I / HLA-A/B), mismo
+patrón de licencia académica y descarga manual que NetMHCIIpan-4.3.
+
+**a) Descarga manual obligatoria.** Solicítalo en
+`https://services.healthtech.dtu.dk/services/NetMHCpan-4.2/` (sección
+"Downloads", requiere cuenta académica).
+
+**b) Instalación.**
+```bash
+tar -xvf netMHCpan-4.2.Linux.tar.gz
+mv netMHCpan-4.2 /ruta/al/proyecto/netMHCpan-4.2
+```
+Edita la línea `NMHOME` al inicio del script `netMHCpan-4.2/netMHCpan` con la
+ruta absoluta de instalación, igual que en NetMHCIIpan-4.3 (Sección 5b).
+
+**c) Buffer overflow conocido.** El binario `netMHCpan` (modo péptido exacto,
+`-p`) revienta con `*** buffer overflow detected ***` (exit code 0, el
+wrapper `tcsh` no propaga el fallo) para péptidos > ~55 aa con el panel de 12
+alelos por defecto — el pipeline enruta automáticamente los péptidos largos a
+modo proteína (ventana deslizante) para evitarlo, mismo mecanismo que
+NetMHCIIpan-4.3.
+
+Variables de entorno: `NETMHCPAN_HOME` (default `netMHCpan-4.2/`),
+`NETMHCPAN_BINARY_NAME` (default `netMHCpan`).
+
+### 9. AlgPred 2.0 local (obligatorio para la Fase 4b)
+
+Código abierto (GPSR group, sin solicitud académica), instalable vía `pip`.
+Requiere un venv aparte: fija su propio stack de dependencias.
+
+```bash
+python3 -m venv .venv-algpred
+.venv-algpred/bin/pip install algpred2
+```
+
+Variables de entorno: `ALGPRED_PYTHON_BIN` (intérprete del venv),
+`ALGPRED_SCRIPT_PATH` (ruta a `algpred2.py` dentro del paquete instalado —
+normalmente `<venv>/lib/python3.X/site-packages/algpred2/python_scripts/algpred2.py`),
+`ALGPRED_THRESHOLD` (umbral `ML_Score`, 0.3 por defecto, el mismo del propio
+`algpred2.py`).
+
+> **Bug conocido del script upstream** (verificado empíricamente): revienta
+> con `ValueError: Expected 2D array, got 1D array` si el batch de entrada
+> tiene EXACTAMENTE 1 secuencia. El wrapper de este pipeline lo evita
+> duplicando la única secuencia antes de invocar el binario y descartando la
+> fila extra del resultado — transparente, no requiere ninguna acción.
+
+### 10. NetCleave local (obligatorio para la anotación de Fase 5b)
+
+Código abierto (MIT, [github.com/APeriolo/NetCleave](https://github.com/APeriolo/NetCleave)),
+predicción de sitios de corte proteasomal (MHC-I). Este pipeline usa
+únicamente el modelo pre-entrenado bundled (`data/models/I_mass-spectrometry_HLA/`,
+entrenado sobre IEDB/UniProt/UniParc) — **nunca reentrena en runtime**.
+
+```bash
+git clone https://github.com/APeriolo/NetCleave.git
+python3 -m venv .venv-netcleave
+.venv-netcleave/bin/pip install -r NetCleave/requirements.txt
+.venv-netcleave/bin/pip install openpyxl  # pandas no trae soporte .xlsx por defecto
+```
+
+Variables de entorno: `NETCLEAVE_PYTHON_BIN`, `NETCLEAVE_SCRIPT_PATH` (ruta a
+`NetCleave.py`).
+
+### 11. StackGlyEmbed local (obligatorio para la Fase 4c)
+
+Código abierto ([github.com/GaryChan-lab/StackGlyEmbed](https://github.com/GaryChan-lab/StackGlyEmbed)),
+predicción de N-glicosilación via un stack ProteinBERT + ESM-2 650M + ProtT5
+ya entrenado. El repo original espera posiciones candidatas escritas a mano
+y llama a red en cada corrida (ESM-2 vía `torch.hub`, ProtT5 contra el ID
+remoto del Hub) — este pipeline lo reemplaza por
+`src/engines/stackglyembed_predict_local.py` (versionado en este mismo repo,
+no dentro del clon externo: ver docstring del módulo), 100% offline una vez
+cacheados los pesos.
+
+**a) Clona el repo e instala su venv:**
+```bash
+git clone https://github.com/GaryChan-lab/StackGlyEmbed.git
+python3 -m venv StackGlyEmbed/.venv-stackglyembed
+StackGlyEmbed/.venv-stackglyembed/bin/pip install numpy pandas "tensorflow==2.14.*" \
+    "tensorflow_addons==0.22.0" torch xgboost scikit-learn "transformers<5" h5py lxml pyfaidx
+```
+> `transformers>=5` exige `torch>=2.4`: si tu venv fija `torch==2.2.2` (como
+> el de referencia), instalá una versión `4.x` de `transformers` o el
+> backend de PyTorch queda deshabilitado en silencio (sin romper el import).
+
+**b) Instala ProteinBERT** (no está en PyPI bajo ese nombre):
+```bash
+StackGlyEmbed/.venv-stackglyembed/bin/pip install --no-deps \
+    "git+https://github.com/nadavbra/protein_bert.git"
+```
+
+**c) Descarga los pesos una única vez** (paso de SETUP, nunca en runtime):
+```bash
+StackGlyEmbed/.venv-stackglyembed/bin/python -c "
+from proteinbert import load_pretrained_model
+load_pretrained_model(validate_downloading=False)"  # ~183MB a ~/proteinbert_models/
+
+HF_HUB_OFFLINE=0 StackGlyEmbed/.venv-stackglyembed/bin/python -c "
+from transformers import AutoTokenizer, EsmModel
+AutoTokenizer.from_pretrained('facebook/esm2_t33_650M_UR50D')
+EsmModel.from_pretrained('facebook/esm2_t33_650M_UR50D')"  # ~2.5GB al cache de HF Hub
+```
+
+**d) ProtT5**: si ya tenés los pesos de `Rostlab/prot_t5_xl_half_uniref50-enc`
+descargados para otra herramienta (p. ej. TMbed), reusalos apuntando
+`STACKGLYEMBED_T5_MODEL_PATH` a esa carpeta local — evita una descarga de
+~3GB duplicada (mismo encoder, solo cambia precisión/empaquetado respecto al
+`Rostlab/prot_t5_xl_uniref50` que pide el repo original).
+
+Variables de entorno: `STACKGLYEMBED_PYTHON_BIN`, `STACKGLYEMBED_SCRIPT_PATH`
+(default: `src/engines/stackglyembed_predict_local.py` de este repo, no
+suele hacer falta tocarlo), `STACKGLYEMBED_MODELS_DIR` (carpeta `prediction/`
+del clon externo, donde viven los pickles del clasificador ya entrenado),
+`STACKGLYEMBED_T5_MODEL_PATH`, `STACKGLYEMBED_ESM_MODEL_NAME` (default
+`facebook/esm2_t33_650M_UR50D`).
+
+### 12. Datos LANL + CATNAP (obligatorio para la Fase 6)
+
+Sin instalación de software: son CSVs/TSVs planos, consultados con pandas
+puro, sin ningún subprocess ni llamada de red en runtime.
+
+```bash
+mkdir -p reference_db/lanl_immunology reference_db/catnap
+# LANL HIV Molecular Immunology Database, tabla "Antibody":
+# https://www.hiv.lanl.gov/components/sequence/HIV/asearch/query_one.comp?se_id=ab
+# -> exportar como reference_db/lanl_immunology/ab_all.csv
+
+# CATNAP (neutralización, antibodies):
+# https://www.hiv.lanl.gov/components/sequence/HIV/neutralization/download_db.comp
+# -> exportar como reference_db/catnap/abs_<fecha>.txt
+```
+
+Variables de entorno: `LANL_AB_ALL_PATH`, `CATNAP_ABS_PATH`,
+`LANL_CATNAP_MIN_OVERLAP` (umbral mínimo de solapamiento de subcadena, 6 aa
+por defecto — para epítopos de referencia más cortos que el umbral, se exige
+el match completo, nunca uno más laxo que el propio epítopo).
+
 ## Uso
 
 `./run.sh` es un wrapper fino sobre `pipeline.py` (mismos argumentos) que
@@ -475,9 +689,19 @@ divisoria, para no leerlas como una lista continua.
 | `<nombre>_scannet_epitopes.csv` | 3 | Regiones de epítopo mapeadas localmente (ScanNet) |
 | `<nombre>_union_epitopes.csv` | 3 | Unión anotada de los motores activos (columna `origen`), entrada de la Fase 4 |
 | `<nombre>_blast_report.csv` | 4 | Veredicto de tolerancia (Segura / Autoinmunidad) por región |
+| `<nombre>_algpred_raw.csv` | 4b | Salida cruda de AlgPred 2.0, para trazabilidad |
+| `<nombre>_alergenicidad_report.csv` | 4b | Veredicto de alergenicidad (Allergen / Non-Allergen) por péptido `'Segura'` |
+| `<nombre>_stackglyembed_features.csv` | 4c | Features crudos (ProteinBERT+ESM-2+ProtT5) de StackGlyEmbed, para trazabilidad |
+| `<nombre>_stackglyembed_raw.csv` | 4c | Predicción cruda de StackGlyEmbed (0/1 + probabilidad), para trazabilidad |
+| `<nombre>_glicosilacion_report.csv` | 4c | Veredicto de N-glicosilación (Glicosilado / No glicosilado) por sequon candidato |
 | `<nombre>_netmhciipan_raw_peptide_mode.xls` | 5 | Salida cruda de NetMHCIIpan-4.3, modo péptido exacto (`<= 40` aa), para trazabilidad. Solo se genera si hubo al menos un péptido en ese rango |
 | `<nombre>_netmhciipan_raw_protein_mode.xls` | 5 | Salida cruda de NetMHCIIpan-4.3, modo proteína/ventana deslizante (`> 40` aa), para trazabilidad. Solo se genera si hubo al menos un fragmento en ese rango |
-| `<nombre>_candidatos_finales.csv` | 5 | **Reporte final** (ver formato abajo) |
+| `<nombre>_candidatos_finales.csv` | 5 | **Reporte final MHC-II** (ver formato abajo) |
+| `<nombre>_netmhcpan_raw_peptide_mode.xls` / `_protein_mode.xls` | 5b | Salida cruda de NetMHCpan-4.2, mismo criterio que NetMHCIIpan |
+| `<nombre>_netcleave_raw.csv` | 5b | Salida cruda de NetCleave (todas las ventanas de corte evaluadas, no solo las que matchean) |
+| `<nombre>_candidatos_finales_mhc1.csv` | 5b | **Reporte final MHC-I**, con anotación `netcleave_c_term_match`/`netcleave_c_term_score` |
+| `<nombre>_bnab_crossref.csv` | 6 | Cruce con epítopos de bnAb conocidos (vacío si la entrada no es HIV Env, es el resultado esperado) |
+| `<archivo>.inputhash` | 4/4b/4c/5/5b/6 | Sidecar de checkpointing (hash del input de esa fase), ver "Checkpointing" arriba |
 
 ### Formato de `<nombre>_candidatos_finales.csv`
 
@@ -497,19 +721,39 @@ deduplicación de ventanas redundantes: solo contiene candidatos con
 | `min_rank_el` | Mejor (menor) %Rank entre los alelos en orientación normal |
 | `<motor>_score` | Una columna por cada motor activo en esa corrida (p. ej. `bepipred_score`, `discotope_score`, ...): score medio de antigenicidad de la Fase 3 (`NaN` si ese motor no detectó esa región) |
 
+`<nombre>_candidatos_finales_mhc1.csv` (Fase 5b) tiene el mismo formato
+(análogo MHC-I: `NETMHCPAN_REFERENCE_PANEL` en vez del panel de MHC-II,
+umbrales de %Rank propios), más dos columnas exclusivas:
+`netcleave_c_term_match` (bool, ¿hay un corte proteasomal predicho EXACTO en
+el residuo inmediatamente posterior al núcleo de unión?) y
+`netcleave_c_term_score` (score crudo de ese corte, `NA` si no hubo match).
+
 ## Tests
 
-La suite de tests (`tests/`, `pytest`) cubre la lógica pura de cada fase —
-enrutamiento de input (FASTA vs. estructura), extracción de estructura
-(residuos modificados, selección de cadena), unión anotada de N motores en
-Fase 3, selección de task/E-value en Fase 4, parseo del `.xls` de
+La suite de tests (`tests/`, `pytest`, 168 tests) cubre la lógica pura de
+cada fase — enrutamiento de input (FASTA vs. estructura), extracción de
+estructura (residuos modificados, selección de cadena), unión anotada de N
+motores en Fase 3, selección de task/E-value en Fase 4, parseo del `.xls` de
 NetMHCIIpan y exclusión de alelos invertidos, traceback de coordenadas,
 deduplicación de ventanas y validación de `--alelo-extra`/`--pdb-mode` — sin
 depender de BepiPred, EpiDope, DiscoTope-3.0, ScanNet, BLAST+ ni NetMHCIIpan
 instalados: no invoca ningún subprocess real (los tests de integración de
-los 3 caminos mockean los 4 motores).
+los 3 caminos mockean los 4 motores). Mismo criterio para las Fases
+4b/4c/5b/6: `test_algpred_engine.py` (workaround de batch=1),
+`test_netcleave_engine.py` (matching de corte C-terminal exacto),
+`test_stackglyembed_engine.py` (scanner de sequones N-X-[S/T]) mockean
+`subprocess.run` para no depender de los venvs/modelos externos;
+`test_lanl_catnap_engine.py` no necesita mockear nada (el motor nunca
+invoca un subprocess, es pandas puro sobre CSVs).
 
 ```bash
 pip install -r requirements-dev.txt
 pytest
 ```
+
+Estos tests unitarios validan la lógica de cada motor de forma aislada, no
+que el pipeline completo funcione de punta a punta con los binarios/venvs
+reales instalados — para eso, correr `pipeline.py` contra un input real (ver
+"Uso" arriba) sigue siendo necesario. `STATUS.md` documenta la última
+validación end-to-end real (corrida completa de las 8 fases contra
+`fasta_inputs/GP120.fasta`, un HIV-1 Env real).
