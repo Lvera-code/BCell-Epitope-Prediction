@@ -73,10 +73,56 @@ regresiones). Resultado por fase:
 
 Confirma que el enganche de Fase 4b/4c/5b(+NetCleave)/6 hecho hoy funciona
 de punta a punta con datos reales, no solo con los tests sinteticos
-puntuales usados durante el desarrollo de cada motor. No se repitio la
-validacion de los caminos 2/3 (estructura, DiscoTope/ScanNet) en esta
-sesion -- ya estaban "Confirmado intacto" de una sesion anterior (ver
-Tabla A) y no se tocaron.
+puntuales usados durante el desarrollo de cada motor.
+
+## Auditoria + cierre 2026-07-22 (misma sesion, segunda mitad)
+
+Pedido explicito del usuario: "haz todo lo que queda, a excepcion de lo de
+antigenicidad/toxicidad/alergenicidad" (ver punto 6 de "Decisiones de
+diseno" abajo, y `STATUS.md` de la primera mitad de la sesion). Se completo
+todo lo demas que quedaba pendiente:
+
+1. **Tests unitarios para los 4 motores nuevos** (antes solo tenian
+   validacion end-to-end real, sin cobertura en `tests/`):
+   `test_algpred_engine.py`, `test_netcleave_engine.py`,
+   `test_stackglyembed_engine.py`, `test_lanl_catnap_engine.py` -- 47 tests
+   nuevos (168 en total), mismo criterio que el resto de la suite (logica
+   pura + `subprocess.run` mockeado donde aplica, `lanl_catnap_engine` no
+   necesita mock porque nunca invoca un subprocess).
+2. **Checkpointing por fase + logging de RAM**: se generalizo el auto-cache
+   por hash de contenido que ya tenia Fase 2 (`_cached_raw_scores`) a Fase
+   4/4b/4c/5/5b/6 (`_phase_input_hash`/`_load_phase_checkpoint`/
+   `_write_phase_checkpoint` en `pipeline.py`). Verificado con una corrida
+   real de 2 pasadas sobre el mismo input: 38s -> 0.4s en la segunda, y que
+   cambiar `--identity-threshold` invalida el checkpoint correctamente
+   (cascada correcta: Fase 4 cambia -> `safe_df` cambia -> 4b/4c/5/5b/6 se
+   invalidan tambien). Tambien se agrego `_log_peak_memory` (via
+   `resource.getrusage`, sin dependencias nuevas) despues de las fases mas
+   pesadas, para diagnosticar en cual ocurre un OOM.
+3. **README actualizado**: seguia describiendo "5 fases" sin mencionar
+   4b/4c/5b/6 ni como instalar AlgPred2/NetCleave/StackGlyEmbed/NetMHCpan-4.2/
+   datos LANL+CATNAP -- todo eso vivia solo en este archivo. Ahora el README
+   tiene secciones de instalacion 8-12 para las 5 herramientas nuevas,
+   descripcion de las 4 fases nuevas, seccion "Checkpointing", y la tabla de
+   archivos generados/tests actualizada.
+4. **Validacion end-to-end del camino de estructura (Caminos 2/3)**: NO se
+   habia probado en esta sesion (solo GP120, camino FASTA). Corrida real
+   contra `fasta_inputs/7c4s.pdb` en modo `structure_and_sequence` (los 4
+   motores de Fase 2 a la vez): Fase 3 produjo 7 regiones con origenes
+   mixtos (`Bp+Ed+Sn`, `Ed`, `Bp+Ed`, `Ed+Dt` -- confirma que la union de 4
+   motores simultaneos sigue funcionando), Fase 4 dio 2 Segura/5
+   Autoinmunidad, y las 4 fases nuevas (4b/4c/5/5b/6) corrieron sin fallar
+   sobre esos 2 candidatos (0 alergenos, sin sequones N-glico, 0
+   promiscuos MHC-I/II -esperable con solo 2 candidatos cortos-, sin match
+   bnAb -esperado, 7c4s es una proteina de membrana, no HIV Env-).
+   PIPELINE COMPLETADO sin errores. Una segunda pasada sobre el mismo output
+   confirmo que los 6 checkpoints (incluido Fase 4, que ya tenia su propio
+   auto-cache de Fase 2 debajo) funcionan igual en este camino.
+
+**Con esto, no queda nada pendiente salvo lo explicitamente excluido**: el
+chequeo de alergenicidad/toxicidad/antigenicidad a nivel de CONSTRUCTO final
+(punto 6/7 abajo, bloqueado en que exista un paso de ensamblaje de
+secuencia) y ToxDL2 (bloqueado en la decision del usuario sobre InterPro).
 
 ## Decisiones de diseno tomadas esta sesion (para no repreguntar)
 
@@ -106,8 +152,10 @@ Tabla A) y no se tocaron.
    particular) mientras que el corte proteasomal SI esta mecanicamente
    atado a la via MHC-I (es el paso previo a la carga en el surco), asi que
    tiene mas sentido como señal complementaria del reporte de NetMHCpan que
-   como fase generica propia. StackGlyEmbed quedo con el motor completo pero
-   la misma decision de enganche AUN pendiente para la proxima sesion.
+   como fase generica propia. **Actualizado mas tarde en esta misma sesion**:
+   StackGlyEmbed tambien quedo enganchado, como Fase 4c (mismo patron que
+   4b), y el cruce bnAb como Fase 6 (informativa, no filtra nada) -- ver
+   Tabla C y "Auditoria + cierre 2026-07-22" mas abajo.
 6. **Fase 4b (AlgPred2) es per-peptido, NO satisface por si sola el pedido
    original de Carlos** ("alergenicidad/toxicidad/antigenicidad del
    CONSTRUCTO MULTI-EPITOPO FINAL ENSAMBLADO", no por peptido individual --
@@ -135,27 +183,31 @@ explicitamente para StackGlyEmbed (ver tabla arriba); TMbed ya lo hace bien
 1. ~~Decidir donde enganchan AlgPred2/NetCleave en las fases del pipeline~~ —
    HECHO 2026-07-22 (AlgPred2 = Fase 4b, NetCleave = anotacion en Fase 5b,
    ver Tabla C y "Decisiones de diseno" arriba).
-2. ~~Terminar StackGlyEmbed~~ — motor HECHO 2026-07-22 (ver Tabla C), pero
-   **decidir donde engancha en las fases del pipeline sigue pendiente**
-   (mismo tipo de decision que el punto 1, no se tomo esta sesion).
-3. ~~Escribir el motor de consulta bnAb~~ — HECHO 2026-07-22 (ver Tabla C),
-   **decidir donde engancha en el pipeline sigue pendiente** (mismo tipo de
-   decision que StackGlyEmbed).
+2. ~~Terminar StackGlyEmbed~~ — motor HECHO 2026-07-22, **enganchado como
+   Fase 4c** mas tarde esta misma sesion (ver Tabla C).
+3. ~~Escribir el motor de consulta bnAb~~ — motor HECHO 2026-07-22,
+   **enganchado como Fase 6** mas tarde esta misma sesion (ver Tabla C).
 4. Retomar ToxDL2 segun lo que decida el usuario sobre InterPro (bloqueado
    en una decision del usuario, no se avanzo esta sesion).
-5. Orquestacion con manejo de memoria (batching, no cargar varios modelos
-   pesados en simultaneo -- TMbed/StackGlyEmbed/ToxDL2 comparten ESM-2/ProtT5,
-   posible reuso de un unico proceso "server" en vez de recargar el modelo
-   por cada engine si el diseño lo permite) + logging de RAM + checkpointing,
-   dado el OOM que origino todo esto. Relevante ahora que StackGlyEmbed
-   tambien carga ESM-2 650M + ProtT5 + ProteinBERT en el mismo proceso.
+5. ~~Orquestacion con manejo de memoria + logging de RAM + checkpointing~~ —
+   HECHO 2026-07-22 (ver "Auditoria + cierre" mas abajo) EN LO QUE APLICA A
+   ESTE PIPELINE: checkpointing por hash de input en Fase 4/4b/4c/5/5b/6
+   (generalizacion del auto-cache que ya tenia Fase 2) y logging de pico de
+   RAM tras las fases pesadas. **Lo que NO se hizo** (fuera de alcance real
+   de `pipeline.py`, no una omision): un proceso "server" compartiendo
+   ESM-2/ProtT5 entre StackGlyEmbed/TMbed/ToxDL2 -- TMbed ni ToxDL2 corren
+   desde este script (TMbed vive enteramente en el plugin Scipion separado
+   `scipion-chem-tmbed`, ToxDL2 sigue sin integrar), asi que no hay nada que
+   compartir todavia dentro de este proceso.
 6. ~~Test end-to-end con PSMD7/PODXL/THBS2/SLC8A1 (y gp120 si da el tiempo)~~
-   — HECHO 2026-07-22 con `fasta_inputs/GP120.fasta` (861 aa, HIV-1 Env real),
-   ver seccion "Validacion end-to-end 2026-07-22" mas abajo. Todas las fases
-   (1 a 6) corrieron con resultados reales y no triviales. PSMD7/PODXL/
-   THBS2/SLC8A1 (proteinas humanas de prueba para casos NO-HIV) siguen sin
-   probarse explicitamente, pero no hay motivo para esperar un camino de
-   codigo distinto (mismo pipeline, GP120 ya ejercito las 8 fases).
+   — HECHO 2026-07-22 con `fasta_inputs/GP120.fasta` (861 aa, HIV-1 Env real,
+   Camino 1/FASTA) Y con `fasta_inputs/7c4s.pdb` (Camino 3/estructura, los 4
+   motores de Fase 2 a la vez), ver "Validacion end-to-end 2026-07-22" y
+   "Auditoria + cierre 2026-07-22" mas abajo. Las 8 fases corrieron con
+   resultados reales en ambos caminos. PSMD7/PODXL/THBS2/SLC8A1 (proteinas
+   humanas de prueba, todas FASTA) siguen sin probarse individualmente, pero
+   no hay motivo para esperar un camino de codigo distinto al ya confirmado
+   con GP120 (mismo Camino 1).
 7. Chequeo de alergenicidad/toxicidad/antigenicidad a nivel de CONSTRUCTO
    FINAL ensamblado (pedido original de Carlos, ver "Decisiones de diseno"
    punto 6 -- Fase 4b per-peptido NO lo cubre). Depende de que exista un
