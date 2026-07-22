@@ -46,6 +46,15 @@ A partir de Fase 2, el resto del flujo es identico para los 3 caminos:
        ``origen`` con TODOS los motores contribuyentes. Filtro de longitud
        inquebrantable: se descarta cualquier region final menor a 9 aa antes
        de la Fase 4.
+    3b. Enmascarado transmembrana/peptido senal (TMbed LOCAL,
+       ``src.engines.tmbed_engine``): corre sobre la secuencia COMPLETA de
+       cada accession (no por peptido candidato) y descarta de la union
+       anotada de Fase 3 cualquier region que caiga dentro de una
+       helice/tira transmembrana o del peptido senal N-terminal, ANTES de
+       BLASTp -- esos residuos no son accesibles a anticuerpos en la
+       proteina madura/anclada a membrana. Reusa el venv/pesos ya instalados
+       para el plugin Scipion ``scipion-chem-tmbed`` (repo hermano), sin
+       importar codigo de ese plugin.
     4. Filtro de tolerancia inmunologica: BLASTp local contra el proteoma
        humano, descarta homologos de alta identidad (``src.engines.blast_engine``).
        Los peptidos 'Segura' resultantes alimentan, en paralelo y sin
@@ -151,6 +160,7 @@ from src.engines.scannet_engine import extract_epitopes as extract_scannet_epito
 from src.engines.scannet_engine import print_epitope_table as print_scannet_epitope_table
 from src.engines.signalp_engine import predict_signal_peptide, print_signalp_report
 from src.engines.stackglyembed_engine import predict_nglycosylation
+from src.engines.tmbed_engine import filter_overlapping_regions, predict_tm_signal_regions, print_tmbed_regions_report
 from src.engines.toxinpred_engine import predict_toxicity, print_toxicity_report
 from src.utils.exceptions import PipelineError
 from src.utils.fasta_parser import FastaRecord, is_bepipred_compatible, load_and_sanitize, write_fasta
@@ -567,6 +577,31 @@ def _warn_if_residue_count_mismatch(engine_name: str, raw_df: pd.DataFrame, stru
         )
 
 
+def _build_full_sequence_lookup(
+    raw_dfs: Dict[str, pd.DataFrame], structure_record: Optional[StructureRecord]
+) -> Dict[str, str]:
+    """Reconstruye ``accession -> secuencia completa`` desde estructura o motores de secuencia crudos.
+
+    Para input de estructura, la fuente es directamente
+    ``StructureRecord.sequence`` (ATMSEQ); para motores de secuencia, se
+    reconstruye desde sus propios scores crudos de Fase 2. Usado tanto por
+    Fase 3 (union de regiones fusionadas) como por Fase 3b (TMbed necesita
+    la secuencia completa de cada accession, no solo el fragmento candidato).
+    """
+    sequence_lookup: Dict[str, str] = {}
+    if structure_record is not None:
+        sequence_lookup[structure_record.accession] = structure_record.sequence
+    if "epidope" in raw_dfs:
+        sequence_lookup.update(
+            build_sequence_lookup(raw_dfs["epidope"], accession_col=EPIDOPE_ACCESSION_COLUMN, residue_col_candidates=(EPIDOPE_RESIDUE_COLUMN,))
+        )
+    if "bepipred" in raw_dfs:
+        sequence_lookup.update(
+            build_sequence_lookup(raw_dfs["bepipred"], accession_col=BEPIPRED_ACCESSION_COLUMN, residue_col_candidates=BEPIPRED_RESIDUE_CANDIDATES)
+        )
+    return sequence_lookup
+
+
 def fase_3_mapeo_y_union(
     raw_dfs: Dict[str, pd.DataFrame],
     structure_record: Optional[StructureRecord],
@@ -638,21 +673,9 @@ def fase_3_mapeo_y_union(
     # Lookup de secuencia completa por accession: una region fusionada puede
     # exceder el span detectado por cualquiera de los motores por separado,
     # asi que la subsecuencia final se reconstruye desde aqui en vez de
-    # recortar las subsecuencias individuales de cada motor. Para input de
-    # estructura, la fuente es directamente StructureRecord.sequence (ATMSEQ);
-    # para motores de secuencia, se reconstruye desde sus propios scores
-    # crudos (mismo criterio que el pipeline original).
-    sequence_lookup: Dict[str, str] = {}
-    if structure_record is not None:
-        sequence_lookup[structure_record.accession] = structure_record.sequence
-    if "epidope" in raw_dfs:
-        sequence_lookup.update(
-            build_sequence_lookup(raw_dfs["epidope"], accession_col=EPIDOPE_ACCESSION_COLUMN, residue_col_candidates=(EPIDOPE_RESIDUE_COLUMN,))
-        )
-    if "bepipred" in raw_dfs:
-        sequence_lookup.update(
-            build_sequence_lookup(raw_dfs["bepipred"], accession_col=BEPIPRED_ACCESSION_COLUMN, residue_col_candidates=BEPIPRED_RESIDUE_CANDIDATES)
-        )
+    # recortar las subsecuencias individuales de cada motor. Reusado tal
+    # cual por Fase 3b (TMbed necesita la misma secuencia completa).
+    sequence_lookup = _build_full_sequence_lookup(raw_dfs, structure_record)
 
     position_mapping = structure_record.position_mapping if structure_record is not None else None
     union_df = build_annotated_union_table(epitope_dfs, sequence_lookup, position_mapping=position_mapping)
@@ -662,6 +685,80 @@ def fase_3_mapeo_y_union(
     union_df.to_csv(out_path, index=False)
     print(f"-> Tabla de union anotada guardada en: {out_path}")
     return union_df
+
+
+def fase_3b_tm_signal_masking(
+    raw_dfs: Dict[str, pd.DataFrame],
+    structure_record: Optional[StructureRecord],
+    union_df: pd.DataFrame,
+    output_dir: Path,
+    input_stem: str,
+) -> pd.DataFrame:
+    """Fase 3b: descarta de la union anotada las regiones dentro de una TM helix/strand o peptido senal (TMbed local).
+
+    A diferencia de Fase 4b/4c (evaluan cada peptido candidato ya recortado),
+    TMbed corre sobre la secuencia COMPLETA de cada accession (ver
+    ``_build_full_sequence_lookup``): necesita el contexto completo de la
+    proteina para predecir correctamente topologia de membrana, no solo el
+    fragmento de 9+ aa que sobrevivio a Fase 3. El costoso paso (inferencia
+    ProtT5 + prediccion) se cachea por CONTENIDO de las secuencias completas
+    (``sequence_lookup``), no por ``union_df``: dos corridas del mismo input
+    con distintos umbrales de Fase 3 (que cambian que regiones aparecen en
+    ``union_df`` pero no las secuencias completas en si) reusan el mismo
+    cache de regiones TMbed.
+
+    Args:
+        raw_dfs: Scores crudos de Fase 2 (mismo dict que recibe Fase 3),
+            usado por ``_build_full_sequence_lookup``.
+        structure_record: Resultado de Fase 1.5, o ``None`` para input FASTA puro.
+        union_df: Union anotada de Fase 3.
+        output_dir: Carpeta donde persistir las regiones TMbed y la union post-enmascarado.
+        input_stem: Nombre del archivo de entrada sin extension.
+
+    Returns:
+        ``union_df`` sin las filas cuyo rango se solapa con una region
+        TM/senal (mismo esquema de columnas, mismo orden relativo de filas
+        restantes). Si no hay ninguna secuencia completa disponible o
+        ``union_df`` esta vacio, se devuelve ``union_df`` sin cambios.
+    """
+    print(f"\n{_SEPARATOR}\nFASE 3b | Enmascarado transmembrana/peptido senal (TMbed local)\n{_SEPARATOR}")
+
+    sequence_lookup = _build_full_sequence_lookup(raw_dfs, structure_record)
+    regions_path = output_dir / f"{input_stem}_tmbed_regions.csv"
+    masked_path = output_dir / f"{input_stem}_union_epitopes_masked.csv"
+
+    if not sequence_lookup or union_df.empty:
+        print("No hay secuencia completa disponible o la union anotada esta vacia: se omite Fase 3b.")
+        union_df.to_csv(masked_path, index=False)
+        return union_df
+
+    input_hash = _phase_input_hash(
+        *(f"{accession}:{sequence}" for accession, sequence in sorted(sequence_lookup.items())),
+        Settings.TMBED_MIN_REGION_LENGTH,
+    )
+    cached_regions = _load_phase_checkpoint("Fase 3b", regions_path, input_hash)
+    if cached_regions is not None:
+        regions_df = cached_regions
+    else:
+        regions_df = predict_tm_signal_regions(sequence_lookup, output_dir, filename_prefix=f"{input_stem}_")
+        regions_df.to_csv(regions_path, index=False)
+        _write_phase_checkpoint(regions_path, input_hash)
+
+    print_tmbed_regions_report(regions_df)
+
+    masked_df, n_discarded = filter_overlapping_regions(union_df, regions_df)
+    if n_discarded:
+        print(
+            f"[AVISO] {n_discarded} region(es) de la union anotada descartada(s) por solaparse con una "
+            "helice/tira transmembrana o peptido senal (no accesibles a anticuerpos en la proteina "
+            "madura/anclada a membrana)."
+        )
+    else:
+        print("Ninguna region de la union anotada se solapa con una region TM/peptido senal detectada.")
+
+    masked_df.to_csv(masked_path, index=False)
+    print(f"-> Union anotada (post-enmascarado TM/senal) guardada en: {masked_path}")
+    return masked_df
 
 
 def fase_4_tolerancia(
@@ -1208,8 +1305,11 @@ def main(argv: List[str] = None) -> int:
             discotope_threshold=args.discotope_threshold, discotope_min_length=args.discotope_min_length,
             scannet_threshold=args.scannet_threshold, scannet_min_length=args.scannet_min_length,
         )
+        masked_union_df = fase_3b_tm_signal_masking(
+            raw_dfs, structure_record, union_df, output_dir, input_path.stem
+        )
         blast_df = fase_4_tolerancia(
-            union_df, args.blast_db, args.identity_threshold, output_dir, input_path.stem
+            masked_union_df, args.blast_db, args.identity_threshold, output_dir, input_path.stem
         )
         safe_df = blast_df[blast_df["status"] == "Segura"] if not blast_df.empty else blast_df
         algpred_df = fase_4b_alergenicidad(safe_df, output_dir, input_path.stem)

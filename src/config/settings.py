@@ -34,6 +34,13 @@ def _env_int(key: str, default: int) -> int:
         return default
 
 
+def _env_bool(key: str, default: bool) -> bool:
+    raw = os.environ.get(key)
+    if raw is None:
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
 class Settings:
     """Punto unico de verdad para toda configuracion del pipeline."""
 
@@ -425,6 +432,55 @@ class Settings:
     # Generoso por defecto: carga en frio de 3 modelos (ProteinBERT + ESM-2
     # 650M + ProtT5) sobre CPU antes de procesar el primer sitio.
     STACKGLYEMBED_TIMEOUT_SECONDS: int = _env_int("STACKGLYEMBED_TIMEOUT_SECONDS", 900)
+
+    # --- Fase 3b: Enmascarado transmembrana/peptido senal (TMbed LOCAL) ---
+    # Mismo motor que respalda el plugin Scipion 'scipion-chem-tmbed' (repo
+    # hermano, ver su README.rst), reusado aqui via subprocess puro sobre su
+    # venv dedicado -- ningun codigo del plugin Scipion (que depende de
+    # 'pwchem') se importa, solo el binario 'tmbed' de su venv. Corre sobre
+    # la secuencia COMPLETA de cada accession (no por peptido candidato, a
+    # diferencia de 4b/4c): descarta de la union anotada de Fase 3 cualquier
+    # region que caiga dentro de una hélice/tira transmembrana o del péptido
+    # señal N-terminal, ANTES de BLASTp (Fase 4) -- esos residuos no son
+    # accesibles a anticuerpos en la proteína madura/anclada a membrana (o,
+    # en el caso del péptido señal, se escinden y no forman parte de la
+    # proteína madura), asi que proponerlos como epitopo B-cell no tiene
+    # sentido biologico. Resuelve el item de scoping de Carlos marcado como
+    # "posiblemente ya existente" (ver STATUS.md).
+    #
+    # Pesos ProtT5-XL-U50 (~2.4 GB) NO se descargan en tiempo de ejecucion
+    # (politica local-only/no-scraping del proyecto): ya estan cacheados en
+    # disco, MISMOS pesos que reusa StackGlyEmbed para su propio ProtT5 (ver
+    # STACKGLYEMBED_T5_MODEL_PATH arriba, mismo encoder
+    # Rostlab/prot_t5_xl_half_uniref50-enc).
+    TMBED_PYTHON_BIN: str = _env_str(
+        "TMBED_PYTHON_BIN",
+        "/home/enzo/DiffSBDD/scipion-chem-tmbed/.venv-tmbed/bin/python",
+    )
+    TMBED_BINARY_NAME: str = _env_str("TMBED_BINARY_NAME", "tmbed")
+    TMBED_MODEL_DIR: str = _env_str(
+        "TMBED_MODEL_DIR",
+        "/home/enzo/DiffSBDD/scipion-chem-tmbed/tmbed_src/tmbed/models/t5",
+    )
+    # Formato de salida '1' de TMbed: colapsa los niveles de confianza de
+    # tira/helice en una unica letra mayuscula por clase (B/H), reporta el
+    # peptido senal como 'S' y los residuos no-membrana como 'i'/'o' (adentro/
+    # afuera) -- ver docstring de `src/engines/tmbed_engine.py` para el
+    # criterio de que letras se convierten en region de enmascarado.
+    TMBED_OUT_FORMAT: str = "1"
+    # Maquina CPU-only (misma confirmada en signalp_engine.py): GPU
+    # deshabilitada por defecto, ajustable via TMBED_USE_GPU=1 si se corre en
+    # otra maquina con GPU disponible.
+    TMBED_USE_GPU: bool = _env_bool("TMBED_USE_GPU", False)
+    TMBED_THREADS: int = _env_int("TMBED_THREADS", 4)
+    # Regiones de 1 residuo ya son biologicamente informativas para TMbed
+    # (a diferencia de BEPIPRED_MIN_EPITOPE_LENGTH/etc., que filtran ruido de
+    # ventana deslizante): sin filtro de longitud minima por defecto, igual
+    # que el default del protocolo Scipion (`ProtTMbedPredict.minRegionLength`).
+    TMBED_MIN_REGION_LENGTH: int = _env_int("TMBED_MIN_REGION_LENGTH", 1)
+    # Generoso por defecto: incluye la generacion de embeddings ProtT5 sobre
+    # CPU (on-the-fly, sin cache separado de embeddings) antes de predecir.
+    TMBED_TIMEOUT_SECONDS: int = _env_int("TMBED_TIMEOUT_SECONDS", 1800)
 
     # --- Cruce con bnAb conocidos (LANL Immunology DB + CATNAP, pandas puro, sin red) ---
     # Reemplaza a bNAber (dominio muerto, ver docstring de lanl_catnap_engine.py).
