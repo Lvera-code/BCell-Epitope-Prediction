@@ -992,7 +992,7 @@ def fase_5b_tc_promiscuidad(safe_df: pd.DataFrame, output_dir: Path, input_stem:
     n_alleles = len(NETMHCPAN_REFERENCE_PANEL.split(","))
     print(
         f"\n{_SEPARATOR}\nFASE 5b | Promiscuidad T-citotoxica (MHC-I, NetMHCpan-4.2 local, "
-        f"{n_alleles} alelo(s) HLA-A/B)\n{_SEPARATOR}"
+        f"{n_alleles} alelo(s) HLA-A/B/C)\n{_SEPARATOR}"
     )
 
     final_path = output_dir / f"{input_stem}_candidatos_finales_mhc1.csv"
@@ -1003,13 +1003,22 @@ def fase_5b_tc_promiscuidad(safe_df: pd.DataFrame, output_dir: Path, input_stem:
         traceback_df.to_csv(final_path, index=False)
         return traceback_df
 
-    input_hash = _phase_input_hash(safe_df)
+    # Bug real encontrado y corregido (2026-07-22, al ampliar
+    # NETMHCPAN_REFERENCE_PANEL de 12 a 23 alelos): a diferencia de Fase 5
+    # (MHC-II, que SI incluye 'allele_panel' en su hash), este checkpoint
+    # solo hasheaba 'safe_df' -- un cambio al panel de alelos en el CODIGO
+    # FUENTE (sin tocar el input) no invalidaba el cache, sirviendo en
+    # silencio un reporte calculado contra un panel viejo. NETMHCPAN_REFERENCE_PANEL
+    # no es configurable por CLI (a diferencia del panel de MHC-II, que
+    # admite '--alelo-extra'), asi que incluir el valor actual de la
+    # constante alcanza para detectar cualquier cambio futuro.
+    input_hash = _phase_input_hash(safe_df, NETMHCPAN_REFERENCE_PANEL)
     cached = _load_phase_checkpoint("Fase 5b", final_path, input_hash)
     if cached is not None:
         return cached
 
     peptides = safe_df["sequence"].tolist()
-    print(f"Panel HLA-A/B: {NETMHCPAN_REFERENCE_PANEL} | Peptidos a evaluar: {len(peptides)}")
+    print(f"Panel HLA-A/B/C: {NETMHCPAN_REFERENCE_PANEL} | Peptidos a evaluar: {len(peptides)}")
 
     report = predict_netmhcpan(peptides, output_dir, allele_panel=NETMHCPAN_REFERENCE_PANEL, filename_prefix=f"{input_stem}_")
 

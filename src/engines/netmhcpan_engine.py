@@ -20,15 +20,64 @@ hardcodeado). No se usa ``requests`` ni ninguna llamada de red.
 
 Promiscuidad HLA-I: cada peptido candidato se evalua contra
 ``Settings.NETMHCPAN_REFERENCE_PANEL`` -un panel de referencia de alelos
-representativos de los supertipos HLA-A/B mas frecuentes en poblacion
-(Sidney et al. 2008, "HLA class I supertypes: a revised and updated
-classification")- pasado tal cual al flag ``-a``. Un peptido se reporta como
-``'Candidato Valido'`` (T-citotoxico promiscuo) solo si clasifica como
-aglutinador fuerte (SB) o debil (WB), segun ``Settings.NETMHCPAN_RANK_STRONG``/
-``NETMHCPAN_RANK_WEAK`` (0.5/2.0 por defecto -- DISTINTOS de los de
-NetMHCIIpan, 1.0/5.0: MHC-I tiene su propia escala de %Rank, no comparable
-1:1), en al menos ``Settings.NETMHCPAN_MIN_PROMISCUOUS_ALLELES`` alelos
-distintos del panel.
+HLA-A/B/C representativos, pasado tal cual al flag ``-a``. Un peptido se
+reporta como ``'Candidato Valido'`` (T-citotoxico promiscuo) solo si
+clasifica como aglutinador fuerte (SB) o debil (WB), segun
+``Settings.NETMHCPAN_RANK_STRONG``/``NETMHCPAN_RANK_WEAK`` (0.5/2.0 por
+defecto -- DISTINTOS de los de NetMHCIIpan, 1.0/5.0: MHC-I tiene su propia
+escala de %Rank, no comparable 1:1), en al menos
+``Settings.NETMHCPAN_MIN_PROMISCUOUS_ALLELES`` alelos distintos del panel.
+
+**Composicion del panel (investigado a fondo 2026-07-22, ver commit que
+agrego HLA-C):**
+- **HLA-A/B (12 alelos, sin cambios desde el diseño original):**
+  representativos de los 12 supertipos HLA clase I de Sidney et al. 2008
+  ("HLA class I supertypes: a revised and updated classification",
+  Immunome Res 4:2) -- ese paper clasifica ~700 alelos HLA-A/-B en 12
+  supertipos, pero NO cubre HLA-C en absoluto (confirmado leyendo el
+  paper). El panel de 27 alelos de IEDB para MHC-II
+  (``netmhciipan_engine.IEDB_REFERENCE_PANEL``) tampoco es el precedente
+  aca: el panel HOMOLOGO de MHC-I mas citado para cobertura poblacional
+  (Weiskopf et al. 2013, PNAS, "Comprehensive analysis of dengue
+  virus-specific responses...", el "panel de 27 alelos" que popularizo
+  IEDB para clase I) TAMBIEN es exclusivamente HLA-A/B (16 A + 11 B) --
+  osea que la ausencia historica de HLA-C en este modulo no fue una
+  decision deliberada de este proyecto, sino que reproducia una omision
+  real y bien documentada en las dos referencias mas citadas del campo
+  para paneles de MHC-I.
+- **HLA-C (11 alelos, agregados 2026-07-22):** `HLA-C01:02`, `HLA-C03:04`,
+  `HLA-C04:01`, `HLA-C05:01`, `HLA-C06:02`, `HLA-C07:01`, `HLA-C07:02`,
+  `HLA-C08:02`, `HLA-C12:03`, `HLA-C15:02`, `HLA-C16:01`. HLA-C SI es un
+  elemento de restriccion CD8+ real (solo que historicamente menos
+  caracterizado y expresado en superficie celular a menor nivel que
+  HLA-A/B) -- no hay una clasificacion de "supertipos" de HLA-C tan
+  limpia/unica como la de Sidney 2008 para A/B (la division C1/C2 que SI
+  esta bien establecida es sobre residuos 77/80 relevantes para ligandos
+  de receptores KIR de celulas NK, un eje de clasificacion distinto al de
+  especificidad de union a peptido de celulas T). Estos 11 alelos se
+  eligieron por ser los que aparecen consistentemente en dos fuentes
+  independientes: (a) Rasmussen et al. 2014, J Immunol 193(10):4790-4801,
+  "Uncovering the Peptide-Binding Specificities of HLA-C..." -- 17 de los
+  alelos HLA-C mas comunes globalmente, elegidos por frecuencia
+  poblacional y caracterizados experimentalmente (motivos de union reales,
+  no solo inferidos); y (b) el criterio de umbral >=1% de frecuencia
+  poblacional global que recomienda IEDB para paneles de cobertura
+  poblacional, tal como lo aplico un estudio de diseño de vacuna
+  SARS-CoV-2 de 2020 que evaluo HLA-A/B/C juntos para maximizar cobertura
+  (PMC7754929). Los 11 elegidos aparecen en ambas fuentes. Confirmados
+  soportados por el binario local (``netMHCpan-4.2/data/allelenames`` y
+  ``MHC_pseudo.dat``, verificado antes de agregarlos) y validados con una
+  corrida real contra epitopos de referencia conocidos (NLVPMVATV/CMV
+  pp65, GILGFVFTL/Flu M1, ambos HLA-A*02:01) sin errores.
+- **``NETMHCPAN_MIN_PROMISCUOUS_ALLELES`` (3) se dejo SIN CAMBIOS** al
+  ampliar el panel de 12 a 23 alelos -- es una decision deliberada, no un
+  descuido: sigue la misma convencion ya establecida por
+  ``netmhciipan_engine.IEDB_REFERENCE_PANEL`` (27 alelos, mismo umbral fijo
+  de 3, nunca escalado como fraccion del tamaño del panel). Dicho eso, 3
+  de 23 es una barra relativamente mas laxa que 3 de 12 -- si en el futuro
+  se decide que la "promiscuidad" deberia escalar con el tamaño del panel,
+  este es el lugar a revisar, pero cambiar ese umbral no fue parte de esta
+  investigacion (se pidio agregar HLA-C, no redefinir promiscuidad).
 
 A diferencia de NetMHCIIpan, el .xls de NetMHCpan-4.2 NO tiene columna
 ``Inverted``: el nucleo de union MHC-I no sufre el artefacto de alineacion
@@ -40,11 +89,13 @@ ningun filtro equivalente aqui -- confirmado leyendo las columnas reales del
 Buffer overflow del binario en modo peptido exacto: igual que NetMHCIIpan,
 NetMHCpan-4.2 (Linux_x86_64) revienta con "*** buffer overflow detected ***"
 (SIGABRT, core dump, exit code 0 -- el wrapper tcsh NO propaga el fallo) para
-peptidos demasiado largos en modo ``-p``. Verificado empiricamente contra el
-panel real de 12 alelos de ``NETMHCPAN_REFERENCE_PANEL``: 55 aa OK, 57 aa
-crash (mismo binario/arquitectura de buffer que NetMHCIIpan, cuyo limite
-tambien cae en ese rango). Peptidos mas largos que
-``_MAX_PEPTIDE_MODE_LENGTH`` se enrutan a modo FASTA/proteina (``-l``,
+peptidos demasiado largos en modo ``-p``. Verificado empiricamente: 55 aa OK,
+57 aa crash -- RE-verificado 2026-07-22 con el panel ampliado de 23 alelos
+(no solo con los 12 originales): el limite NO cambia con el tamaño del
+panel, es una propiedad del parseo interno de la longitud del peptido, no
+de cuantos alelos se pasan por '-a' (mismo binario/arquitectura de buffer
+que NetMHCIIpan, cuyo limite tambien cae en ese rango). Peptidos mas largos
+que ``_MAX_PEPTIDE_MODE_LENGTH`` se enrutan a modo FASTA/proteina (``-l``,
 ventana deslizante interna de NetMHCpan sobre las longitudes de
 ``Settings.NETMHCPAN_PEPTIDE_LENGTHS``), igual que hace ``netmhciipan_engine.py``.
 """
@@ -66,14 +117,18 @@ from src.utils.table_format import Column, print_fixed_width_table
 
 logger = setup_logger(__name__)
 
-# Panel de referencia de alelos HLA-A/B representativos de los supertipos
-# clase I mas frecuentes en poblacion humana (Sidney et al. 2008, "HLA class
-# I supertypes: a revised and updated classification", Immunome Res 4:2).
+# Panel de referencia de 23 alelos HLA-A/B/C. HLA-A/B (12): representativos
+# de los 12 supertipos de Sidney et al. 2008 (no cubre HLA-C). HLA-C (11,
+# agregados 2026-07-22): comunes globalmente segun Rasmussen et al. 2014 +
+# criterio de frecuencia poblacional >=1% de IEDB -- ver docstring del
+# modulo para el detalle completo de la investigacion y las fuentes.
 # NUNCA se le agregan espacios entre comas: NetMHCpan lo pasa tal cual a su
 # parser de '-a' y un espacio rompe el parseo del alelo siguiente.
 NETMHCPAN_REFERENCE_PANEL = (
     "HLA-A01:01,HLA-A02:01,HLA-A03:01,HLA-A24:02,HLA-A26:01,"
-    "HLA-B07:02,HLA-B08:01,HLA-B27:05,HLA-B39:01,HLA-B40:01,HLA-B58:01,HLA-B15:01"
+    "HLA-B07:02,HLA-B08:01,HLA-B27:05,HLA-B39:01,HLA-B40:01,HLA-B58:01,HLA-B15:01,"
+    "HLA-C01:02,HLA-C03:04,HLA-C04:01,HLA-C05:01,HLA-C06:02,HLA-C07:01,"
+    "HLA-C07:02,HLA-C08:02,HLA-C12:03,HLA-C15:02,HLA-C16:01"
 )
 
 # Footprint minimo de un peptido MHC-I: por debajo de 8 aa no hay nucleo de
@@ -264,9 +319,10 @@ def predict_netmhcpan(
             superaron la Fase 4, igual que NetMHCIIpan). Los mas cortos que
             el footprint minimo de MHC-I (8 aa) se omiten con un warning.
         output_dir: Carpeta donde persistir el/los .xls crudos, para trazabilidad.
-        allele_panel: Alelos HLA-A/B separados por coma sin espacios (formato
+        allele_panel: Alelos HLA-A/B/C separados por coma sin espacios (formato
             NetMHCpan), pasados tal cual al flag ``-a``. Por defecto
-            ``NETMHCPAN_REFERENCE_PANEL`` (12 alelos, supertipos Sidney 2008).
+            ``NETMHCPAN_REFERENCE_PANEL`` (23 alelos: 12 HLA-A/B de los
+            supertipos Sidney 2008 + 11 HLA-C, ver docstring del modulo).
         filename_prefix: Prefijo (tipicamente ``f"{input_stem}_"``) para los
             .xls crudos persistidos en ``output_dir``.
 
@@ -347,7 +403,7 @@ def print_tc_report(report_df: pd.DataFrame, allele_panel: str = NETMHCPAN_REFER
     validos, resumen final usa el total evaluado como denominador.
     """
     if report_df.empty:
-        print("No hay peptidos candidatos para evaluar contra el panel HLA-A/B.")
+        print("No hay peptidos candidatos para evaluar contra el panel HLA-A/B/C.")
         return
 
     valid_df = report_df[report_df["veredicto"] == "Candidato Valido"]
