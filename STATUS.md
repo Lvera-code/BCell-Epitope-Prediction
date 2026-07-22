@@ -79,6 +79,17 @@ tabla es el estado real verificado al cierre de esta sesion.
    tiene mas sentido como señal complementaria del reporte de NetMHCpan que
    como fase generica propia. StackGlyEmbed quedo con el motor completo pero
    la misma decision de enganche AUN pendiente para la proxima sesion.
+6. **Fase 4b (AlgPred2) es per-peptido, NO satisface por si sola el pedido
+   original de Carlos** ("alergenicidad/toxicidad/antigenicidad del
+   CONSTRUCTO MULTI-EPITOPO FINAL ENSAMBLADO", no por peptido individual --
+   eso ya lo cubrian, mal, los wrappers de IIITD descartados por scraping).
+   Confirmado explicitamente con el usuario 2026-07-22: Fase 4b se queda
+   como filtro temprano util (descarta peptidos individualmente riesgosos
+   antes de ensamblar), pero **el chequeo a nivel de constructo final SIGUE
+   SIN CONSTRUIRSE** y es un item de scope aparte, pendiente de que exista
+   un paso de ensamblaje de secuencia (fuera del alcance actual del
+   pipeline, que termina en candidatos individuales, no en un constructo).
+   No asumir que Fase 4b ya cubrio este pedido.
 
 ## Restriccion no negociable (recordada explicitamente por el usuario a mitad de sesion)
 
@@ -110,3 +121,7 @@ explicitamente para StackGlyEmbed (ver tabla arriba); TMbed ya lo hace bien
    dado el OOM que origino todo esto. Relevante ahora que StackGlyEmbed
    tambien carga ESM-2 650M + ProtT5 + ProteinBERT en el mismo proceso.
 6. Test end-to-end con PSMD7/PODXL/THBS2/SLC8A1 (y gp120 si da el tiempo).
+7. Chequeo de alergenicidad/toxicidad/antigenicidad a nivel de CONSTRUCTO
+   FINAL ensamblado (pedido original de Carlos, ver "Decisiones de diseno"
+   punto 6 -- Fase 4b per-peptido NO lo cubre). Depende de que exista un
+   paso de ensamblaje de secuencia, que hoy no existe en el pipeline.
