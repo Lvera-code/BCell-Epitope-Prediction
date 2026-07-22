@@ -38,6 +38,15 @@ A partir de Fase 2, el resto del flujo es identico para los 3 caminos:
        de la Fase 4.
     4. Filtro de tolerancia inmunologica: BLASTp local contra el proteoma
        humano, descarta homologos de alta identidad (``src.engines.blast_engine``).
+       Los peptidos 'Segura' resultantes alimentan, en paralelo y sin
+       depender entre si, TODAS las fases siguientes (4b, 4c, 5, 5b, 6).
+    4b. Alergenicidad (AlgPred 2.0 LOCAL, ``src.engines.algpred_engine``):
+       señal de seguridad de la secuencia en si, informativa, no filtra
+       ninguna fase posterior.
+    4c. N-glicosilacion (StackGlyEmbed LOCAL, ``src.engines.stackglyembed_engine``):
+       escanea sequones N-X-[S/T] propios (X != Prolina) y evalua cada uno
+       con un stack ProteinBERT+ESM-2+ProtT5 ya entrenado; informativa,
+       igual que 4b.
     5. Prediccion de presentacion T-helper (MHC-II) via NetMHCIIpan-4.3 LOCAL
        contra un panel de 27 alelos HLA-DR/DQ/DP de referencia
        (IEDB_REFERENCE_PANEL); reporta como candidato final solo los
@@ -48,6 +57,13 @@ A partir de Fase 2, el resto del flujo es identico para los 3 caminos:
        a sintesis/validacion experimental-), enriquecidos con su nucleo de
        union de 9 aa y su traceback de coordenadas/origen a la region de la
        Fase 3 de la que provienen (``src.engines.netmhciipan_engine``).
+    5b. Promiscuidad T-citotoxica (MHC-I, NetMHCpan-4.2 LOCAL,
+       ``src.engines.netmhcpan_engine``), paralela e independiente de la
+       Fase 5 (MHC-II), anotada ademas con evidencia de corte proteasomal
+       C-terminal (NetCleave LOCAL, ``src.engines.netcleave_engine``).
+    6. Cruce con bnAb conocidos (LANL Immunology DB + CATNAP LOCAL,
+       ``src.engines.lanl_catnap_engine``): puramente informativo, solo
+       produce matches reales para entradas de la familia HIV Env.
 
 Todos los artefactos intermedios y el reporte final se guardan en
 ``fasta_outputs/``. Requiere, segun los motores que active cada camino:
@@ -88,6 +104,7 @@ from src.engines.epidope_engine import extract_epitopes as extract_epidope_epito
 from src.engines.epidope_engine import ACCESSION_COLUMN as EPIDOPE_ACCESSION_COLUMN
 from src.engines.epidope_engine import RESIDUE_COLUMN as EPIDOPE_RESIDUE_COLUMN
 from src.engines.epitope_mapping import build_sequence_lookup, print_epitope_table
+from src.engines.lanl_catnap_engine import query_bnab_crossref
 from src.engines.netcleave_engine import annotate_cterm_cleavage, predict_cleavage
 from src.engines.netmhciipan_engine import (
     IEDB_REFERENCE_PANEL,
@@ -106,6 +123,7 @@ from src.engines.netmhcpan_engine import (
 from src.engines.scannet_engine import ScanNetEngine
 from src.engines.scannet_engine import extract_epitopes as extract_scannet_epitopes
 from src.engines.scannet_engine import print_epitope_table as print_scannet_epitope_table
+from src.engines.stackglyembed_engine import predict_nglycosylation
 from src.utils.exceptions import PipelineError
 from src.utils.fasta_parser import FastaRecord, is_bepipred_compatible, load_and_sanitize, write_fasta
 from src.utils.input_router import route_input
@@ -623,6 +641,55 @@ def fase_4b_alergenicidad(safe_df: pd.DataFrame, output_dir: Path, input_stem: s
     return report
 
 
+def fase_4c_glicosilacion(safe_df: pd.DataFrame, output_dir: Path, input_stem: str) -> pd.DataFrame:
+    """Fase 4c: evalua N-glicosilacion (StackGlyEmbed local) de los peptidos 'Seguros' de la Fase 4.
+
+    Mismo tipo de paso que Fase 4b: independiente, en paralelo a Fase 5/5b,
+    NO fusionado con ninguna -- N-glicosilacion es una propiedad de la
+    secuencia en si (un sequon N-X-[S/T] real puede alterar plegado/
+    inmunogenicidad del peptido sintetizado, sin importar la via de
+    presentacion antigenica), con su propio archivo de salida
+    (``<input_stem>_glicosilacion_report.csv``).
+
+    A diferencia de Fase 4b (que evalua TODOS los peptidos 'Seguros'),
+    ``predict_nglycosylation`` ya omite internamente los peptidos sin ningun
+    sequon N-X-[S/T] (no producen ninguna fila): el reporte final puede
+    tener menos filas que ``len(safe_df)``, o incluso varias filas por
+    peptido si tiene mas de un sequon candidato.
+
+    Args:
+        safe_df: Mismos peptidos 'Segura' de la Fase 4 usados por Fase 4b/5/5b.
+        output_dir: Carpeta donde persistir el reporte final y los CSV crudos de StackGlyEmbed.
+        input_stem: Nombre del archivo de entrada sin extension (mismo
+            proposito que en Fase 4b: evita que corridas sucesivas se pisen).
+    """
+    print(f"\n{_SEPARATOR}\nFASE 4c | N-glicosilacion (StackGlyEmbed local)\n{_SEPARATOR}")
+
+    final_path = output_dir / f"{input_stem}_glicosilacion_report.csv"
+
+    if safe_df.empty:
+        print("No hay peptidos 'Seguros' provenientes de la Fase 4 para evaluar.")
+        empty_df = pd.DataFrame(columns=["sequence", "sequon_position", "stackglyembed_veredicto", "stackglyembed_score"])
+        empty_df.to_csv(final_path, index=False)
+        return empty_df
+
+    peptides = safe_df["sequence"].tolist()
+    print(f"Peptidos a evaluar: {len(peptides)}")
+
+    report = predict_nglycosylation(peptides, output_dir, filename_prefix=f"{input_stem}_")
+
+    if report.empty:
+        print("Ningun peptido 'Seguro' contiene un sequon N-X-[S/T] (X != Prolina): nada que reportar.")
+    else:
+        n_glyco = int((report["stackglyembed_veredicto"] == "Glicosilado").sum())
+        print(f"Sequones evaluados: {len(report)} (de {report['sequence'].nunique()} peptido(s) con >=1 sequon).")
+        print(f"Resumen Fase 4c: {n_glyco}/{len(report)} sequon(es) predicho(s) como glicosilado(s).")
+
+    report.to_csv(final_path, index=False)
+    print(f"-> Reporte de N-glicosilacion guardado en: {final_path}")
+    return report
+
+
 def fase_5_th_promiscuidad(
     safe_df: pd.DataFrame, output_dir: Path, input_stem: str, allele_extra: str = None
 ) -> pd.DataFrame:
@@ -749,6 +816,61 @@ def fase_5b_tc_promiscuidad(safe_df: pd.DataFrame, output_dir: Path, input_stem:
     return traceback_df
 
 
+def fase_6_bnab_crossref(safe_df: pd.DataFrame, output_dir: Path, input_stem: str) -> pd.DataFrame:
+    """Fase 6: cruza los peptidos 'Seguros' de la Fase 4 contra epitopos de bnAb conocidos (LANL + CATNAP).
+
+    Puramente informativa, no filtra ni condiciona ninguna fase anterior o
+    posterior (a diferencia de Fase 4/4b/5/5b, no hay ningun 'veredicto' que
+    descarte candidatos aqui): reporta que peptidos coinciden, por
+    solapamiento de subcadena, con un epitopo lineal de un anticuerpo
+    ampliamente neutralizante ya caracterizado (ver
+    ``src.engines.lanl_catnap_engine``). Solo produce matches reales para
+    proteinas de la familia HIV Env -- para cualquier otra proteina de
+    entrada, un reporte vacio es el resultado ESPERADO, no un fallo.
+
+    Args:
+        safe_df: Mismos peptidos 'Segura' de la Fase 4 usados por Fase 4b/4c/5/5b.
+        output_dir: Carpeta donde persistir el reporte final.
+        input_stem: Nombre del archivo de entrada sin extension (mismo
+            proposito que en Fase 4b/4c: evita que corridas sucesivas se pisen).
+    """
+    print(f"\n{_SEPARATOR}\nFASE 6 | Cruce con bnAb conocidos (LANL Immunology DB + CATNAP, local)\n{_SEPARATOR}")
+
+    final_path = output_dir / f"{input_stem}_bnab_crossref.csv"
+
+    if safe_df.empty:
+        print("No hay peptidos 'Seguros' provenientes de la Fase 4 para evaluar.")
+        empty_df = pd.DataFrame(columns=[
+            "sequence", "antibody_name", "epitope_sequence", "match_length", "epitope_name",
+            "hxb2_location", "neutralizing", "antibody_type", "binding_region",
+            "catnap_mean_ic50", "catnap_n_viruses",
+        ])
+        empty_df.to_csv(final_path, index=False)
+        return empty_df
+
+    peptides = safe_df["sequence"].tolist()
+    print(f"Peptidos a evaluar: {len(peptides)}")
+
+    report = query_bnab_crossref(
+        peptides,
+        Path(Settings.LANL_AB_ALL_PATH),
+        catnap_abs_path=Path(Settings.CATNAP_ABS_PATH),
+        min_overlap=Settings.LANL_CATNAP_MIN_OVERLAP,
+    )
+
+    if report.empty:
+        print("Ningun peptido coincide con un epitopo lineal de bnAb conocido (esperado si la entrada no es HIV Env).")
+    else:
+        n_candidates = report["sequence"].nunique()
+        n_neutralizing = report[report["neutralizing"] == "yes"]["sequence"].nunique()
+        print(f"Resumen Fase 6: {n_candidates} peptido(s) coinciden con >=1 epitopo de bnAb conocido "
+              f"({n_neutralizing} de ellos con >=1 anticuerpo neutralizante confirmado).")
+
+    report.to_csv(final_path, index=False)
+    print(f"-> Reporte de cruce bnAb guardado en: {final_path}")
+    return report
+
+
 def _resolve_active_engines_and_inputs(
     input_path: Path, output_dir: Path, pdb_mode_override: Optional[str]
 ) -> Tuple[List[str], Optional[Path], Optional[StructureRecord]]:
@@ -826,8 +948,10 @@ def main(argv: List[str] = None) -> int:
         )
         safe_df = blast_df[blast_df["status"] == "Segura"] if not blast_df.empty else blast_df
         fase_4b_alergenicidad(safe_df, output_dir, input_path.stem)
+        fase_4c_glicosilacion(safe_df, output_dir, input_path.stem)
         fase_5_th_promiscuidad(safe_df, output_dir, input_path.stem, allele_extra=args.alelo_extra)
         fase_5b_tc_promiscuidad(safe_df, output_dir, input_path.stem)
+        fase_6_bnab_crossref(safe_df, output_dir, input_path.stem)
     except PipelineError as exc:
         logger.error("Pipeline detenido: %s", exc)
         print(f"\n[ERROR FATAL] {exc}")
