@@ -7,10 +7,8 @@ linkers estandar del campo de diseno de vacunas multi-epitopo en un unico
 FASTA, junto con una tabla de metadata 100% trazable (que peptido individual
 aporto cada tramo, en que orden, que linker se uso en cada union).
 
-Reglas de ensamblaje (decision del usuario, 2026-07-22, convencion estandar
-del campo con multiples fuentes que coinciden -- NO es una regla biologica
-fija, es una propuesta a confirmar con Carlos igual que la decision de
-Fase 4b):
+Reglas de ensamblaje (decision FINAL del usuario, 2026-07-22, convencion
+estandar del campo con multiples fuentes que coinciden):
 
 * Linker intra-bloque CTL: ``AAY`` -- sitio de corte del proteasoma en
   celulas de mamifero, libera cada epitopo correctamente durante el
@@ -23,14 +21,18 @@ Fase 4b):
 * Linker entre bloques de distinta clase: ``GPGPG`` (el mismo espaciador
   universal, usado consistentemente en la literatura como puente entre
   bloques, no solo intra-HTL).
-* Orden de bloques: B-cell -> HTL -> CTL (el proyecto nacio como prediccion
-  de epitopos B-cell, es el foco original -- convencion, no regla fija).
-* Sin adjuvante por defecto: la eleccion (beta-defensina, PADRE, flagelina,
-  L7/L12, etc.) es una decision de diseno biologico especifica del
-  patogeno/huesped que no se automatiza sin input de Carlos.
-  ``assemble_construct`` acepta un ``adjuvant_sequence`` opcional (``None``
-  por defecto) para insertarlo en el N-terminal con su propio linker rigido
-  EAAAK (Arai et al. 2001) cuando se decida cual usar.
+* Orden de bloques: B-cell -> HTL -> CTL. Decision final: sin consenso
+  fuerte en la literatura sobre el orden optimo (los linkers ya garantizan
+  liberacion correcta por procesamiento antigenico, independiente de la
+  posicion); se ancla en B-cell por ser el foco humoral original del
+  proyecto (bnAb/HIV).
+* Sin adjuvante: decision ACTIVA de no incluir uno en esta version -- la
+  eleccion (beta-defensina, PADRE, flagelina, L7/L12, etc.) requiere
+  criterio biologico/estrategico especifico del patogeno/huesped, fuera de
+  scope de este pipeline. ``assemble_construct`` acepta un
+  ``adjuvant_sequence`` opcional (``None`` por defecto) para insertarlo en
+  el N-terminal con su propio linker rigido EAAAK (Arai et al. 2001) sin
+  rediseñar nada, si se decide agregar uno mas adelante.
 
 Seleccion top-N por clase (decision del usuario, 2026-07-22, confirmada tras
 mostrar numeros reales de una corrida con GP120: Fase 5/HTL dio 18
@@ -62,12 +64,15 @@ multi-epitopo publicada (encadenar nucleos de union predichos, no las
 ventanas completas que los contienen), y mantiene el constructo mas
 compacto.
 
-Manejo de solapamientos entre epitopos candidatos: PENDIENTE, no
-implementado en esta sesion (el usuario lo marco como opcional/no
-bloqueante). Si dos candidatos de la MISMA clase se solapan en posicion
-dentro de la proteina de origen, hoy se seleccionan/concatenan igual, sin
-fusionarlos en una region unica -- puede producir redundancia parcial en el
-constructo. Documentado como pendiente en STATUS.md.
+Manejo de solapamientos entre epitopos candidatos: decision FINAL del
+usuario de NO fusionar epitopos de CLASES DISTINTAS aunque se solapen en
+posicion dentro de la proteina de origen (p. ej. un B-cell que se solapa
+con un HTL) -- fusionarlos rompería la semantica de los linkers, ya que
+cada bloque espera un peptido de esa clase especifica, no un hibrido. La
+fusion INTRA-clase (dos candidatos de la MISMA clase que se solapan) ya la
+resuelve la Fase 3 (union anotada de regiones solapadas del mismo tipo de
+motor, antes de que las clases se separen en Fase 4b/4c/5/5b) -- no hace
+falta resolverla de nuevo aqui.
 """
 
 from typing import List, NamedTuple, Optional, Tuple

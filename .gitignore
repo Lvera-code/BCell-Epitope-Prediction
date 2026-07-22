@@ -82,11 +82,6 @@ ScanNet/
 # configurable (Settings.STACKGLYEMBED_*), igual que cualquier otro motor.
 StackGlyEmbed/
 
-# Herramienta ToxDL 2.0 (toxicidad, Camino 5): clon con checkpoint del
-# modelo (~94MB) y embeddings de dominio bundled. Regenerable via 'git
-# clone' (ver STATUS.md), nunca debe subirse.
-ToxDL2/
-
 # Entorno virtual dedicado para ToxinPred2 (Fase 8a, toxicidad del
 # constructo). El propio paquete pip trae el modelo ONNX + binario blastp +
 # base de motivos MERCI embebidos, no requiere descarga aparte.

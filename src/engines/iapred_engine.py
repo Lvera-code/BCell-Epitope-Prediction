@@ -144,11 +144,29 @@ def predict_intrinsic_antigenicity(sequences: List[str], output_dir: Path, filen
             f"IApred devolvio {len(raw)} fila(s), se esperaban {len(sequences)} (una por secuencia de entrada)."
         )
 
+    # Bug/limitacion real de IApred verificada empiricamente (IApred.py linea
+    # ~116): para secuencias de MENOS de 20 aa, no calcula nada -- escribe el
+    # texto literal 'Sequence too short' en la columna de score (no un
+    # numero) y 'N/A' en la de categoria. Sin esta coercion, un consumidor
+    # que asuma 'iapred_score' siempre numerico (como
+    # ``print_iapred_report``, que formatea con ``:.4f``) revienta. Se
+    # detecta con ``pd.to_numeric(errors='coerce')`` -> NaN, y se reemplaza
+    # la categoria perdida (pandas ya la leyo como NaN: 'N/A' es un token de
+    # NA reconocido por defecto en ``pd.read_csv``) por un mensaje explicito,
+    # en vez de dejar un NaN silencioso sin explicacion.
+    scores = pd.to_numeric(raw["Intrinsic_Antigenicity_Score"], errors="coerce")
+    categorias = raw["Antigenicity_Category"].tolist()
+    too_short_mask = scores.isna()
+    categorias = [
+        "No evaluado (secuencia < 20 aa)" if is_short and pd.isna(cat) else cat
+        for is_short, cat in zip(too_short_mask, categorias)
+    ]
+
     result = pd.DataFrame(
         {
             "sequence": sequences,
-            "iapred_score": raw["Intrinsic_Antigenicity_Score"].tolist(),
-            "iapred_categoria": raw["Antigenicity_Category"].tolist(),
+            "iapred_score": scores.tolist(),
+            "iapred_categoria": categorias,
         }
     )
     return result[_OUTPUT_COLUMNS]
@@ -163,7 +181,7 @@ def print_iapred_report(report_df: pd.DataFrame) -> None:
     seq_width = max(30, report_df["sequence"].str.len().max() + 2)
     columns = [
         Column("Secuencia", lambda r: r.sequence, seq_width, "<"),
-        Column("Score", lambda r: f"{r.iapred_score:.4f}", 10, ">"),
-        Column("Categoria", lambda r: r.iapred_categoria, 12, ">"),
+        Column("Score", lambda r: f"{r.iapred_score:.4f}" if pd.notna(r.iapred_score) else "-", 10, ">"),
+        Column("Categoria", lambda r: r.iapred_categoria, 30, ">"),
     ]
     print_fixed_width_table(report_df.itertuples(index=False), columns)

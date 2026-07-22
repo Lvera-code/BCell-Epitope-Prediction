@@ -183,6 +183,32 @@ def test_clase_vacia_se_omite_sin_linker_colgante():
     assert "HTL" not in set(meta["block"])
 
 
+def test_solo_htl_y_ctl_sin_bcell():
+    # Caso real observado con un PDB (7c4s): 0 candidatos B-cell sobreviven
+    # pero HTL/CTL si. El constructo debe arrancar directo con HTL, sin
+    # ningun linker/hueco donde "deberia" ir el bloque B-cell.
+    htl = pd.DataFrame([_htl_ctl_row("A", "W1", "HTLCORE", 20, 28, 5, 0.5)])
+    ctl = pd.DataFrame([_htl_ctl_row("A", "W2", "CTLCORE", 30, 38, 4, 0.3, netcleave_match=True, netcleave_score=0.9)])
+
+    seq, meta = assemble_construct(pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), htl, ctl)
+
+    assert seq == "HTLCORE" + Settings.CONSTRUCT_LINKER_INTERBLOQUE + "CTLCORE"
+    assert meta.iloc[0]["block"] == "HTL"
+    assert "B-cell" not in set(meta["block"])
+
+
+def test_solo_una_clase_con_un_unico_candidato_sin_linker_intra():
+    # Un solo B-cell candidato, sin HTL/CTL: no debe insertar ningun linker
+    # intra-bloque (no hay "siguiente" candidato con quien unirse).
+    safe = _safe_df([{"accession": "A", "start": 1, "end": 3, "sequence": "UNICO", "bepipred_score": 0.9}])
+    algpred = _algpred_df([["UNICO", 0.1, "Non-Allergen"]])
+
+    seq, meta = assemble_construct(safe, algpred, _stackgly_df([]), pd.DataFrame(), pd.DataFrame())
+
+    assert seq == "UNICO"
+    assert len(meta) == 1
+
+
 def test_adjuvante_opcional_antepuesto_con_linker_rigido():
     safe = _safe_df([{"accession": "A", "start": 1, "end": 3, "sequence": "BCL1", "bepipred_score": 0.9}])
     algpred = _algpred_df([["BCL1", 0.1, "Non-Allergen"]])

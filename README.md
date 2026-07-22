@@ -1,25 +1,22 @@
 # Pipeline de Descubrimiento de Epítopos Vacunales
 
 Orquestador de terminal (`pipeline.py`) que procesa un FASTA de secuencia o
-una estructura (PDB/mmCIF) a través de 8 fases hasta producir una lista de
-péptidos candidatos a vacuna, validados por antigenicidad (unión anotada de
-hasta 4 motores independientes: 2 de secuencia + 2 estructurales), ausencia
-de homología con el proteoma humano (riesgo de autoinmunidad), alergenicidad,
-N-glicosilación, inmunogenicidad T-helper (MHC-II/HLA-DR/DQ/DP, CD4+) e
-inmunogenicidad T-citotóxica (MHC-I/HLA-A/B, CD8+, con evidencia de corte
-proteasomal), y cruce con epítopos de anticuerpos ampliamente neutralizantes
-(bnAb) conocidos para entradas de la familia HIV Env. Todas las fases corren
-**100% en local** (subprocess sobre binarios/paquetes instalados en tu
-máquina): el pipeline nunca hace una llamada de red durante la inferencia.
-Cada fase pesada (4/4b/4c/5/5b/6) se auto-cachea por hash de contenido de su
-input — reiniciar una corrida interrumpida con el mismo input/parámetros
-salta directo a la fase que falló, ver "Checkpointing" más abajo.
-
-**Alcance excluido deliberadamente (2026-07-22):** un chequeo de
-alergenicidad/toxicidad/antigenicidad a nivel del **constructo multi-epítopo
-final ya ensamblado** (distinto de las Fases 4b/4c, que evalúan cada péptido
-candidato por separado) sigue sin construirse — depende de un paso de
-ensamblaje de secuencia que hoy no existe en el pipeline. Ver `STATUS.md`.
+una estructura (PDB/mmCIF) a través de 10 fases: desde antigenicidad (unión
+anotada de hasta 4 motores independientes: 2 de secuencia + 2
+estructurales), ausencia de homología con el proteoma humano (riesgo de
+autoinmunidad), alergenicidad, N-glicosilación, inmunogenicidad T-helper
+(MHC-II/HLA-DR/DQ/DP, CD4+) e inmunogenicidad T-citotóxica (MHC-I/HLA-A/B,
+CD8+, con evidencia de corte proteasomal) y cruce con epítopos de
+anticuerpos ampliamente neutralizantes (bnAb) conocidos, hasta el
+**ensamblaje automático de un constructo multi-epítopo** con los mejores
+candidatos y un **chequeo de alergenicidad/toxicidad/antigenicidad/péptido
+señal sobre ese constructo ya ensamblado** (no por péptido individual).
+Todas las fases corren **100% en local** (subprocess sobre binarios/paquetes
+instalados en tu máquina): el pipeline nunca hace una llamada de red durante
+la inferencia. Cada fase pesada (4/4b/4c/5/5b/6/7/8) se auto-cachea por hash
+de contenido de su input — reiniciar una corrida interrumpida con el mismo
+input/parámetros salta directo a la fase que falló, ver "Checkpointing" más
+abajo.
 
 ## Tres caminos de entrada
 
@@ -43,7 +40,7 @@ solo a BepiPred-3.0/EpiDope de esa corrida (con aviso claro) porque BepiPred
 los rechaza en bloque, pero los motores estructurales corren igual sobre el
 PDB.
 
-## Flujo de trabajo (8 fases)
+## Flujo de trabajo (10 fases)
 
 1. **Saneamiento FASTA / extracción de estructura** — Camino 1: valida y
    limpia la(s) secuencia(s) de entrada (`fasta_inputs/`, admite FASTA
@@ -164,13 +161,59 @@ PDB.
    proteína, no un fallo. No hace alineamiento a coordenadas HXB2 ni captura
    epítopos conformacionales (fuera de alcance de un cruce por secuencia).
    Reporte propio: `<nombre>_bnab_crossref.csv`.
+7. **Ensamblaje automático del constructo multi-epítopo** —
+   (`src/engines/construct_assembly.py`, lógica pura, sin subprocess).
+   Selecciona los mejores `CONSTRUCT_TOP_N_PER_CLASS` candidatos (3 por
+   defecto) de cada clase — **B-cell** (péptidos `'Segura'` que además son
+   `Non-Allergen` en Fase 4b y sin ningún sequon `Glicosilado` en Fase 4c,
+   rankeados por el mejor `{motor}_score` disponible), **HTL** (`'Candidato
+   Válido'` de Fase 5, colapsados por `core_9aa`) y **CTL** (`'Candidato
+   Válido'` de Fase 5b, colapsados por `core_9aa`, priorizando
+   `netcleave_c_term_match == True`) — y los concatena con los linkers
+   estándar del campo de diseño de vacunas multi-epítopo: `AAY` intra-CTL
+   (sitio de corte del proteasoma), `GPGPG` intra-HTL e inter-bloque
+   (espaciador universal, Livingston et al. 2002), `KK` intra-B-cell.
+   **Orden de bloques: B-cell → HTL → CTL** (sin consenso fuerte en la
+   literatura sobre el orden óptimo — los linkers ya garantizan liberación
+   correcta por procesamiento antigénico independiente de la posición — se
+   ancla en B-cell por ser el foco humoral original del proyecto). **Sin
+   adjuvante** por decisión activa (requiere criterio biológico/estratégico
+   específico del patógeno/huésped, fuera de scope de este pipeline); el
+   parámetro opcional `adjuvant_sequence` de `assemble_construct` permite
+   agregarlo más adelante sin rediseñar nada (linker rígido `EAAAK`, Arai
+   et al. 2001). El "epítopo" insertado en los bloques HTL/CTL es
+   `core_9aa` (el núcleo de unión real), no la ventana completa evaluada.
+   Epítopos solapados de la MISMA clase ya se fusionan en Fase 3 (unión
+   anotada); entre clases distintas deliberadamente NO se fusionan (rompería
+   la semántica de los linkers). Genera `<nombre>_constructo.fasta` y
+   `<nombre>_constructo_metadata.csv` (trazabilidad 100%: una fila por
+   segmento —epítopo o linker—, con posición en el constructo, accession/
+   posición de origen y el score que motivó la selección).
+8. **Chequeo del constructo ensamblado** — 4 motores independientes
+   corriendo sobre la secuencia COMPLETA del constructo (no por péptido
+   individual, a diferencia de Fase 4b/4c):
+   - **Alergenicidad**: AlgPred 2.0, reutilizado tal cual de la Fase 4b
+     (sin instalación nueva).
+   - **Toxicidad**: ToxinPred2 (`src/engines/toxinpred_engine.py`) — el
+     propio grupo Raghava lo recomienda para proteínas de longitud
+     completa (a diferencia de ToxinPred3.0, pensado para péptidos cortos).
+   - **Antigenicidad intrínseca**: IApred (`src/engines/iapred_engine.py`)
+     — reemplazo de VaxiJen (descartado: no es open-source ni tiene
+     standalone/API local), único predictor open-source/local publicado
+     específicamente para antigenicidad de secuencia completa (Miles
+     et al. 2025).
+   - **Péptido señal**: SignalP-6.0 (`src/engines/signalp_engine.py`) —
+     confirma que el constructo NO tenga un péptido señal N-terminal
+     predicho (esperable para un constructo de fusión sintético).
+   Los 4 son informativos, ninguno filtra ni aborta el pipeline. Reporte
+   combinado: `<nombre>_constructo_chequeo.csv`.
 
 Todos los resultados intermedios y el reporte final se guardan en
 `fasta_outputs/`.
 
 ### Checkpointing
 
-Fases 4/4b/4c/5/5b/6 se auto-cachean por hash de contenido de su input
+Fases 4/4b/4c/5/5b/6/7/8 se auto-cachean por hash de contenido de su input
 (mismo mecanismo que ya usaba la Fase 2 para sus scores crudos): cada una
 guarda un sidecar `<archivo>.inputhash` junto a su CSV final. Si relanzás
 `pipeline.py` con el **mismo** `--input` y los **mismos** parámetros (umbral
@@ -615,6 +658,95 @@ Variables de entorno: `LANL_AB_ALL_PATH`, `CATNAP_ABS_PATH`,
 por defecto — para epítopos de referencia más cortos que el umbral, se exige
 el match completo, nunca uno más laxo que el propio epítopo).
 
+### 13. ToxinPred2 (obligatorio para la Fase 8, toxicidad del constructo)
+
+Código abierto (Raghava group), instalable vía `pip`. El modelo (Random
+Forest, ONNX) y el binario `blastp` que usa internamente vienen EMBEBIDOS en
+el paquete — cero descarga aparte.
+
+```bash
+python3 -m venv .venv-toxinpred2
+.venv-toxinpred2/bin/pip install toxinpred2
+```
+
+> **Nota (confirmado en este entorno):** creá el venv con **Python 3.10**,
+> no con el `python3` por defecto del sistema si es 3.13+. El script
+> empaquetado escribe un archivo intermedio con
+> `to_csv(..., sep="\n")` — `pandas>=2` lo rechaza (`ValueError: bad
+> delimiter value`), y no hay ningún flag de CLI que evite ese paso. Hace
+> falta pinear versiones compatibles entre sí:
+> ```bash
+> .venv-toxinpred2/bin/pip install "pandas==1.5.3" "numpy<2"
+> ```
+> (pandas 1.5.3 está compilado contra la ABI de numpy<2; sin este segundo
+> pin, el import de pandas revienta con
+> `ValueError: numpy.dtype size changed...`).
+
+Variables de entorno: `TOXINPRED2_PYTHON_BIN`, `TOXINPRED2_BINARY_NAME`
+(default `toxinpred2`), `TOXINPRED2_THRESHOLD` (0.6 por defecto, el mismo
+default del propio `toxinpred2`).
+
+### 14. IApred (obligatorio para la Fase 8, antigenicidad intrínseca del constructo)
+
+Código abierto ([github.com/sebamiles/IApred](https://github.com/sebamiles/IApred),
+Miles et al. 2025), reemplazo de VaxiJen (descartado: no es open-source ni
+tiene standalone/API local). SVM puro sobre features fisicoquímicas, sin
+PyTorch/TensorFlow.
+
+```bash
+git clone https://github.com/sebamiles/IApred.git
+python3 -m venv IApred/.venv-iapred
+IApred/.venv-iapred/bin/pip install -r IApred/requirements.txt
+```
+
+> **Nota (confirmado en este entorno):** el `requirements.txt` del repo está
+> incompleto — `functions.py` importa, sin declararlas en ningún lado,
+> `imbalanced-learn`, `matplotlib` y `seaborn`. Instalalas a mano:
+> ```bash
+> IApred/.venv-iapred/bin/pip install imbalanced-learn matplotlib seaborn
+> ```
+
+Variables de entorno: `IAPRED_PYTHON_BIN`, `IAPRED_HOME` (raíz del clon —
+`models_folder` dentro del script original es una ruta RELATIVA al cwd, así
+que el wrapper siempre invoca el subproceso con `cwd=IAPRED_HOME`),
+`IAPRED_SCRIPT_NAME` (default `IApred.py`).
+
+### 15. SignalP-6.0 (obligatorio para la Fase 8, péptido señal del constructo)
+
+Binario propietario de DTU Health Tech (licencia académica, mismo patrón que
+BepiPred-3.0/NetMHCIIpan-4.3/NetMHCpan-4.2).
+
+**a) Descarga manual obligatoria.** Solicitalo en
+`https://services.healthtech.dtu.dk/services/SignalP-6.0/` (sección
+"Downloads", requiere cuenta académica). Elegí el modo **`slow_sequential`**
+(mismo footprint de RAM que `fast`, ~6x más lento, pensado para máquinas sin
+GPU — el modo `slow` en paralelo requiere >14GB libres).
+
+**b) Instalación.**
+```bash
+tar -xvf signalp-6.0i.slow_sequential.tar.gz
+python3 -m venv .venv-signalp   # Python 3.10, ver nota abajo
+.venv-signalp/bin/pip install ./signalp-6-package
+.venv-signalp/bin/pip install "numpy<2"   # ABI, ver nota abajo
+```
+
+> **Notas (confirmadas en este entorno):**
+> - Creá el venv con **Python 3.10**: el `requirements.txt` del paquete fija
+>   `torch>1.7.0,<2`, sin wheel ya en el índice CPU-only oficial de PyTorch
+>   para instalaciones modernas — se instala desde PyPI normal en su lugar,
+>   que sí tiene wheels para Python 3.10.
+> - `pip install` arrastra `numpy>=2` (vía `matplotlib`, sin pin superior en
+>   `requirements.txt`), incompatible con la ABI de `torch==1.13` — mismo
+>   tipo de bug que ToxinPred2 (`RuntimeError: Numpy is not available`).
+> - **No hace falta seguir el paso 4 del `README.md` oficial** (copiar los
+>   pesos dentro del paquete instalado): apuntá `SIGNALP_MODEL_DIR`
+>   directo a la carpeta que ya contiene `sequential_models_signalp6/`
+>   (el flag `--model_dir` del propio `signalp6` la usa tal cual) — evita
+>   duplicar ~9.2GB.
+
+Variables de entorno: `SIGNALP_PYTHON_BIN`, `SIGNALP_BINARY_NAME` (default
+`signalp6`), `SIGNALP_MODEL_DIR`, `SIGNALP_ORGANISM` (`other` por defecto).
+
 ## Uso
 
 `./run.sh` es un wrapper fino sobre `pipeline.py` (mismos argumentos) que
@@ -701,7 +833,14 @@ divisoria, para no leerlas como una lista continua.
 | `<nombre>_netcleave_raw.csv` | 5b | Salida cruda de NetCleave (todas las ventanas de corte evaluadas, no solo las que matchean) |
 | `<nombre>_candidatos_finales_mhc1.csv` | 5b | **Reporte final MHC-I**, con anotación `netcleave_c_term_match`/`netcleave_c_term_score` |
 | `<nombre>_bnab_crossref.csv` | 6 | Cruce con epítopos de bnAb conocidos (vacío si la entrada no es HIV Env, es el resultado esperado) |
-| `<archivo>.inputhash` | 4/4b/4c/5/5b/6 | Sidecar de checkpointing (hash del input de esa fase), ver "Checkpointing" arriba |
+| `<nombre>_constructo.fasta` | 7 | Secuencia del constructo multi-epítopo ensamblado |
+| `<nombre>_constructo_metadata.csv` | 7 | Trazabilidad 100%: una fila por segmento (epítopo o linker), posición en el constructo, accession/posición de origen, score que motivó la selección |
+| `<nombre>_constructo_algpred_raw.csv` | 8 | Salida cruda de AlgPred2 sobre el constructo |
+| `<nombre>_constructo_toxinpred_raw.csv` | 8 | Salida cruda de ToxinPred2 sobre el constructo |
+| `<nombre>_constructo_iapred_raw.csv` | 8 | Salida cruda de IApred sobre el constructo |
+| `<nombre>_constructo_signalp_raw.txt` | 8 | Salida cruda de SignalP-6.0 sobre el constructo |
+| `<nombre>_constructo_chequeo.csv` | 8 | **Reporte combinado del constructo**: alergenicidad + toxicidad + antigenicidad intrínseca + péptido señal |
+| `<archivo>.inputhash` | 4/4b/4c/5/5b/6/7/8 | Sidecar de checkpointing (hash del input de esa fase), ver "Checkpointing" arriba |
 
 ### Formato de `<nombre>_candidatos_finales.csv`
 
@@ -728,9 +867,26 @@ umbrales de %Rank propios), más dos columnas exclusivas:
 el residuo inmediatamente posterior al núcleo de unión?) y
 `netcleave_c_term_score` (score crudo de ese corte, `NA` si no hubo match).
 
+### Formato de `<nombre>_constructo_metadata.csv` y `<nombre>_constructo_chequeo.csv`
+
+`_constructo_metadata.csv` (Fase 7) tiene una fila por SEGMENTO del
+constructo (epítopo o linker, en el orden en que aparecen): `block`
+(`'B-cell'`/`'HTL'`/`'CTL'`/`'Linker (...)'`/`'Adjuvante'`), `sequence`,
+`start`/`end` (1-indexado, posición dentro del constructo — no de la
+proteína de origen), `source_accession`/`source_start`/`source_end`
+(`None` para segmentos de linker) y `source_score_note` (resumen legible
+del score que motivó la selección de ese epítopo). Concatenar la columna
+`sequence` en orden reconstruye exactamente `<nombre>_constructo.fasta`.
+
+`_constructo_chequeo.csv` (Fase 8) tiene una única fila (el constructo
+completo) con las columnas de los 4 motores combinadas: `algpred_score`/
+`algpred_veredicto`, `toxinpred_score`/`toxinpred_veredicto`,
+`iapred_score`/`iapred_categoria`, `signalp_prediction`/
+`signalp_prob_other`/`signalp_prob_sp`/`signalp_cs_position`.
+
 ## Tests
 
-La suite de tests (`tests/`, `pytest`, 168 tests) cubre la lógica pura de
+La suite de tests (`tests/`, `pytest`, 201 tests) cubre la lógica pura de
 cada fase — enrutamiento de input (FASTA vs. estructura), extracción de
 estructura (residuos modificados, selección de cadena), unión anotada de N
 motores en Fase 3, selección de task/E-value en Fase 4, parseo del `.xls` de
@@ -739,12 +895,18 @@ deduplicación de ventanas y validación de `--alelo-extra`/`--pdb-mode` — sin
 depender de BepiPred, EpiDope, DiscoTope-3.0, ScanNet, BLAST+ ni NetMHCIIpan
 instalados: no invoca ningún subprocess real (los tests de integración de
 los 3 caminos mockean los 4 motores). Mismo criterio para las Fases
-4b/4c/5b/6: `test_algpred_engine.py` (workaround de batch=1),
+4b/4c/5b/6/8: `test_algpred_engine.py` (workaround de batch=1),
 `test_netcleave_engine.py` (matching de corte C-terminal exacto),
-`test_stackglyembed_engine.py` (scanner de sequones N-X-[S/T]) mockean
+`test_stackglyembed_engine.py` (scanner de sequones N-X-[S/T]),
+`test_toxinpred_engine.py` (workaround de batch=1), `test_iapred_engine.py`,
+`test_signalp_engine.py` (parseo de `prediction_results.txt`) mockean
 `subprocess.run` para no depender de los venvs/modelos externos;
 `test_lanl_catnap_engine.py` no necesita mockear nada (el motor nunca
-invoca un subprocess, es pandas puro sobre CSVs).
+invoca un subprocess, es pandas puro sobre CSVs). `test_construct_assembly.py`
+cubre la Fase 7 completa (selección top-N por clase, dedup por `core_9aa`,
+linkers, bloques vacíos, adjuvante opcional) con el invariante de
+trazabilidad (`"".join(metadata_df['sequence']) == construct_sequence`)
+verificado explícitamente.
 
 ```bash
 pip install -r requirements-dev.txt
@@ -755,5 +917,5 @@ Estos tests unitarios validan la lógica de cada motor de forma aislada, no
 que el pipeline completo funcione de punta a punta con los binarios/venvs
 reales instalados — para eso, correr `pipeline.py` contra un input real (ver
 "Uso" arriba) sigue siendo necesario. `STATUS.md` documenta la última
-validación end-to-end real (corrida completa de las 8 fases contra
+validación end-to-end real (corrida completa de las 10 fases contra
 `fasta_inputs/GP120.fasta`, un HIV-1 Env real).
