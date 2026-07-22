@@ -336,6 +336,59 @@ class Settings:
     # del panel evaluado (cobertura poblacional, no un unico alelo HLA).
     NETMHCIIPAN_MIN_PROMISCUOUS_ALLELES: int = _env_int("NETMHCIIPAN_MIN_PROMISCUOUS_ALLELES", 3)
 
+    # --- Inmunogenicidad T-citotoxica (MHC-I, NetMHCpan-4.2 LOCAL) ---
+    # ADR de 2026-07-12 (descartar MHC-I) REVERTIDO 2026-07-21: ver docstring
+    # de netmhciipan_engine.py. Mismo patron 100% local por subprocess que el
+    # resto de motores; NUNCA se hardcodea la ruta.
+    NETMHCPAN_HOME: Path = Path(_env_str("NETMHCPAN_HOME", "netMHCpan-4.2"))
+    NETMHCPAN_BINARY_NAME: str = _env_str("NETMHCPAN_BINARY_NAME", "netMHCpan")
+    NETMHCPAN_TIMEOUT_SECONDS: int = _env_int("NETMHCPAN_TIMEOUT_SECONDS", 600)
+    NETMHCPAN_DOWNLOAD_URL: str = "https://services.healthtech.dtu.dk/services/NetMHCpan-4.2/"
+    # Umbrales de %Rank POR DEFECTO de NetMHCpan-4.2 (ver 'netMHCpan.1':
+    # flags -rankS/-rankW del binario) -- DISTINTOS de los de NetMHCIIpan-4.3
+    # (1.0/5.0): MHC-I tiene su propia escala de %Rank, no comparable 1:1.
+    NETMHCPAN_RANK_STRONG: float = _env_float("NETMHCPAN_RANK_STRONG", 0.5)
+    NETMHCPAN_RANK_WEAK: float = _env_float("NETMHCPAN_RANK_WEAK", 2.0)
+    NETMHCPAN_MIN_PROMISCUOUS_ALLELES: int = _env_int("NETMHCPAN_MIN_PROMISCUOUS_ALLELES", 3)
+    # Longitudes de epitopo MHC-I a evaluar en modo FASTA/proteina (ventana
+    # deslizante interna de NetMHCpan via '-l'): 9-mero es el largo canonico
+    # mas frecuente, 8/10/11 cubren la variabilidad real observada en
+    # ligandos eluidos (IEDB/CEDAR, ver docstring del binario).
+    NETMHCPAN_PEPTIDE_LENGTHS: str = _env_str("NETMHCPAN_PEPTIDE_LENGTHS", "8,9,10,11")
+
+    # --- Alergenicidad (AlgPred 2.0 LOCAL) ---
+    # Instalacion propia (venv dedicado + BLAST DB + MERCI.pl bundled), open
+    # source (GPSR group), 100% local por subprocess. AlgPred2 vive en
+    # scipion-chem-algpred/ (repo hermano, NO dentro de este proyecto): se
+    # referencia por ruta absoluta configurable, igual que cualquier otro
+    # motor -- nunca hardcodeada.
+    ALGPRED_PYTHON_BIN: str = _env_str(
+        "ALGPRED_PYTHON_BIN",
+        "/home/enzo/DiffSBDD/scipion-chem-algpred/.venv-algpred/bin/python",
+    )
+    ALGPRED_SCRIPT_PATH: str = _env_str(
+        "ALGPRED_SCRIPT_PATH",
+        "/home/enzo/DiffSBDD/scipion-chem-algpred/.venv-algpred/lib/python3.10/site-packages/algpred2/python_scripts/algpred2.py",
+    )
+    ALGPRED_TIMEOUT_SECONDS: int = _env_int("ALGPRED_TIMEOUT_SECONDS", 300)
+    # Umbral ML_Score por defecto del propio AlgPred2 (ver 'algpred2.py -h').
+    ALGPRED_THRESHOLD: float = _env_float("ALGPRED_THRESHOLD", 0.3)
+
+    # --- Cleavage MHC-I/II (NetCleave LOCAL, reentrenado con datos propios) ---
+    # Instalacion propia (venv dedicado + IEDB/UniProt/UniParc descargados
+    # localmente para reentrenar, ver netcleave_src/data/databases/), open
+    # source (MIT), 100% local por subprocess. Vive en scipion-chem-netcleave/
+    # (repo hermano): ruta absoluta configurable, nunca hardcodeada.
+    NETCLEAVE_PYTHON_BIN: str = _env_str(
+        "NETCLEAVE_PYTHON_BIN",
+        "/home/enzo/DiffSBDD/scipion-chem-netcleave/.venv-netcleave/bin/python",
+    )
+    NETCLEAVE_SCRIPT_PATH: str = _env_str(
+        "NETCLEAVE_SCRIPT_PATH",
+        "/home/enzo/DiffSBDD/scipion-chem-netcleave/netcleave_src/NetCleave.py",
+    )
+    NETCLEAVE_TIMEOUT_SECONDS: int = _env_int("NETCLEAVE_TIMEOUT_SECONDS", 300)
+
     @classmethod
     def setup_directories(cls) -> None:
         """Crea los directorios de datos requeridos si aun no existen."""

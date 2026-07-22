@@ -68,3 +68,20 @@ ScanNet/
 # Settings.SCANNET_PYTHON_BIN); este patron cubre ambos casos si se usa
 # dentro de la raiz del proyecto.
 .venv-scannet/
+
+# Herramienta StackGlyEmbed (N-glicosilacion, Camino 4): clon de
+# github.com/GaryChan-lab/StackGlyEmbed junto a su venv dedicado
+# (torch/xgboost/sklearn/transformers/tensorflow, ~9GB). Regenerable via
+# 'git clone' + venv (ver STATUS.md), nunca debe subirse.
+StackGlyEmbed/
+
+# Herramienta ToxDL 2.0 (toxicidad, Camino 5): clon con checkpoint del
+# modelo (~94MB) y embeddings de dominio bundled. Regenerable via 'git
+# clone' (ver STATUS.md), nunca debe subirse.
+ToxDL2/
+
+# NetMHCpan-4.2 (MHC-I, Fase 5b): paquete propietario de DTU Health Tech
+# con licencia academica, descarga manual obligatoria, movido aqui desde
+# /home/enzo/software/ por consistencia con el resto de instalaciones.
+# Nunca debe subirse.
+netMHCpan-4.2/

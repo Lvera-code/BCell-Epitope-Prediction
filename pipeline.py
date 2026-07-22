@@ -95,6 +95,12 @@ from src.engines.netmhciipan_engine import (
     print_traceback_table,
     validate_allele_extra,
 )
+from src.engines.netmhcpan_engine import (
+    NETMHCPAN_REFERENCE_PANEL,
+    build_traceback_report as build_traceback_report_mhci,
+    predict_netmhcpan,
+    print_tc_report,
+)
 from src.engines.scannet_engine import ScanNetEngine
 from src.engines.scannet_engine import extract_epitopes as extract_scannet_epitopes
 from src.engines.scannet_engine import print_epitope_table as print_scannet_epitope_table
@@ -639,6 +645,56 @@ def fase_5_th_promiscuidad(
     return traceback_df
 
 
+def fase_5b_tc_promiscuidad(safe_df: pd.DataFrame, output_dir: Path, input_stem: str) -> pd.DataFrame:
+    """Fase 5b: evalua promiscuidad T-citotoxica (MHC-I) de los peptidos 'Seguros' de la Fase 4.
+
+    Paso independiente en paralelo a ``fase_5_th_promiscuidad`` (MHC-II), NO
+    fusionado con ella: son vias de presentacion antigenica distintas (ver
+    ADR revertido 2026-07-21 en ``src/engines/netmhciipan_engine.py`` y el
+    docstring completo de ``src/engines/netmhcpan_engine.py``). El criterio
+    de veredicto de Fase 5 (T-helper/CD4+) no se toca; esto es una senal
+    adicional, con su propio archivo de salida
+    (``<input_stem>_candidatos_finales_mhc1.csv``) para no mezclar ambas
+    tablas.
+
+    Args:
+        safe_df: Mismos peptidos 'Segura' de la Fase 4 usados por Fase 5.
+        output_dir: Carpeta donde persistir el reporte final y el .xls crudo.
+        input_stem: Nombre del archivo de entrada sin extension (mismo
+            proposito que en Fase 5: evita que corridas sucesivas se pisen).
+    """
+    n_alleles = len(NETMHCPAN_REFERENCE_PANEL.split(","))
+    print(
+        f"\n{_SEPARATOR}\nFASE 5b | Promiscuidad T-citotoxica (MHC-I, NetMHCpan-4.2 local, "
+        f"{n_alleles} alelo(s) HLA-A/B)\n{_SEPARATOR}"
+    )
+
+    final_path = output_dir / f"{input_stem}_candidatos_finales_mhc1.csv"
+
+    if safe_df.empty:
+        print("No hay peptidos 'Seguros' provenientes de la Fase 4 para evaluar.")
+        traceback_df = build_traceback_report_mhci(pd.DataFrame(), safe_df)
+        traceback_df.to_csv(final_path, index=False)
+        return traceback_df
+
+    peptides = safe_df["sequence"].tolist()
+    print(f"Panel HLA-A/B: {NETMHCPAN_REFERENCE_PANEL} | Peptidos a evaluar: {len(peptides)}")
+
+    report = predict_netmhcpan(peptides, output_dir, allele_panel=NETMHCPAN_REFERENCE_PANEL, filename_prefix=f"{input_stem}_")
+
+    if report.empty:
+        print("NetMHCpan no devolvio resultados evaluables (revisa longitudes minimas: 8 aa).")
+    else:
+        print_tc_report(report, allele_panel=NETMHCPAN_REFERENCE_PANEL)
+
+    traceback_df = build_traceback_report_mhci(report, safe_df)
+    print_traceback_table(traceback_df)
+
+    traceback_df.to_csv(final_path, index=False)
+    print(f"-> Reporte final MHC-I guardado en: {final_path}")
+    return traceback_df
+
+
 def _resolve_active_engines_and_inputs(
     input_path: Path, output_dir: Path, pdb_mode_override: Optional[str]
 ) -> Tuple[List[str], Optional[Path], Optional[StructureRecord]]:
@@ -716,6 +772,7 @@ def main(argv: List[str] = None) -> int:
         )
         safe_df = blast_df[blast_df["status"] == "Segura"] if not blast_df.empty else blast_df
         fase_5_th_promiscuidad(safe_df, output_dir, input_path.stem, allele_extra=args.alelo_extra)
+        fase_5b_tc_promiscuidad(safe_df, output_dir, input_path.stem)
     except PipelineError as exc:
         logger.error("Pipeline detenido: %s", exc)
         print(f"\n[ERROR FATAL] {exc}")

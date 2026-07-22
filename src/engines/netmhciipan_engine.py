@@ -1,12 +1,25 @@
 """Fase 5: Prediccion de presentacion T-helper (MHC-II) via NetMHCIIpan-4.3 LOCAL.
 
-ADR - pivote metodologico: se descarta MHC-I (2026-07-12)
-------------------------------------------------------------
+ADR - pivote metodologico: se descarta MHC-I (2026-07-12), REVERTIDO (2026-07-21)
+----------------------------------------------------------------------------------
 Toda la logica de prediccion de presentacion MHC-I (celulas T citotoxicas
 CD8+, servida anteriormente por MHCflurry/NetMHCpan) fue eliminada de este
-pipeline. La Fase 5 evalua exclusivamente presentacion MHC-II (celulas
-T-helper CD4+), requisito para activar una respuesta humoral sostenida (T-B
-cross-talk) en el diseno de vacunas de subunidad.
+pipeline el 2026-07-12. La Fase 5 evaluaba exclusivamente presentacion MHC-II
+(celulas T-helper CD4+), requisito para activar una respuesta humoral
+sostenida (T-B cross-talk) en el diseno de vacunas de subunidad.
+
+Esta decision se REVIRTIO el 2026-07-21: el scope del proyecto crecio (ver
+``netmhcpan_engine.py``) para cubrir tambien evaluacion de inmunogenicidad
+CD8+ (MHC-I, NetMHCpan-4.2), como parte del set ampliado de chequeos de
+construccion (tox/aller/antigenicidad, N-glico, TM/senal, cross-ref bnAb) mas
+alla del pipeline original de 5 fases centrado solo en B-cell/T-helper. La
+prediccion MHC-I NO se fusiono dentro de esta Fase 5 (que sigue siendo
+exclusivamente MHC-II, con su propio modulo/reporte independiente en
+``netmhcpan_engine.py``): la razon original de 2026-07-12 (foco en respuesta
+humoral, no citotoxica) sigue siendo valida para el veredicto final de esta
+fase especifica, asi que MHC-I se anade como una senal adicional en paralelo
+en vez de reemplazar o mezclarse con el criterio de promiscuidad T-helper de
+aqui.
 
 Este modulo es, igual que ``blast_engine.py`` y ``bepipred_engine.py``, un
 wrapper puro de ``subprocess`` sobre un binario local con licencia academica
