@@ -88,13 +88,6 @@ para este pedido).
 instalacion nueva), ToxinPred2, IApred, SignalP-6.0. Los 4 son informativos
 (ninguno filtra ni aborta el pipeline).
 
-**Nota historica:** ToxDL2 fue evaluado como alternativa de toxicidad y
-**descartado definitivamente** (necesitaba dominios InterPro que el repo no
-calcula localmente, sin un paso automatizado viable sin llamadas de red).
-ToxinPred2 cubre el chequeo de toxicidad del constructo sin ese problema.
-El clon (`ToxDL2/`) fue eliminado del proyecto; no queda ninguna accion
-pendiente relacionada.
-
 ## Validacion realizada
 
 **End-to-end con datos reales** (`fasta_inputs/GP120.fasta`, HIV-1 Env real,
