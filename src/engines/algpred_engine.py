@@ -79,7 +79,14 @@ def predict_allergenicity(
     input_seqs = sequences + [sequences[0]] if padded else sequences
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    raw_csv_path = output_dir / f"{filename_prefix}algpred_raw.csv"
+    # Resuelto a absoluto: el subprocess de abajo corre con 'cwd' forzado a
+    # la carpeta del script de AlgPred2 (algpred2.py necesita rutas propias
+    # relativas a su instalacion), asi que un 'output_dir' relativo (default
+    # de Settings.FASTA_OUTPUT_DIR) se resolveria mal si se le pasa tal cual
+    # -- confirmado empiricamente: 'OSError: Cannot save file into a
+    # non-existent directory' porque el hijo interpreta la ruta relativa
+    # contra SU cwd, no el de pipeline.py.
+    raw_csv_path = (output_dir / f"{filename_prefix}algpred_raw.csv").resolve()
 
     with tempfile.TemporaryDirectory(prefix="algpred_") as tmp:
         fasta_path = Path(tmp) / "candidates.fasta"

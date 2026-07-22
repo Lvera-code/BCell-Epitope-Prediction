@@ -5,6 +5,7 @@ AlgPred2/ToxinPred2, asi que no hace falta probar ese caso aqui.
 """
 
 import subprocess
+from pathlib import Path
 
 import pandas as pd
 import pytest
@@ -116,6 +117,29 @@ def test_exit_code_distinto_de_cero_propaga_engine_execution_error(monkeypatch, 
 
     with pytest.raises(EngineExecutionError, match="exit code 1"):
         predict_intrinsic_antigenicity(["AAAA"], tmp_path)
+
+
+def test_output_dir_relativo_se_resuelve_a_ruta_absoluta(monkeypatch, tmp_path):
+    # Regresion real (2026-07-22, ver el mismo test en test_algpred_engine.py):
+    # el subprocess de IApred corre con 'cwd=Settings.IAPRED_HOME', asi que
+    # un 'output_dir' relativo se resolveria contra ESA carpeta, no la de
+    # pipeline.py, si no se resolviera a absoluto antes.
+    monkeypatch.chdir(tmp_path)
+    rows = [{"Header": "candidato_0", "Sequence_Length": 4, "Intrinsic_Antigenicity_Score": 0.5, "Antigenicity_Category": "Low"}]
+    captured = {}
+
+    def _fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        out_path = cmd[3]  # [python, script, fasta, output_csv, "-v"]
+        pd.DataFrame(rows).to_csv(out_path, index=False)
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    predict_intrinsic_antigenicity(["AAAA"], Path("relative_out_dir"))
+
+    out_arg = captured["cmd"][3]
+    assert Path(out_arg).is_absolute()
 
 
 def test_carpeta_models_ausente_lanza_error_accionable(monkeypatch, tmp_path):

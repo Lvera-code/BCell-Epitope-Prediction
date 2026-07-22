@@ -111,7 +111,12 @@ def predict_toxicity(
     input_seqs = sequences + [sequences[0]] if padded else sequences
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    raw_csv_path = output_dir / f"{filename_prefix}toxinpred_raw.csv"
+    # Resuelto a absoluto: el subprocess de abajo corre con 'cwd=tmp' (el
+    # directorio temporal del batch), asi que un 'output_dir' relativo
+    # (default de Settings.FASTA_OUTPUT_DIR) se resolveria contra ESE
+    # directorio, no el de pipeline.py -- mismo bug real confirmado en
+    # algpred_engine.py, ver su docstring inline.
+    raw_csv_path = (output_dir / f"{filename_prefix}toxinpred_raw.csv").resolve()
 
     with tempfile.TemporaryDirectory(prefix="toxinpred_") as tmp:
         fasta_path = Path(tmp) / "candidates.fasta"

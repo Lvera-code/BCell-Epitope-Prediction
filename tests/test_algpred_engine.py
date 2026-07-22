@@ -10,6 +10,7 @@ en el repo (su contenido no importa, solo que ``Path.is_file()`` de verdadero).
 """
 
 import subprocess
+from pathlib import Path
 
 import pandas as pd
 import pytest
@@ -107,6 +108,34 @@ def test_csv_sin_columnas_esperadas_lanza_error(monkeypatch, tmp_path):
 
     with pytest.raises(EngineExecutionError, match="formato del CSV"):
         predict_allergenicity(["AAAA", "BBBB"], tmp_path)
+
+
+def test_output_dir_relativo_se_resuelve_a_ruta_absoluta(monkeypatch, tmp_path):
+    # Regresion real (2026-07-22): el subprocess de AlgPred2 corre con
+    # 'cwd' forzado a la carpeta del script instalado (algpred2.py necesita
+    # rutas propias relativas a su instalacion). Si 'output_dir' llega
+    # relativo (default de Settings.FASTA_OUTPUT_DIR: 'fasta_outputs'), el
+    # hijo lo resuelve contra SU cwd, no el de pipeline.py -- confirmado con
+    # 'OSError: Cannot save file into a non-existent directory'. La ruta '-o'
+    # pasada al subprocess debe ser siempre absoluta, sin importar el cwd
+    # del proceso que llama.
+    monkeypatch.chdir(tmp_path)
+    rows = [{"Sequence": "AAAA", "ML_Score": 0.1, "Prediction": "Non-Allergen"},
+            {"Sequence": "BBBB", "ML_Score": 0.9, "Prediction": "Allergen"}]
+    captured = {}
+
+    def _fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        out_path = cmd[cmd.index("-o") + 1]
+        pd.DataFrame(rows).to_csv(out_path, index=False)
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    predict_allergenicity(["AAAA", "BBBB"], Path("relative_out_dir"))
+
+    out_arg = captured["cmd"][captured["cmd"].index("-o") + 1]
+    assert Path(out_arg).is_absolute()
 
 
 def test_binario_ausente_lanza_error_accionable(monkeypatch, tmp_path):

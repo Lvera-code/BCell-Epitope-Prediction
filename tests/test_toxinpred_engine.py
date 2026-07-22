@@ -5,6 +5,7 @@ mockea ``subprocess.run`` en vez de invocar el venv real.
 """
 
 import subprocess
+from pathlib import Path
 
 import pandas as pd
 import pytest
@@ -80,6 +81,30 @@ def test_exit_code_distinto_de_cero_propaga_engine_execution_error(monkeypatch, 
 
     with pytest.raises(EngineExecutionError, match="exit code 1"):
         predict_toxicity(["AAAA", "BBBB"], tmp_path)
+
+
+def test_output_dir_relativo_se_resuelve_a_ruta_absoluta(monkeypatch, tmp_path):
+    # Regresion real (2026-07-22, ver el mismo test en test_algpred_engine.py):
+    # el subprocess de ToxinPred2 corre con 'cwd=tmp' (el directorio temporal
+    # del batch), asi que un 'output_dir' relativo se resolveria contra ESE
+    # directorio, no el de pipeline.py, si no se resolviera a absoluto antes.
+    monkeypatch.chdir(tmp_path)
+    rows = [{"Sequence": "AAAA", "ML_Score": 0.1, "Prediction": "Non-Toxin"},
+            {"Sequence": "BBBB", "ML_Score": 0.9, "Prediction": "Toxin"}]
+    captured = {}
+
+    def _fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        out_path = cmd[cmd.index("-o") + 1]
+        pd.DataFrame(rows).to_csv(out_path, index=False)
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    predict_toxicity(["AAAA", "BBBB"], Path("relative_out_dir"))
+
+    out_arg = captured["cmd"][captured["cmd"].index("-o") + 1]
+    assert Path(out_arg).is_absolute()
 
 
 def test_binario_ausente_lanza_error_accionable(tmp_path, monkeypatch):

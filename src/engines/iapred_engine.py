@@ -106,7 +106,12 @@ def predict_intrinsic_antigenicity(sequences: List[str], output_dir: Path, filen
 
     script = _resolve_binary()
     output_dir.mkdir(parents=True, exist_ok=True)
-    raw_csv_path = output_dir / f"{filename_prefix}iapred_raw.csv"
+    # Resuelto a absoluto: el subprocess de abajo corre con
+    # 'cwd=Settings.IAPRED_HOME', asi que un 'output_dir' relativo (default
+    # de Settings.FASTA_OUTPUT_DIR) se resolveria contra ESA carpeta, no la
+    # de pipeline.py -- mismo bug real confirmado en algpred_engine.py, ver
+    # su docstring inline.
+    raw_csv_path = (output_dir / f"{filename_prefix}iapred_raw.csv").resolve()
 
     with tempfile.TemporaryDirectory(prefix="iapred_") as tmp:
         fasta_path = Path(tmp) / "candidates.fasta"
