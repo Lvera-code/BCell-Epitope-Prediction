@@ -87,6 +87,27 @@ StackGlyEmbed/
 # clone' (ver STATUS.md), nunca debe subirse.
 ToxDL2/
 
+# Entorno virtual dedicado para ToxinPred2 (Fase 8a, toxicidad del
+# constructo). El propio paquete pip trae el modelo ONNX + binario blastp +
+# base de motivos MERCI embebidos, no requiere descarga aparte.
+.venv-toxinpred2/
+
+# IApred (Fase 8b, antigenicidad intrinseca del constructo, reemplazo de
+# VaxiJen): clon de github.com/sebamiles/IApred, con su venv dedicado
+# (.venv-iapred/, adentro para no repetir el problema de repo anidado que
+# tuvo StackGlyEmbed -- IApred/ tiene su propio '.git'). Regenerable via
+# 'git clone' + venv (ver STATUS.md), nunca debe subirse.
+IApred/
+
+# SignalP-6.0 (Fase 8d, peptido senal del constructo): paquete propietario
+# de DTU Health Tech con licencia academica, descarga manual obligatoria
+# (~9.2GB de pesos, modo 'slow-sequential'). Nunca debe subirse.
+signalp-6.0/
+
+# Entorno virtual dedicado para SignalP-6.0 (Python 3.10 + torch 1.13,
+# separado de 'signalp-6.0/' que solo trae el paquete/pesos fuente).
+.venv-signalp/
+
 # NetMHCpan-4.2 (MHC-I, Fase 5b): paquete propietario de DTU Health Tech
 # con licencia academica, descarga manual obligatoria, movido aqui desde
 # /home/enzo/software/ por consistencia con el resto de instalaciones.

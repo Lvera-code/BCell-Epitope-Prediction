@@ -1,8 +1,9 @@
-# STATUS — extension del pipeline standalone (7 herramientas del scope de Carlos)
+# STATUS — extension del pipeline standalone (10 herramientas del scope de Carlos + constructo)
 
-Ultima actualizacion: 2026-07-22. Formato de tablas igual al usado para
-reconstruir el estado tras el OOM original — mantener actualizado al final
-de cada sesion futura.
+Ultima actualizacion: 2026-07-22 (sesion con Fase 7/8: ensamblaje +
+chequeo de constructo). Formato de tablas igual al usado para reconstruir
+el estado tras el OOM original — mantener actualizado al final de cada
+sesion futura.
 
 ## Por que existe este documento
 
@@ -48,6 +49,28 @@ tabla es el estado real verificado al cierre de esta sesion.
 | StackGlyEmbed (N-glico) | OK. Repo clonado en `B-Cell-Epitope-Prediction/StackGlyEmbed/` (venv `.venv-stackglyembed`), `protein_bert` instalado (`--no-deps`, para no romper el pineo de TF), dump de ProteinBERT descargado (`~/proteinbert_models/default.pkl`, 183MB), ESM-2 650M descargado via HF Hub (2.5GB, offline confirmado con `HF_HUB_OFFLINE=1`) | `stackglyembed_engine.py` (scanner de secuones N-X-[S/T] propio + subprocess) + `src/engines/stackglyembed_predict_local.py` (extraccion de features + prediccion, reemplaza `extractFeatures.py`+`predict.py` originales) — **completo, probado end-to-end con secuencias sinteticas Y con datos reales (ver corrida GP120 mas abajo)** | **SI (2026-07-22)** — `fase_4c_glicosilacion`, corre sobre el `safe_df` de Fase 4 en paralelo a Fase 4b/5/5b, CSV propio `<input_stem>_glicosilacion_report.csv` | `transformers` bajado de 5.14.1 a 4.46.3 en este venv: la version que trae `protein_bert` como dependencia transitiva exige `torch>=2.4`, incompatible con el `torch==2.2.2` pineado por StackGlyEmbed (deshabilitaba silenciosamente el backend de PyTorch, sin romper el import). ESM-2 se carga via `transformers.EsmModel` (offline-friendly) en vez de `torch.hub.load(...)` del script original (pega red SIEMPRE, no solo la primera vez). ProtT5 REUSA los pesos ya descargados para TMbed (`scipion-chem-tmbed/tmbed_src/tmbed/models/t5/`, `Rostlab/prot_t5_xl_half_uniref50-enc` -- mismo encoder que el `Rostlab/prot_t5_xl_uniref50` que pedia el script original, verificado que carga y produce `d_model=1024` igual). **Descubrimiento importante:** `StackGlyEmbed/` es un repo git anidado (tiene su propio `.git`) -- git NO permite des-ignorar un archivo especifico dentro de un repo anidado con ningun patron de `.gitignore` (se probo el patron en cascada `dir/* + !dir/sub/ + dir/sub/* + !dir/sub/archivo`, no funciono: git colapsa el directorio entero como opaco). Por eso el script de integracion vive en `src/engines/stackglyembed_predict_local.py` (arbol versionado normal), NO dentro de `StackGlyEmbed/`, y recibe la carpeta de pickles del clasificador (`STACKGLYEMBED_MODELS_DIR`) por parametro en vez de asumirla relativa a si mismo. |
 | ToxDL 2.0 (toxicidad) | Repo clonado en `B-Cell-Epitope-Prediction/ToxDL2/`, sin venv | **NO** | **NO** | **Diferido explicitamente por el usuario** (2026-07-21): necesita dominios InterPro por proteina que el repo no calcula localmente (solo ejemplo con IDs pegados a mano); el usuario evaluara opciones (vector cero degradado / InterProScan local / consulta puntual a InterPro en setup) antes de decidir. Checkpoint del modelo SI esta bundled (~94MB: `ToxDL2_model.pth` + embeddings de dominio). Usa ESM-2 650M -- el MISMO checkpoint que StackGlyEmbed necesita, compartible si se retoma. `device='cuda:0'` hardcodeado en `parameters/test_000.py`, hay que parchearlo (esta maquina no tiene GPU). |
 | LANL + CATNAP (bnAb cross-ref) | **Datos descargados**, `reference_db/catnap/` (12 archivos, 28MB) + `reference_db/lanl_immunology/` (6 archivos, 29MB) | `lanl_catnap_engine.py` — **completo, probado con datos reales** (`query_bnab_crossref`) | **SI (2026-07-22)** — `fase_6_bnab_crossref`, corre sobre el `safe_df` de Fase 4, puramente informativa (no filtra nada), CSV propio `<input_stem>_bnab_crossref.csv` | bNAber (fuente original pedida) esta **muerta**: dominio parqueado/hijackeado (confirmado por Wayback Machine, ya asi desde antes de mayo 2025). Reemplazado por LANL HIV Molecular Immunology Database (`ab_all.csv`, 3799 registros de anticuerpos, 771 con epitopo lineal reportable -- el resto son conformacionales, fuera de alcance de un cruce por secuencia) + CATNAP (`abs_*.txt`, potencia/amplitud de neutralizacion). Motor implementado como cruce de subcadena (longest-common-substring, DP simple) entre candidatos y los 771 epitopos lineales, con umbral minimo configurable (`LANL_CATNAP_MIN_OVERLAP`, default 6 -- por debajo de eso el solapamiento es ruido estadistico; para epitopos de referencia MAS CORTOS que el umbral se exige el match completo). Validado con 10E8 (bnAb real del MPER): match de 13/13 residuos, IC50 real cruzado desde CATNAP (0.506 ug/mL, panel de 1321 virus). NO hace alineamiento a HXB2 ni captura epitopos conformacionales -- deliberado, ver docstring del modulo. `env_feature.txt`/`virseqs_aa*.fasta` quedaron sin usar (el cruce por secuencia via `ab_all.csv` resulto suficiente y mas directo que reconstruir fragmentos posicion-a-posicion). |
+
+## Tabla D — ensamblaje + chequeo de constructo multi-epitopo (Fase 7/8, objetivo de esta sesion)
+
+Alcance: la petición original de Carlos ("alergenicidad/toxicidad/
+antigenicidad del CONSTRUCTO final ensamblado", ver Tabla C fila AlgPred2 y
+"Decisiones de diseno" de la sesion anterior) se resolvio con dos fases
+nuevas: Fase 7 (ensambla el constructo a partir de los candidatos que ya
+sobrevivieron Fase 4/4b/4c/5/5b) y Fase 8 (corre 4 motores sobre ESE
+constructo, no sobre peptidos individuales).
+
+| Pieza | Instalacion | Codigo | Wireado a `pipeline.py` | Notas |
+|---|---|---|---|---|
+| Ensamblaje del constructo | N/A (logica pura, sin subprocess) | `construct_assembly.py` — **completo, 11 tests unitarios, probado con datos reales de GP120** | **SI** — `fase_7_ensamblaje_constructo`, checkpoint por hash de los 5 DataFrames de entrada + `CONSTRUCT_TOP_N_PER_CLASS` | Top-3 por clase (decision del usuario tras ver numeros reales: Fase 5/HTL daba 18 candidatos validos). Dedup por `core_9aa` antes de rankear (mismo criterio que la deduplicacion de ventanas de NetMHCIIpan/NetMHCpan). Linkers: `AAY` intra-CTL, `GPGPG` intra-HTL/inter-bloque, `KK` intra-B-cell (convencion de campo, no regla biologica fija). Orden B-cell→HTL→CTL, **propuesta pendiente de confirmar con Carlos** (igual patron que la decision de Fase 4b). Sin adjuvante por defecto (hook opcional `adjuvant_sequence` + linker EAAAK, ningun adjuvante elegido esta sesion). Metadata 100% trazable: invariante `"".join(metadata_df['sequence']) == construct_sequence` verificado en tests y en la corrida real. **Pendiente, no bloqueante:** fusion de epitopos solapados dentro de una misma clase (el usuario lo marco como opcional). |
+| Alergenicidad del constructo | Reusa AlgPred2 (Fase 4b), sin instalacion nueva | `algpred_engine.predict_allergenicity` (sin cambios) | **SI** — dentro de `fase_8_chequeo_constructo` | Confirmado que acepta secuencias largas (127 aa probado) sin el bug de batch=1 disparandose incorrectamente (con Fase 8 evaluando SIEMPRE 1 sola secuencia por corrida, el workaround de duplicar-y-descartar es el camino normal, no un caso de borde). |
+| Toxicidad del constructo | `pip install toxinpred2` en venv Python 3.10 dedicado (`.venv-toxinpred2/`) | `toxinpred_engine.py` — **completo, 5 tests, probado con datos reales** | **SI** | ToxinPred3.0 (evaluado antes) es para peptidos cortos; el propio grupo Raghava recomienda ToxinPred2 para proteinas de longitud completa. Modelo ONNX + blastp + base MERCI vienen EMBEBIDOS en el wheel pip (~45MB), CERO descarga aparte. Venv en Python 3.10 (no 3.13, el default del sistema) + `pandas==1.5.3` + `numpy<2` pineados: 2 bugs reales encontrados al instalar -- (a) el script empaquetado escribe con `to_csv(..., sep="\n")`, que `pandas>=2` rechaza (`ValueError: bad delimiter value`, sin ningun flag de CLI que lo evite); (b) ABI de numpy≥2 rompe contra pandas 1.5.3. Bug de batch=1 (mismo patron que AlgPred2, verificado empiricamente): el modelo ONNX espera rank 2, con 1 sola secuencia el pipeline de features da rank 1 y revienta -- workaround identico (duplicar, descartar fila extra). |
+| Antigenicidad intrinseca del constructo | `git clone github.com/sebamiles/IApred` + venv propio (`IApred/.venv-iapred/`) | `iapred_engine.py` — **completo, 6 tests, probado con datos reales** | **SI** | Reemplaza a VaxiJen: **descartado explicitamente** (no open-source, sin standalone/API local -- corregido en esta sesion respecto a exploracion previa, que lo habia considerado; `scipion-chem-ddg`, que envuelve el mismo dominio `ddg-pharmfac.net`, NO se investigo a fondo pero muy probablemente tenga el mismo problema del wrapper IIITD ya descartado -- auditar primero si se retoma). IApred (Miles et al. 2025) es SVM puro sobre features fisicoquimicas, sin PyTorch/TensorFlow, publicado especificamente para llenar este hueco. `requirements.txt` del repo esta INCOMPLETO (le faltan `imbalanced-learn`, `matplotlib`, `seaborn`, que si se importan en `functions.py` sin declararse) -- instalados a mano. `models_folder = "models"` es RUTA RELATIVA al cwd, no al script: subprocess siempre con `cwd=IAPRED_HOME`. Repo anidado (su propio `.git`, mismo caso que StackGlyEmbed) -- pero a diferencia de ese caso, aqui NO hizo falta escribir codigo propio dentro del clon (el CLI original ya sirve tal cual), asi que `IApred/` se ignora entero sin problema. |
+| Peptido senal del constructo | Paquete DTU Health Tech ya descargado por el usuario (`signalp-6.0i.slow_sequential`, copiado desde `/mnt/c/.../Downloads/` a `signalp-6.0/`, 9.2GB) + venv Python 3.10 dedicado (`.venv-signalp/`) | `signalp_engine.py` — **completo, 6 tests, probado con datos reales (caso negativo Y positivo)** | **SI** | Modo `slow-sequential`: mismo footprint de RAM que `fast`, ~6x mas lento, pensado para CPU sin GPU (confirmado `torch.cuda.is_available() == False` en esta maquina). Pesos referenciados por `--model_dir` DIRECTO a `signalp-6.0/models/` en vez de copiarlos dentro del venv (evita duplicar 9.2GB, el README oficial asume esa copia pero el flag la hace innecesaria). Venv Python 3.10 + `torch>1.7,<2` (pin del propio repo, sin wheel ya en el indice CPU-only de PyTorch, se instalo desde PyPI normal) + `numpy<2` (mismo tipo de bug ABI que ToxinPred2). Bug de parseo real encontrado y corregido: `prediction_results.txt` trae 2 lineas de comentario `#`, no 1 -- un `skiprows` fijo leia la segunda como fila de datos; se uso `comment="#"` en `pd.read_csv` en su lugar. Proposito documentado en el modulo: confirmar que el constructo NO tenga peptido senal predicho (informativo, no filtra) -- el usuario no corrigio esta interpretacion cuando se le presento el plan, se asume correcta. |
+
+Validado con datos reales de GP120 (ver "Validacion end-to-end" mas abajo):
+constructo de 127 aa (3 B-cell + 3 HTL + 3 CTL), Non-Allergen, Non-Toxin,
+antigenicidad intrinseca "Low" (IApred), sin peptido senal predicho.
+Checkpointing de Fase 7/8 verificado con una segunda corrida (instantanea).
 
 ## Validacion end-to-end 2026-07-22
 
@@ -167,6 +190,32 @@ secuencia) y ToxDL2 (bloqueado en la decision del usuario sobre InterPro).
    un paso de ensamblaje de secuencia (fuera del alcance actual del
    pipeline, que termina en candidatos individuales, no en un constructo).
    No asumir que Fase 4b ya cubrio este pedido.
+7. **RESUELTO 2026-07-22 (esta sesion): el punto 6 de arriba ya no aplica.**
+   Se construyo Fase 7 (ensamblaje automatico del constructo) + Fase 8
+   (alergenicidad/toxicidad/antigenicidad/peptido senal DEL CONSTRUCTO, no
+   por peptido), ver Tabla D. Decisiones tomadas explicitamente por el
+   usuario en esta sesion:
+   - Top-N=3 candidatos por clase (B-cell/HTL/CTL), fijo (no expuesto como
+     flag de CLI) -- confirmado tras mostrar numeros reales de GP120 (Fase
+     5/HTL daba 18 candidatos validos, demasiados para un constructo).
+   - Linkers: `AAY` intra-CTL, `GPGPG` intra-HTL e inter-bloque, `KK`
+     intra-B-cell -- convencion de campo, no regla biologica fija.
+   - Orden de bloques B-cell→HTL→CTL: **propuesta del usuario, pendiente de
+     confirmar con Carlos** (igual patron que la decision de Fase 4b -- no
+     tratar como definitivo sin esa confirmacion).
+   - Sin adjuvante por defecto (decision de diseno biologico especifica del
+     patogeno/huesped, requiere input de Carlos). Hook opcional
+     (`adjuvant_sequence` en `assemble_construct`) ya implementado para
+     cuando se decida.
+   - VaxiJen (candidato considerado en la exploracion previa a esta sesion)
+     **descartado**: no open-source, sin standalone/API local. Reemplazado
+     por IApred (2025), unica alternativa open-source/local publicada
+     especificamente para esto. `scipion-chem-ddg` (mismo dominio
+     `ddg-pharmfac.net` que VaxiJen) NO se investigo a fondo -- si se
+     retoma, auditar primero con el mismo criterio que el resto (buscar
+     `requests`/`selenium` en su codigo) antes de asumir que sirve.
+   - Fusion de epitopos solapados dentro de una misma clase: **diferido
+     explicitamente**, marcado opcional/no bloqueante por el usuario.
 
 ## Restriccion no negociable (recordada explicitamente por el usuario a mitad de sesion)
 
@@ -208,7 +257,20 @@ explicitamente para StackGlyEmbed (ver tabla arriba); TMbed ya lo hace bien
    humanas de prueba, todas FASTA) siguen sin probarse individualmente, pero
    no hay motivo para esperar un camino de codigo distinto al ya confirmado
    con GP120 (mismo Camino 1).
-7. Chequeo de alergenicidad/toxicidad/antigenicidad a nivel de CONSTRUCTO
-   FINAL ensamblado (pedido original de Carlos, ver "Decisiones de diseno"
-   punto 6 -- Fase 4b per-peptido NO lo cubre). Depende de que exista un
-   paso de ensamblaje de secuencia, que hoy no existe en el pipeline.
+7. ~~Chequeo de alergenicidad/toxicidad/antigenicidad a nivel de CONSTRUCTO
+   FINAL ensamblado~~ — HECHO 2026-07-22 (Fase 7 + Fase 8, ver Tabla D y
+   "Decisiones de diseno" punto 7). Pendientes que quedaron DENTRO de este
+   item, no resueltos:
+   - **Confirmar con Carlos** el orden de bloques B-cell→HTL→CTL (propuesta,
+     no validada por el).
+   - **Decidir con Carlos** si usar algun adjuvante (hook ya implementado,
+     ningun adjuvante elegido).
+   - Fusion de epitopos solapados dentro de una misma clase (diferido,
+     opcional).
+   - El constructo real de GP120 dio antigenicidad intrinseca "Low" segun
+     IApred -- no se investigo si eso es esperable/aceptable o si amerita
+     ajustar la seleccion de epitopos; es un dato a mirar, no necesariamente
+     un problema.
+8. Retomar ToxDL2 (toxicidad POR PROTEINA COMPLETA, distinto uso que
+   ToxinPred2 aunque comparten dominio) segun lo que decida el usuario sobre
+   InterPro -- sigue bloqueado, no se toco esta sesion.

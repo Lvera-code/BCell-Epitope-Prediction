@@ -74,6 +74,19 @@ A partir de Fase 2, el resto del flujo es identico para los 3 caminos:
     6. Cruce con bnAb conocidos (LANL Immunology DB + CATNAP LOCAL,
        ``src.engines.lanl_catnap_engine``): puramente informativo, solo
        produce matches reales para entradas de la familia HIV Env.
+    7. Ensamblaje automatico del constructo multi-epitopo
+       (``src.engines.construct_assembly``): selecciona los mejores
+       ``Settings.CONSTRUCT_TOP_N_PER_CLASS`` candidatos B-cell/HTL/CTL
+       (Fases 4/4b/4c, 5, 5b) y los concatena con los linkers estandar del
+       campo (AAY intra-CTL, GPGPG intra-HTL/inter-bloque, KK intra-B-cell)
+       en un unico FASTA, con metadata 100% trazable de que peptido/linker
+       fue a cada posicion.
+    8. Chequeo del constructo ensamblado (alergenicidad -AlgPred2, reusa
+       Fase 4b-, toxicidad -ToxinPred2 LOCAL-, antigenicidad intrinseca
+       -IApred LOCAL, reemplaza a VaxiJen, descartado por no ser local/open
+       source-, peptido senal -SignalP-6.0 LOCAL-): a diferencia de Fase
+       4b/4c (por peptido individual), estas 4 corren sobre la secuencia
+       COMPLETA del constructo de Fase 7.
 
 Todos los artefactos intermedios y el reporte final se guardan en
 ``fasta_outputs/``. Requiere, segun los motores que active cada camino:
@@ -106,6 +119,8 @@ from src.engines.bepipred_engine import RESIDUE_COLUMN_CANDIDATES as BEPIPRED_RE
 from src.engines.blast_engine import print_blast_report, run_blastp_filter
 from src.engines.algpred_engine import predict_allergenicity, print_allergenicity_report
 from src.engines.consensus import build_annotated_union_table, print_union_table
+from src.engines.construct_assembly import assemble_construct
+from src.engines.iapred_engine import predict_intrinsic_antigenicity, print_iapred_report
 from src.engines.discotope_engine import DiscoTopeEngine
 from src.engines.discotope_engine import extract_epitopes as extract_discotope_epitopes
 from src.engines.discotope_engine import print_epitope_table as print_discotope_epitope_table
@@ -134,7 +149,9 @@ from src.engines.netmhcpan_engine import (
 from src.engines.scannet_engine import ScanNetEngine
 from src.engines.scannet_engine import extract_epitopes as extract_scannet_epitopes
 from src.engines.scannet_engine import print_epitope_table as print_scannet_epitope_table
+from src.engines.signalp_engine import predict_signal_peptide, print_signalp_report
 from src.engines.stackglyembed_engine import predict_nglycosylation
+from src.engines.toxinpred_engine import predict_toxicity, print_toxicity_report
 from src.utils.exceptions import PipelineError
 from src.utils.fasta_parser import FastaRecord, is_bepipred_compatible, load_and_sanitize, write_fasta
 from src.utils.input_router import route_input
@@ -981,6 +998,143 @@ def fase_6_bnab_crossref(safe_df: pd.DataFrame, output_dir: Path, input_stem: st
     return report
 
 
+def fase_7_ensamblaje_constructo(
+    safe_df: pd.DataFrame,
+    algpred_df: pd.DataFrame,
+    stackgly_df: pd.DataFrame,
+    htl_df: pd.DataFrame,
+    ctl_df: pd.DataFrame,
+    output_dir: Path,
+    input_stem: str,
+) -> Tuple[str, pd.DataFrame]:
+    """Fase 7: ensambla automaticamente el constructo multi-epitopo a partir de los candidatos finales.
+
+    Ver docstring completo de ``src.engines.construct_assembly`` para las
+    reglas de seleccion top-N y los linkers usados. Puramente interno (sin
+    subprocess): selecciona, concatena y persiste el FASTA del constructo +
+    su metadata de trazabilidad, insumo de la Fase 8.
+
+    Args:
+        safe_df: Peptidos B-cell 'Segura' de la Fase 4.
+        algpred_df: Reporte de alergenicidad por peptido de la Fase 4b.
+        stackgly_df: Reporte de N-glicosilacion por sequon de la Fase 4c.
+        htl_df: Candidatos MHC-II validos de la Fase 5 (con traceback).
+        ctl_df: Candidatos MHC-I validos de la Fase 5b (con traceback + anotacion NetCleave).
+        output_dir: Carpeta donde persistir el FASTA del constructo y su metadata.
+        input_stem: Nombre del archivo de entrada sin extension.
+
+    Returns:
+        Tupla ``(construct_sequence, metadata_df)``. ``construct_sequence == ""``
+        si ninguna clase aporto candidatos (nada que ensamblar).
+    """
+    print(f"\n{_SEPARATOR}\nFASE 7 | Ensamblaje automatico del constructo multi-epitopo\n{_SEPARATOR}")
+
+    fasta_path = output_dir / f"{input_stem}_constructo.fasta"
+    metadata_path = output_dir / f"{input_stem}_constructo_metadata.csv"
+
+    input_hash = _phase_input_hash(safe_df, algpred_df, stackgly_df, htl_df, ctl_df, Settings.CONSTRUCT_TOP_N_PER_CLASS)
+    cached_metadata = _load_phase_checkpoint("Fase 7", metadata_path, input_hash)
+    if cached_metadata is not None:
+        cached_sequence = "".join(cached_metadata["sequence"]) if not cached_metadata.empty else ""
+        return cached_sequence, cached_metadata
+
+    construct_sequence, metadata_df = assemble_construct(safe_df, algpred_df, stackgly_df, htl_df, ctl_df)
+
+    if not construct_sequence:
+        print("Ningun candidato B-cell/HTL/CTL disponible: no hay nada que ensamblar.")
+        metadata_df.to_csv(metadata_path, index=False)
+        fasta_path.write_text("")
+        return construct_sequence, metadata_df
+
+    n_bcell = int((metadata_df["block"] == "B-cell").sum())
+    n_htl = int((metadata_df["block"] == "HTL").sum())
+    n_ctl = int((metadata_df["block"] == "CTL").sum())
+    print(f"Constructo ensamblado: {len(construct_sequence)} aa ({n_bcell} B-cell + {n_htl} HTL + {n_ctl} CTL, "
+          f"top-{Settings.CONSTRUCT_TOP_N_PER_CLASS} por clase).")
+
+    fasta_path.write_text(f">{input_stem}_constructo\n{construct_sequence}\n")
+    metadata_df.to_csv(metadata_path, index=False)
+    _write_phase_checkpoint(metadata_path, input_hash)
+    print(f"-> Constructo guardado en: {fasta_path}")
+    print(f"-> Metadata de trazabilidad guardada en: {metadata_path}")
+    return construct_sequence, metadata_df
+
+
+def fase_8_chequeo_constructo(construct_sequence: str, output_dir: Path, input_stem: str) -> pd.DataFrame:
+    """Fase 8: chequeo de alergenicidad/toxicidad/antigenicidad/peptido senal del constructo ENSAMBLADO.
+
+    A diferencia de Fase 4b/4c (por peptido individual, antes de saber
+    siquiera cuales terminan en el constructo), esta fase corre sobre la
+    secuencia COMPLETA del constructo de Fase 7 -- el pedido original de
+    Carlos que Fase 4b no cubria por si sola (ver STATUS.md).
+
+    4 motores independientes, cada uno informativo (ninguno filtra ni
+    aborta el pipeline; el usuario decide que hacer con el resultado):
+    AlgPred2 (alergenicidad, REUSA el motor de Fase 4b, sin instalacion
+    nueva), ToxinPred2 (toxicidad, recomendado por el propio grupo Raghava
+    para proteinas de longitud completa, a diferencia de ToxinPred3.0
+    -pensado para peptidos cortos-), IApred (antigenicidad intrinseca de la
+    secuencia completa, reemplazo de VaxiJen -descartado: no open-source, sin
+    standalone/API local-) y SignalP-6.0 (peptido senal N-terminal: un
+    constructo de fusion para expresion recombinante estandar no deberia
+    tener uno predicho).
+
+    Args:
+        construct_sequence: Secuencia del constructo ensamblado en Fase 7. Vacio -> DataFrame vacio.
+        output_dir: Carpeta donde persistir el reporte final y los CSV/TXT crudos de cada motor.
+        input_stem: Nombre del archivo de entrada sin extension.
+
+    Returns:
+        DataFrame de una sola fila (el constructo) con las columnas de los
+        4 motores combinadas, o vacio si ``construct_sequence`` esta vacio.
+    """
+    print(f"\n{_SEPARATOR}\nFASE 8 | Chequeo del constructo ensamblado (alergenicidad/toxicidad/antigenicidad/peptido senal)\n{_SEPARATOR}")
+
+    final_path = output_dir / f"{input_stem}_constructo_chequeo.csv"
+
+    if not construct_sequence:
+        print("No hay constructo ensamblado (Fase 7) para evaluar.")
+        empty_df = pd.DataFrame(columns=[
+            "sequence", "algpred_score", "algpred_veredicto",
+            "toxinpred_score", "toxinpred_veredicto",
+            "iapred_score", "iapred_categoria",
+            "signalp_prediction", "signalp_prob_other", "signalp_prob_sp", "signalp_cs_position",
+        ])
+        empty_df.to_csv(final_path, index=False)
+        return empty_df
+
+    input_hash = _phase_input_hash(construct_sequence)
+    cached = _load_phase_checkpoint("Fase 8", final_path, input_hash)
+    if cached is not None:
+        return cached
+
+    print(f"Constructo a evaluar: {len(construct_sequence)} aa")
+    sequences = [construct_sequence]
+
+    print("\n-- Alergenicidad (AlgPred2) --")
+    algpred_df = predict_allergenicity(sequences, output_dir, filename_prefix=f"{input_stem}_constructo_")
+    print_allergenicity_report(algpred_df)
+
+    print("\n-- Toxicidad (ToxinPred2) --")
+    toxinpred_df = predict_toxicity(sequences, output_dir, filename_prefix=f"{input_stem}_constructo_")
+    print_toxicity_report(toxinpred_df)
+
+    print("\n-- Antigenicidad intrinseca (IApred) --")
+    iapred_df = predict_intrinsic_antigenicity(sequences, output_dir, filename_prefix=f"{input_stem}_constructo_")
+    print_iapred_report(iapred_df)
+
+    print("\n-- Peptido senal (SignalP-6.0) --")
+    signalp_df = predict_signal_peptide(sequences, output_dir, filename_prefix=f"{input_stem}_constructo_")
+    print_signalp_report(signalp_df)
+
+    combined = algpred_df.merge(toxinpred_df, on="sequence").merge(iapred_df, on="sequence").merge(signalp_df, on="sequence")
+
+    combined.to_csv(final_path, index=False)
+    _write_phase_checkpoint(final_path, input_hash)
+    print(f"\n-> Reporte de chequeo del constructo guardado en: {final_path}")
+    return combined
+
+
 def _resolve_active_engines_and_inputs(
     input_path: Path, output_dir: Path, pdb_mode_override: Optional[str]
 ) -> Tuple[List[str], Optional[Path], Optional[StructureRecord]]:
@@ -1058,14 +1212,19 @@ def main(argv: List[str] = None) -> int:
             union_df, args.blast_db, args.identity_threshold, output_dir, input_path.stem
         )
         safe_df = blast_df[blast_df["status"] == "Segura"] if not blast_df.empty else blast_df
-        fase_4b_alergenicidad(safe_df, output_dir, input_path.stem)
+        algpred_df = fase_4b_alergenicidad(safe_df, output_dir, input_path.stem)
         _log_peak_memory("Fase 4b (alergenicidad)")
-        fase_4c_glicosilacion(safe_df, output_dir, input_path.stem)
+        stackgly_df = fase_4c_glicosilacion(safe_df, output_dir, input_path.stem)
         _log_peak_memory("Fase 4c (N-glicosilacion, StackGlyEmbed -- 3 modelos pesados)")
-        fase_5_th_promiscuidad(safe_df, output_dir, input_path.stem, allele_extra=args.alelo_extra)
-        fase_5b_tc_promiscuidad(safe_df, output_dir, input_path.stem)
+        htl_df = fase_5_th_promiscuidad(safe_df, output_dir, input_path.stem, allele_extra=args.alelo_extra)
+        ctl_df = fase_5b_tc_promiscuidad(safe_df, output_dir, input_path.stem)
         _log_peak_memory("Fase 5b (MHC-I + NetCleave)")
         fase_6_bnab_crossref(safe_df, output_dir, input_path.stem)
+        construct_sequence, _ = fase_7_ensamblaje_constructo(
+            safe_df, algpred_df, stackgly_df, htl_df, ctl_df, output_dir, input_path.stem
+        )
+        fase_8_chequeo_constructo(construct_sequence, output_dir, input_path.stem)
+        _log_peak_memory("Fase 8 (chequeo del constructo -- SignalP-6.0 es el mas pesado)")
     except PipelineError as exc:
         logger.error("Pipeline detenido: %s", exc)
         print(f"\n[ERROR FATAL] {exc}")

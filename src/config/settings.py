@@ -439,6 +439,75 @@ class Settings:
     )
     LANL_CATNAP_MIN_OVERLAP: int = _env_int("LANL_CATNAP_MIN_OVERLAP", 6)
 
+    # --- Fase 7: ensamblaje automatico del constructo multi-epitopo ---
+    # Decision del usuario (2026-07-22): top-N fijo por clase, no expuesto
+    # como flag de CLI (a diferencia de otros umbrales de este proyecto).
+    # Ver docstring de 'construct_assembly.py' para el criterio de ranking
+    # exacto por clase y las fuentes de literatura de cada linker.
+    CONSTRUCT_TOP_N_PER_CLASS: int = _env_int("CONSTRUCT_TOP_N_PER_CLASS", 3)
+    CONSTRUCT_LINKER_BCELL: str = _env_str("CONSTRUCT_LINKER_BCELL", "KK")
+    CONSTRUCT_LINKER_HTL: str = _env_str("CONSTRUCT_LINKER_HTL", "GPGPG")
+    CONSTRUCT_LINKER_CTL: str = _env_str("CONSTRUCT_LINKER_CTL", "AAY")
+    CONSTRUCT_LINKER_INTERBLOQUE: str = _env_str("CONSTRUCT_LINKER_INTERBLOQUE", "GPGPG")
+    # Linker rigido EAAAK (Arai et al. 2001), usado SOLO si se pasa un
+    # adjuvante via el parametro opcional de 'assemble_construct' -- ningun
+    # adjuvante se elige por defecto en esta sesion (ver docstring del modulo).
+    CONSTRUCT_LINKER_ADJUVANTE: str = _env_str("CONSTRUCT_LINKER_ADJUVANTE", "EAAAK")
+
+    # --- Fase 8a: Toxicidad del constructo (ToxinPred2 LOCAL) ---
+    # A diferencia de ToxinPred3.0 (pensado para peptidos cortos), el propio
+    # grupo Raghava recomienda ToxinPred2 para proteinas/constructos de
+    # longitud completa. 100% local: modelo ONNX + binario blastp + base de
+    # motivos MERCI vienen EMBEBIDOS en el paquete pip (~45MB), nada que
+    # descargar aparte. Venv con Python 3.10 + pandas==1.5.3 + numpy<2
+    # (ver docstring de toxinpred_engine.py: el script empaquetado usa
+    # 'to_csv(..., sep="\n")', que pandas>=2 rechaza; y ABI de numpy>=2
+    # rompe contra el pandas 1.5.3 needed).
+    TOXINPRED2_PYTHON_BIN: str = _env_str(
+        "TOXINPRED2_PYTHON_BIN",
+        "/home/enzo/DiffSBDD/B-Cell-Epitope-Prediction/.venv-toxinpred2/bin/python",
+    )
+    TOXINPRED2_BINARY_NAME: str = _env_str("TOXINPRED2_BINARY_NAME", "toxinpred2")
+    TOXINPRED2_THRESHOLD: float = _env_float("TOXINPRED2_THRESHOLD", 0.6)
+    TOXINPRED2_TIMEOUT_SECONDS: int = _env_int("TOXINPRED2_TIMEOUT_SECONDS", 300)
+
+    # --- Fase 8b: Antigenicidad intrinseca del constructo (IApred LOCAL) ---
+    # Reemplazo de VaxiJen (descartado: no open-source, sin standalone/API
+    # local -- ver docstring de iapred_engine.py). SVM puro sobre features
+    # fisicoquimicas, sin PyTorch/TensorFlow. Score por SECUENCIA COMPLETA,
+    # no por residuo (a diferencia de BepiPred/EpiDope/DiscoTope/ScanNet de
+    # Fase 2) -- exactamente lo que hace falta a nivel de constructo.
+    IAPRED_PYTHON_BIN: str = _env_str(
+        "IAPRED_PYTHON_BIN",
+        "/home/enzo/DiffSBDD/B-Cell-Epitope-Prediction/IApred/.venv-iapred/bin/python",
+    )
+    IAPRED_HOME: str = _env_str("IAPRED_HOME", "/home/enzo/DiffSBDD/B-Cell-Epitope-Prediction/IApred")
+    IAPRED_SCRIPT_NAME: str = _env_str("IAPRED_SCRIPT_NAME", "IApred.py")
+    IAPRED_TIMEOUT_SECONDS: int = _env_int("IAPRED_TIMEOUT_SECONDS", 300)
+
+    # --- Fase 8c: Alergenicidad del constructo (AlgPred2, REUSA Fase 4b) ---
+    # Mismo motor/venv que ALGPRED_PYTHON_BIN/ALGPRED_SCRIPT_PATH arriba, sin
+    # instalacion nueva -- ver 'algpred_engine.predict_allergenicity', que ya
+    # acepta cualquier longitud de secuencia por diseño.
+
+    # --- Fase 8d: Peptido senal del constructo (SignalP-6.0 LOCAL) ---
+    # Igual patron de licencia academica DTU Health Tech que BepiPred-3.0/
+    # NetMHCIIpan-4.3/NetMHCpan-4.2. Venv con Python 3.10 + torch 1.13 +
+    # numpy<2 (ABI, ver docstring de signalp_engine.py). Pesos (~9.2GB, modo
+    # 'slow-sequential': mismo footprint de RAM que 'fast', 6x mas lento,
+    # pensado para maquinas sin GPU) se referencian por --model_dir directo
+    # a 'signalp-6.0/models/', sin duplicarlos dentro del venv.
+    SIGNALP_PYTHON_BIN: str = _env_str(
+        "SIGNALP_PYTHON_BIN",
+        "/home/enzo/DiffSBDD/B-Cell-Epitope-Prediction/.venv-signalp/bin/python",
+    )
+    SIGNALP_BINARY_NAME: str = _env_str("SIGNALP_BINARY_NAME", "signalp6")
+    SIGNALP_MODEL_DIR: str = _env_str(
+        "SIGNALP_MODEL_DIR", "/home/enzo/DiffSBDD/B-Cell-Epitope-Prediction/signalp-6.0/models"
+    )
+    SIGNALP_ORGANISM: str = _env_str("SIGNALP_ORGANISM", "other")
+    SIGNALP_TIMEOUT_SECONDS: int = _env_int("SIGNALP_TIMEOUT_SECONDS", 300)
+
     @classmethod
     def setup_directories(cls) -> None:
         """Crea los directorios de datos requeridos si aun no existen."""
