@@ -77,6 +77,7 @@ from src.engines.bepipred_engine import extract_epitopes as extract_bepipred_epi
 from src.engines.bepipred_engine import ACCESSION_COLUMN as BEPIPRED_ACCESSION_COLUMN
 from src.engines.bepipred_engine import RESIDUE_COLUMN_CANDIDATES as BEPIPRED_RESIDUE_CANDIDATES
 from src.engines.blast_engine import print_blast_report, run_blastp_filter
+from src.engines.algpred_engine import predict_allergenicity, print_allergenicity_report
 from src.engines.consensus import build_annotated_union_table, print_union_table
 from src.engines.discotope_engine import DiscoTopeEngine
 from src.engines.discotope_engine import extract_epitopes as extract_discotope_epitopes
@@ -87,6 +88,7 @@ from src.engines.epidope_engine import extract_epitopes as extract_epidope_epito
 from src.engines.epidope_engine import ACCESSION_COLUMN as EPIDOPE_ACCESSION_COLUMN
 from src.engines.epidope_engine import RESIDUE_COLUMN as EPIDOPE_RESIDUE_COLUMN
 from src.engines.epitope_mapping import build_sequence_lookup, print_epitope_table
+from src.engines.netcleave_engine import annotate_cterm_cleavage, predict_cleavage
 from src.engines.netmhciipan_engine import (
     IEDB_REFERENCE_PANEL,
     build_traceback_report,
@@ -584,6 +586,43 @@ def fase_4_tolerancia(
     return blast_df
 
 
+def fase_4b_alergenicidad(safe_df: pd.DataFrame, output_dir: Path, input_stem: str) -> pd.DataFrame:
+    """Fase 4b: evalua alergenicidad (AlgPred 2.0 local) de los peptidos 'Seguros' de la Fase 4.
+
+    Paso independiente en paralelo a ``fase_5_th_promiscuidad``/``fase_5b_tc_promiscuidad``,
+    NO fusionado con ninguna: alergenicidad es una propiedad de seguridad de la
+    secuencia en si (potencial de reaccion tipo I mediada por IgE), no de una
+    via de presentacion antigenica particular -- se reporta como senal
+    independiente, con su propio archivo de salida
+    (``<input_stem>_alergenicidad_report.csv``).
+
+    Args:
+        safe_df: Mismos peptidos 'Segura' de la Fase 4 usados por Fase 5/5b.
+        output_dir: Carpeta donde persistir el reporte final y el CSV crudo de AlgPred2.
+        input_stem: Nombre del archivo de entrada sin extension (mismo
+            proposito que en Fase 5/5b: evita que corridas sucesivas se pisen).
+    """
+    print(f"\n{_SEPARATOR}\nFASE 4b | Filtro de alergenicidad (AlgPred 2.0 local)\n{_SEPARATOR}")
+
+    final_path = output_dir / f"{input_stem}_alergenicidad_report.csv"
+
+    if safe_df.empty:
+        print("No hay peptidos 'Seguros' provenientes de la Fase 4 para evaluar.")
+        empty_df = pd.DataFrame(columns=["sequence", "algpred_score", "algpred_veredicto"])
+        empty_df.to_csv(final_path, index=False)
+        return empty_df
+
+    peptides = safe_df["sequence"].tolist()
+    print(f"Peptidos a evaluar: {len(peptides)}")
+
+    report = predict_allergenicity(peptides, output_dir, filename_prefix=f"{input_stem}_")
+    print_allergenicity_report(report)
+
+    report.to_csv(final_path, index=False)
+    print(f"-> Reporte de alergenicidad guardado en: {final_path}")
+    return report
+
+
 def fase_5_th_promiscuidad(
     safe_df: pd.DataFrame, output_dir: Path, input_stem: str, allele_extra: str = None
 ) -> pd.DataFrame:
@@ -657,6 +696,14 @@ def fase_5b_tc_promiscuidad(safe_df: pd.DataFrame, output_dir: Path, input_stem:
     (``<input_stem>_candidatos_finales_mhc1.csv``) para no mezclar ambas
     tablas.
 
+    Ademas anota cada candidato con evidencia de corte proteasomal C-terminal
+    (NetCleave local, ver ``src.engines.netcleave_engine.annotate_cterm_cleavage``):
+    un peptido puede bindear MHC-I fuerte y aun asi nunca generarse via
+    procesamiento antigenico real si el proteasoma no corta exactamente donde
+    termina su nucleo de union. Es una columna adicional del mismo reporte, no
+    un filtro -- el veredicto de promiscuidad de NetMHCpan sigue siendo el
+    unico criterio de 'Candidato Valido'.
+
     Args:
         safe_df: Mismos peptidos 'Segura' de la Fase 4 usados por Fase 5.
         output_dir: Carpeta donde persistir el reporte final y el .xls crudo.
@@ -688,6 +735,13 @@ def fase_5b_tc_promiscuidad(safe_df: pd.DataFrame, output_dir: Path, input_stem:
         print_tc_report(report, allele_panel=NETMHCPAN_REFERENCE_PANEL)
 
     traceback_df = build_traceback_report_mhci(report, safe_df)
+
+    if not traceback_df.empty:
+        cleavage_df = predict_cleavage(peptides, output_dir, filename_prefix=f"{input_stem}_")
+        traceback_df = annotate_cterm_cleavage(traceback_df, cleavage_df)
+        n_cterm_match = int(traceback_df["netcleave_c_term_match"].sum())
+        print(f"Evidencia de corte C-terminal (NetCleave): {n_cterm_match}/{len(traceback_df)} candidato(s).")
+
     print_traceback_table(traceback_df)
 
     traceback_df.to_csv(final_path, index=False)
@@ -771,6 +825,7 @@ def main(argv: List[str] = None) -> int:
             union_df, args.blast_db, args.identity_threshold, output_dir, input_path.stem
         )
         safe_df = blast_df[blast_df["status"] == "Segura"] if not blast_df.empty else blast_df
+        fase_4b_alergenicidad(safe_df, output_dir, input_path.stem)
         fase_5_th_promiscuidad(safe_df, output_dir, input_path.stem, allele_extra=args.alelo_extra)
         fase_5b_tc_promiscuidad(safe_df, output_dir, input_path.stem)
     except PipelineError as exc:

@@ -25,6 +25,7 @@ import pandas as pd
 from src.config.settings import Settings
 from src.utils.exceptions import EngineExecutionError
 from src.utils.logger_config import setup_logger
+from src.utils.table_format import Column, print_fixed_width_table
 
 logger = setup_logger(__name__)
 
@@ -123,3 +124,22 @@ def predict_allergenicity(
         }
     )
     return result[_OUTPUT_COLUMNS]
+
+
+def print_allergenicity_report(report_df: pd.DataFrame) -> None:
+    """Imprime el informe de alergenicidad: analogo a ``blast_engine.print_blast_report``."""
+    if report_df.empty:
+        print("No hay peptidos candidatos de la Fase 4 para evaluar alergenicidad.")
+        return
+
+    seq_width = max(30, report_df["sequence"].str.len().max() + 2)
+    columns = [
+        Column("Secuencia", lambda r: r.sequence, seq_width, "<"),
+        Column("ML_Score", lambda r: f"{r.algpred_score:.4f}", 12, ">"),
+        Column("Veredicto", lambda r: r.algpred_veredicto, 16, ">"),
+    ]
+    print_fixed_width_table(report_df.itertuples(index=False), columns)
+
+    n_allergen = int((report_df["algpred_veredicto"] == "Allergen").sum())
+    n_non_allergen = int((report_df["algpred_veredicto"] == "Non-Allergen").sum())
+    print(f"\nResumen Fase 4b: {n_non_allergen} no alergeno(s) / {n_allergen} alergeno(s) potencial(es).")

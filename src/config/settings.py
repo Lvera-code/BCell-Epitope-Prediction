@@ -389,6 +389,56 @@ class Settings:
     )
     NETCLEAVE_TIMEOUT_SECONDS: int = _env_int("NETCLEAVE_TIMEOUT_SECONDS", 300)
 
+    # --- N-glicosilacion (StackGlyEmbed LOCAL, venv dedicado, subprocess puro) ---
+    # Instalacion propia (venv .venv-stackglyembed dentro de StackGlyEmbed/, con
+    # torch/xgboost/sklearn/transformers/tensorflow y ProteinBERT instalado via
+    # 'pip install git+.../protein_bert.git'). Los 3 embedders que consume
+    # (ProteinBERT, ESM-2 650M, ProtT5) cargan 100% offline una vez cacheados
+    # (ver docstring de 'StackGlyEmbed/prediction/predict_local.py'): ProtT5
+    # se REUSA de los pesos ya descargados para TMbed (mismo encoder,
+    # Rostlab/prot_t5_xl_half_uniref50-enc), ESM-2 650M y el dump de
+    # ProteinBERT (~/proteinbert_models/default.pkl) se descargaron una
+    # unica vez como paso de SETUP.
+    STACKGLYEMBED_PYTHON_BIN: str = _env_str(
+        "STACKGLYEMBED_PYTHON_BIN",
+        "/home/enzo/DiffSBDD/B-Cell-Epitope-Prediction/StackGlyEmbed/.venv-stackglyembed/bin/python",
+    )
+    # A diferencia de los demas motores, el script NO vive dentro del clon
+    # externo ('StackGlyEmbed/', ignorado por git): es codigo propio, ver
+    # docstring de 'stackglyembed_predict_local.py' para la razon (repo
+    # anidado, git no permite des-ignorar un archivo adentro).
+    STACKGLYEMBED_SCRIPT_PATH: str = _env_str(
+        "STACKGLYEMBED_SCRIPT_PATH",
+        str(Path(__file__).resolve().parent.parent / "engines" / "stackglyembed_predict_local.py"),
+    )
+    # Carpeta 'prediction/' del clon externo: aqui SI viven los pickles del
+    # clasificador ya entrenado (power_transformer_*.sav, base_layer_pickle_files/).
+    STACKGLYEMBED_MODELS_DIR: str = _env_str(
+        "STACKGLYEMBED_MODELS_DIR",
+        "/home/enzo/DiffSBDD/B-Cell-Epitope-Prediction/StackGlyEmbed/prediction",
+    )
+    STACKGLYEMBED_T5_MODEL_PATH: str = _env_str(
+        "STACKGLYEMBED_T5_MODEL_PATH",
+        "/home/enzo/DiffSBDD/scipion-chem-tmbed/tmbed_src/tmbed/models/t5",
+    )
+    STACKGLYEMBED_ESM_MODEL_NAME: str = _env_str("STACKGLYEMBED_ESM_MODEL_NAME", "facebook/esm2_t33_650M_UR50D")
+    # Generoso por defecto: carga en frio de 3 modelos (ProteinBERT + ESM-2
+    # 650M + ProtT5) sobre CPU antes de procesar el primer sitio.
+    STACKGLYEMBED_TIMEOUT_SECONDS: int = _env_int("STACKGLYEMBED_TIMEOUT_SECONDS", 900)
+
+    # --- Cruce con bnAb conocidos (LANL Immunology DB + CATNAP, pandas puro, sin red) ---
+    # Reemplaza a bNAber (dominio muerto, ver docstring de lanl_catnap_engine.py).
+    # No requiere venv aparte: pandas ya esta en el entorno que corre pipeline.py.
+    LANL_AB_ALL_PATH: str = _env_str(
+        "LANL_AB_ALL_PATH",
+        "/home/enzo/DiffSBDD/B-Cell-Epitope-Prediction/reference_db/lanl_immunology/ab_all.csv",
+    )
+    CATNAP_ABS_PATH: str = _env_str(
+        "CATNAP_ABS_PATH",
+        "/home/enzo/DiffSBDD/B-Cell-Epitope-Prediction/reference_db/catnap/abs_2026-07-01.txt",
+    )
+    LANL_CATNAP_MIN_OVERLAP: int = _env_int("LANL_CATNAP_MIN_OVERLAP", 6)
+
     @classmethod
     def setup_directories(cls) -> None:
         """Crea los directorios de datos requeridos si aun no existen."""

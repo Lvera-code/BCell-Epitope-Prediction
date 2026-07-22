@@ -32,7 +32,7 @@ from src.utils.logger_config import setup_logger
 logger = setup_logger(__name__)
 
 _OUTPUT_COLUMNS = [
-    "sequence_window", "cleavage_position", "cleavage_residue", "cleavage_score",
+    "sequence_window", "cleavage_position", "cleavage_residue", "cleavage_score", "source_sequence",
 ]
 
 # Modelo pre-entrenado local ya presente en el repo (mass-spectrometry, MHC-I,
@@ -150,6 +150,7 @@ def predict_cleavage(sequences: List[str], output_dir: Path, filename_prefix: st
                     "cleavage_position": raw["Cleavage site after position"],
                     "cleavage_residue": raw["Cleavage site after residue"],
                     "cleavage_score": raw["Cleavage site prediction score"],
+                    "source_sequence": seq,
                 }
             )
             result_frames.append(frame)
@@ -160,3 +161,59 @@ def predict_cleavage(sequences: List[str], output_dir: Path, filename_prefix: st
             return combined[_OUTPUT_COLUMNS]
 
     return pd.DataFrame(columns=_OUTPUT_COLUMNS)
+
+
+def annotate_cterm_cleavage(traceback_df: pd.DataFrame, cleavage_df: pd.DataFrame) -> pd.DataFrame:
+    """Anota un traceback de Fase 5/5b con evidencia de corte proteasomal en el C-terminal del candidato.
+
+    Senal complementaria, no un filtro: un peptido puede bindear MHC-I/II con
+    fuerza pero nunca generarse via procesamiento antigenico real si el
+    proteasoma no corta exactamente donde termina el nucleo de union. Requiere
+    que ``cleavage_df`` (salida de ``predict_cleavage``) se haya corrido sobre
+    el/los peptido(s) ORIGINALES de ``safe_df`` (no solo el nucleo aceptado),
+    para conservar el contexto de flanco que NetCleave necesita alrededor de
+    cada corte candidato.
+
+    Coincidencia exigida (no solo "hay algun corte en la region"): dado un
+    candidato cuya secuencia evaluada (``traceback_df['sequence_f5']``) es
+    substring de un ``cleavage_df['source_sequence']``, se busca una fila de
+    ``cleavage_df`` cuyo ``cleavage_position`` caiga EXACTO un residuo despues
+    del ultimo residuo del candidato dentro de esa secuencia origen
+    (``cleavage_position`` es 1-indexado y ya representa el residuo
+    inmediatamente posterior al corte, ver docstring de ``predict_cleavage``).
+
+    Args:
+        traceback_df: Salida de ``build_traceback_report`` (netmhciipan_engine
+            o netmhcpan_engine), con columna ``sequence_f5``.
+        cleavage_df: Salida de ``predict_cleavage`` corrida sobre los mismos
+            peptidos 'Seguros' de la Fase 4, con columna ``source_sequence``.
+
+    Returns:
+        Copia de ``traceback_df`` con dos columnas nuevas: ``netcleave_c_term_match``
+        (bool) y ``netcleave_c_term_score`` (score crudo del corte, NA si no hubo match).
+    """
+    result = traceback_df.copy()
+    result["netcleave_c_term_match"] = False
+    result["netcleave_c_term_score"] = pd.NA
+
+    if traceback_df.empty or cleavage_df.empty:
+        return result
+
+    for idx, row in traceback_df.iterrows():
+        candidates = cleavage_df[cleavage_df["source_sequence"].str.contains(row["sequence_f5"], regex=False, na=False)]
+        if candidates.empty:
+            continue
+
+        best_score = None
+        for cleavage_row in candidates.itertuples(index=False):
+            offset = cleavage_row.source_sequence.find(row["sequence_f5"])
+            c_term_position = offset + len(row["sequence_f5"]) + 1
+            if cleavage_row.cleavage_position == c_term_position:
+                if best_score is None or cleavage_row.cleavage_score > best_score:
+                    best_score = cleavage_row.cleavage_score
+
+        if best_score is not None:
+            result.at[idx, "netcleave_c_term_match"] = True
+            result.at[idx, "netcleave_c_term_score"] = best_score
+
+    return result

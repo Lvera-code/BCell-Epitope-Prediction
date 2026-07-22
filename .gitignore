@@ -72,7 +72,14 @@ ScanNet/
 # Herramienta StackGlyEmbed (N-glicosilacion, Camino 4): clon de
 # github.com/GaryChan-lab/StackGlyEmbed junto a su venv dedicado
 # (torch/xgboost/sklearn/transformers/tensorflow, ~9GB). Regenerable via
-# 'git clone' + venv (ver STATUS.md), nunca debe subirse.
+# 'git clone' + venv (ver STATUS.md), nunca debe subirse. Tiene su propio
+# '.git' (repo anidado, como los demas 'scipion-chem-*' hermanos): git NO
+# permite des-ignorar un archivo dentro de un repo anidado con ningun
+# patron de '.gitignore' (se intento y no funciono, ver commit que agrega
+# 'src/engines/stackglyembed_predict_local.py') -- por eso el script de
+# integracion offline propio vive fuera de esta carpeta, en
+# 'src/engines/', y solo referencia esta carpeta por ruta absoluta
+# configurable (Settings.STACKGLYEMBED_*), igual que cualquier otro motor.
 StackGlyEmbed/
 
 # Herramienta ToxDL 2.0 (toxicidad, Camino 5): clon con checkpoint del
