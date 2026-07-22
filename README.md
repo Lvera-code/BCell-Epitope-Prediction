@@ -1,19 +1,20 @@
 # Pipeline de Descubrimiento de Epítopos Vacunales
 
 Orquestador de terminal (`pipeline.py`) que procesa un FASTA de secuencia o
-una estructura (PDB/mmCIF) a través de 10 fases: desde antigenicidad (unión
+una estructura (PDB/mmCIF) a través de 11 fases: desde antigenicidad (unión
 anotada de hasta 4 motores independientes: 2 de secuencia + 2
-estructurales), ausencia de homología con el proteoma humano (riesgo de
-autoinmunidad), alergenicidad, N-glicosilación, inmunogenicidad T-helper
-(MHC-II/HLA-DR/DQ/DP, CD4+) e inmunogenicidad T-citotóxica (MHC-I/HLA-A/B,
-CD8+, con evidencia de corte proteasomal) y cruce con epítopos de
-anticuerpos ampliamente neutralizantes (bnAb) conocidos, hasta el
+estructurales), enmascarado de regiones transmembrana/péptido señal (no
+accesibles a anticuerpos), ausencia de homología con el proteoma humano
+(riesgo de autoinmunidad), alergenicidad, N-glicosilación, inmunogenicidad
+T-helper (MHC-II/HLA-DR/DQ/DP, CD4+) e inmunogenicidad T-citotóxica
+(MHC-I/HLA-A/B/C, CD8+, con evidencia de corte proteasomal) y cruce con
+epítopos de anticuerpos ampliamente neutralizantes (bnAb) conocidos, hasta el
 **ensamblaje automático de un constructo multi-epítopo** con los mejores
 candidatos y un **chequeo de alergenicidad/toxicidad/antigenicidad/péptido
 señal sobre ese constructo ya ensamblado** (no por péptido individual).
 Todas las fases corren **100% en local** (subprocess sobre binarios/paquetes
 instalados en tu máquina): el pipeline nunca hace una llamada de red durante
-la inferencia. Cada fase pesada (4/4b/4c/5/5b/6/7/8) se auto-cachea por hash
+la inferencia. Cada fase pesada (3b/4/4b/4c/5/5b/6/7/8) se auto-cachea por hash
 de contenido de su input — reiniciar una corrida interrumpida con el mismo
 input/parámetros salta directo a la fase que falló, ver "Checkpointing" más
 abajo.
@@ -40,7 +41,7 @@ solo a BepiPred-3.0/EpiDope de esa corrida (con aviso claro) porque BepiPred
 los rechaza en bloque, pero los motores estructurales corren igual sobre el
 PDB.
 
-## Flujo de trabajo (10 fases)
+## Flujo de trabajo (11 fases)
 
 1. **Saneamiento FASTA / extracción de estructura** — Camino 1: valida y
    limpia la(s) secuencia(s) de entrada (`fasta_inputs/`, admite FASTA
@@ -74,6 +75,21 @@ PDB.
    colapsarlos a regiones contiguas vía ventana deslizante es una
    simplificación deliberada para que Fase 4/5 sigan operando sobre péptidos
    lineales sintetizables.
+3b. **Enmascarado transmembrana/péptido señal** — TMbed ejecutado en local
+   (`src/engines/tmbed_engine.py`), sobre la secuencia COMPLETA de cada
+   accession (no por péptido candidato, a diferencia de Fase 4b/4c: TMbed
+   necesita el contexto completo de la proteína para predecir topología de
+   membrana). Descarta de la unión anotada de Fase 3 cualquier región que
+   caiga dentro de una hélice/tira transmembrana o del péptido señal
+   N-terminal — esos residuos no son accesibles a anticuerpos en la
+   proteína madura/anclada a membrana, así que proponerlos como epítopo
+   B-cell no tiene sentido biológico. Reusa el mismo venv/pesos ya
+   instalados para el plugin Scipion `scipion-chem-tmbed` (repo hermano,
+   mismo encoder ProtT5-XL-U50 que StackGlyEmbed), sin importar código de
+   ese plugin (depende de `pwchem`). Reporte propio:
+   `<nombre>_tmbed_regions.csv` (regiones detectadas) y
+   `<nombre>_union_epitopes_masked.csv` (unión post-enmascarado, insumo real
+   de la Fase 4).
 4. **Filtro de tolerancia** — BLASTp local contra el proteoma humano, con
    E-value seleccionado dinámicamente por longitud del péptido (laxo para
    péptidos cortos, estricto para dominios/proteínas completas), descarta
@@ -135,8 +151,12 @@ PDB.
    (célula presentadora profesional vs. cualquier célula nucleada, CD8+
    citotóxico vs. CD4+ helper), nunca se fusionan en un único veredicto.
    Mismo patrón que Fase 5 (panel de referencia — `NETMHCPAN_REFERENCE_PANEL`,
-   12 alelos HLA-A/B de los supertipos de Sidney et al. 2008 —, enrutamiento
-   por longitud, buffer overflow conocido del binario), con sus propios
+   23 alelos HLA-A/B/C: 12 HLA-A/B de los supertipos de Sidney et al. 2008
+   (ese paper no cubre HLA-C) + 11 HLA-C comunes globalmente (Rasmussen et
+   al. 2014 + criterio de frecuencia poblacional ≥1% de IEDB, ver docstring
+   de `netmhcpan_engine.py` para el detalle completo) —, enrutamiento
+   por longitud, buffer overflow conocido del binario (re-verificado con el
+   panel ampliado: el límite no cambia), con sus propios
    umbrales de %Rank (0.5/2.0, distintos de los de MHC-II: son escalas no
    comparables). **Anotación adicional de corte proteasomal C-terminal**: cada
    candidato aceptado se cruza con NetCleave (`src/engines/netcleave_engine.py`)
@@ -213,7 +233,7 @@ Todos los resultados intermedios y el reporte final se guardan en
 
 ### Checkpointing
 
-Fases 4/4b/4c/5/5b/6/7/8 se auto-cachean por hash de contenido de su input
+Fases 3b/4/4b/4c/5/5b/6/7/8 se auto-cachean por hash de contenido de su input
 (mismo mecanismo que ya usaba la Fase 2 para sus scores crudos): cada una
 guarda un sidecar `<archivo>.inputhash` junto a su CSV final. Si relanzás
 `pipeline.py` con el **mismo** `--input` y los **mismos** parámetros (umbral
@@ -520,7 +540,7 @@ Variables de entorno: `SCANNET_RUNTIME` (`docker` default | `venv`),
 
 ### 8. NetMHCpan-4.2 local (obligatorio para la Fase 5b)
 
-Binario propietario de DTU Health Tech (predicción MHC-I / HLA-A/B), mismo
+Binario propietario de DTU Health Tech (predicción MHC-I / HLA-A/B/C), mismo
 patrón de licencia académica y descarga manual que NetMHCIIpan-4.3.
 
 **a) Descarga manual obligatoria.** Solicítalo en
@@ -537,8 +557,10 @@ ruta absoluta de instalación, igual que en NetMHCIIpan-4.3 (Sección 5b).
 
 **c) Buffer overflow conocido.** El binario `netMHCpan` (modo péptido exacto,
 `-p`) revienta con `*** buffer overflow detected ***` (exit code 0, el
-wrapper `tcsh` no propaga el fallo) para péptidos > ~55 aa con el panel de 12
-alelos por defecto — el pipeline enruta automáticamente los péptidos largos a
+wrapper `tcsh` no propaga el fallo) para péptidos > ~55 aa con el panel de 23
+alelos por defecto (re-verificado al ampliar el panel de 12 a 23: el límite
+no cambia, es una propiedad del largo del péptido, no de cuántos alelos se
+pasan por `-a`) — el pipeline enruta automáticamente los péptidos largos a
 modo proteína (ventana deslizante) para evitarlo, mismo mecanismo que
 NetMHCIIpan-4.3.
 
@@ -747,6 +769,38 @@ python3 -m venv .venv-signalp   # Python 3.10, ver nota abajo
 Variables de entorno: `SIGNALP_PYTHON_BIN`, `SIGNALP_BINARY_NAME` (default
 `signalp6`), `SIGNALP_MODEL_DIR`, `SIGNALP_ORGANISM` (`other` por defecto).
 
+### 16. TMbed (obligatorio para la Fase 3b, enmascarado transmembrana/péptido señal)
+
+Código abierto (Apache-2.0, Bernhofer & Rost 2022), pip-instalable — pero sus
+pesos del encoder ProtT5-XL-U50 (~2.4 GB) no vienen bundled y normalmente se
+descargan de HuggingFace en el primer uso, lo cual no está permitido por la
+política local-only/no-scraping de este proyecto: ambas piezas se instalan
+una sola vez, a mano.
+
+Este pipeline **reusa el mismo venv/pesos** ya instalados para el plugin
+Scipion hermano `scipion-chem-tmbed` (ver su `README.rst`), sin instalar
+nada nuevo si ese plugin ya está configurado.
+
+**a) Venv dedicado.**
+```bash
+python3 -m venv /path/to/venv-tmbed
+/path/to/venv-tmbed/bin/pip install tmbed
+```
+
+**b) Pesos ProtT5-XL-U50**, descargados una sola vez (p. ej. desde una
+máquina con acceso a internet, o vía
+`huggingface-cli download Rostlab/prot_t5_xl_uniref50`) en una carpeta local
+con `config.json`, `model.safetensors`, `spiece.model`,
+`special_tokens_map.json` y `tokenizer_config.json`. **Mismo encoder que
+reusa StackGlyEmbed** (Sección 11, `STACKGLYEMBED_T5_MODEL_PATH`): si ya
+tenés esos pesos descargados para StackGlyEmbed, apuntá `TMBED_MODEL_DIR` a
+la misma carpeta en vez de duplicar ~2.4 GB.
+
+Variables de entorno: `TMBED_PYTHON_BIN`, `TMBED_BINARY_NAME` (default
+`tmbed`), `TMBED_MODEL_DIR`, `TMBED_USE_GPU` (`0`/`1`, `0` por defecto —
+máquina CPU-only), `TMBED_THREADS` (`4` por defecto), `TMBED_MIN_REGION_LENGTH`
+(`1` por defecto, sin filtro de longitud mínima).
+
 ## Uso
 
 `./run.sh` es un wrapper fino sobre `pipeline.py` (mismos argumentos) que
@@ -819,7 +873,10 @@ divisoria, para no leerlas como una lista continua.
 | `<nombre>_epidope_epitopes.csv` | 3 | Regiones de epítopo mapeadas localmente (EpiDope) |
 | `<nombre>_discotope_epitopes.csv` | 3 | Regiones de epítopo mapeadas localmente (DiscoTope-3.0) |
 | `<nombre>_scannet_epitopes.csv` | 3 | Regiones de epítopo mapeadas localmente (ScanNet) |
-| `<nombre>_union_epitopes.csv` | 3 | Unión anotada de los motores activos (columna `origen`), entrada de la Fase 4 |
+| `<nombre>_union_epitopes.csv` | 3 | Unión anotada de los motores activos (columna `origen`), entrada de la Fase 3b |
+| `<nombre>_tmbed_raw.pred` | 3b | Salida cruda de TMbed (formato de 3 líneas por proteína), para trazabilidad |
+| `<nombre>_tmbed_regions.csv` | 3b | Regiones transmembrana/péptido señal detectadas (`accession`/`start`/`end`/`type`) |
+| `<nombre>_union_epitopes_masked.csv` | 3b | Unión anotada tras descartar regiones solapadas con TM/péptido señal, entrada real de la Fase 4 |
 | `<nombre>_blast_report.csv` | 4 | Veredicto de tolerancia (Segura / Autoinmunidad) por región |
 | `<nombre>_algpred_raw.csv` | 4b | Salida cruda de AlgPred 2.0, para trazabilidad |
 | `<nombre>_alergenicidad_report.csv` | 4b | Veredicto de alergenicidad (Allergen / Non-Allergen) por péptido `'Segura'` |
@@ -840,7 +897,7 @@ divisoria, para no leerlas como una lista continua.
 | `<nombre>_constructo_iapred_raw.csv` | 8 | Salida cruda de IApred sobre el constructo |
 | `<nombre>_constructo_signalp_raw.txt` | 8 | Salida cruda de SignalP-6.0 sobre el constructo |
 | `<nombre>_constructo_chequeo.csv` | 8 | **Reporte combinado del constructo**: alergenicidad + toxicidad + antigenicidad intrínseca + péptido señal |
-| `<archivo>.inputhash` | 4/4b/4c/5/5b/6/7/8 | Sidecar de checkpointing (hash del input de esa fase), ver "Checkpointing" arriba |
+| `<archivo>.inputhash` | 3b/4/4b/4c/5/5b/6/7/8 | Sidecar de checkpointing (hash del input de esa fase), ver "Checkpointing" arriba |
 
 ### Formato de `<nombre>_candidatos_finales.csv`
 
