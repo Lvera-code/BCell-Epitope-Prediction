@@ -27,6 +27,16 @@ A partir de Fase 2, el resto del flujo es identico para los 3 caminos:
     2. Prediccion de antigenicidad por residuo via los motores activos para
        este camino, EJECUTADOS EN LOCAL (subprocess). Cada motor tiene
        auto-cache propio en ``fasta_outputs/``.
+
+    Checkpointing (Fases 4/4b/4c/5/5b/6): igual que el auto-cache de Fase 2,
+    cada una de estas fases guarda un sidecar ``.inputhash`` junto a su CSV
+    final. Si una corrida se interrumpe (p. ej. un OOM en Fase 4c) y se
+    relanza con el MISMO input y los mismos parametros, cada fase ya
+    completada se detecta por hash y se salta directo a la que fallo, en vez
+    de recomputar todo desde el principio (ver ``_load_phase_checkpoint``/
+    ``_write_phase_checkpoint``). El pico de memoria residente del proceso se
+    loggea despues de las fases mas pesadas (ver ``_log_peak_memory``), para
+    diagnosticar en cual ocurrio un OOM sin depender de herramientas externas.
     3. Mapeo local de regiones de epitopo contiguas por encima de un umbral
        para cada motor activo (``src.engines.epitope_mapping``), y UNION
        LOGICA ANOTADA entre todos ellos (``src.engines.consensus``): TODA
@@ -81,6 +91,7 @@ Ejemplo:
 
 import argparse
 import hashlib
+import resource
 import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -348,6 +359,66 @@ def _hash_sidecar_path(cache_path: Path) -> Path:
     return cache_path.with_name(cache_path.name + ".inputhash")
 
 
+def _phase_input_hash(*parts) -> str:
+    """Hash corto (16 hex) de cualquier combinacion de DataFrames/valores que determinen el resultado de una fase.
+
+    Generalizacion del mecanismo de auto-cache de ``_cached_raw_scores``
+    (Fase 2, por contenido de ARCHIVO) a las fases posteriores (4/4b/4c/5/5b/6),
+    que reciben DataFrames en memoria en vez de un path -- ``pd.DataFrame`` se
+    serializa via ``to_csv`` antes de hashear, cualquier otro tipo (str/float/
+    None) se serializa con ``str()``. El orden de ``parts`` importa (dos fases
+    con los mismos valores en distinto orden producen hashes distintos), asi
+    que cada llamador debe ser consistente entre la escritura y la lectura del
+    checkpoint.
+    """
+    pieces = [part.to_csv(index=False) if isinstance(part, pd.DataFrame) else str(part) for part in parts]
+    payload = "\x00".join(pieces).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()[:16]
+
+
+def _load_phase_checkpoint(engine_name: str, cache_path: Path, input_hash: str) -> Optional[pd.DataFrame]:
+    """Carga ``cache_path`` si su sidecar de hash coincide con ``input_hash`` (cache-hit); ``None`` si no.
+
+    Motivado por el OOM que origino ``STATUS.md``: sin esto, un crash a mitad
+    de una corrida larga (p. ej. durante Fase 5b/NetMHCpan, tras ya haber
+    corrido BLAST/AlgPred2/StackGlyEmbed/NetMHCIIpan) obligaba a repetir TODO
+    desde cero. Con este checkpoint por fase, reiniciar la misma corrida
+    (mismo input, mismos parametros) salta directo a la fase que fallo.
+    """
+    hash_path = _hash_sidecar_path(cache_path)
+    if cache_path.is_file() and hash_path.is_file() and hash_path.read_text().strip() == input_hash:
+        print(f"[{engine_name}] Checkpoint detectado en '{cache_path}' (mismo input que la corrida anterior). Se omite la re-ejecucion.")
+        return pd.read_csv(cache_path)
+    if cache_path.is_file():
+        logger.info(
+            "[%s] Checkpoint en '%s' obsoleto (el input de esta fase cambio desde que se genero): se re-ejecuta.",
+            engine_name, cache_path,
+        )
+    return None
+
+
+def _write_phase_checkpoint(cache_path: Path, input_hash: str) -> None:
+    _hash_sidecar_path(cache_path).write_text(input_hash)
+
+
+def _log_peak_memory(phase_name: str) -> None:
+    """Loggea el pico de RSS (memoria residente) del proceso hasta este punto.
+
+    ``resource.getrusage(RUSAGE_SELF).ru_maxrss`` es MONOTONO CRECIENTE (pico
+    historico del proceso completo, no un snapshot puntual): comparar el valor
+    despues de cada fase da una cota inferior de cuanta memoria consumio esa
+    fase en particular (la diferencia con el valor anterior), util para
+    diagnosticar en que fase ocurre un OOM sin necesitar 'psutil' (no es una
+    dependencia del proyecto) ni herramientas externas de profiling. El modulo
+    ``resource`` es POSIX-only (no existe en Windows) -- consistente con el
+    resto del pipeline, que ya asume Linux/WSL2 (venvs con rutas POSIX,
+    subprocess a binarios ELF, etc.), aunque el README no lo declara
+    explicitamente. En Linux el valor de ``ru_maxrss`` viene en KB.
+    """
+    peak_kb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    logger.info("[RAM] Pico de memoria residente tras %s: %.1f MB", phase_name, peak_kb / 1024)
+
+
 def _cached_raw_scores(
     engine_name: str, cache_path: Path, raw_artifacts_dir: Path, clean_fasta: Path, engine
 ) -> pd.DataFrame:
@@ -586,6 +657,8 @@ def fase_4_tolerancia(
     """Fase 4: descarta por BLASTp local los peptidos de la union anotada con alta homologia al proteoma humano."""
     print(f"\n{_SEPARATOR}\nFASE 4 | Filtro de tolerancia inmunologica (BLASTp local, umbral={identity_threshold}%)\n{_SEPARATOR}")
 
+    out_path = output_dir / f"{input_stem}_blast_report.csv"
+
     if union_df.empty:
         print("No hay peptidos de la union anotada de la Fase 3 para analizar.")
         blast_df = union_df.assign(
@@ -594,12 +667,19 @@ def fase_4_tolerancia(
             max_pident=pd.Series(dtype=float),
             status=pd.Series(dtype=str),
         )
-    else:
-        blast_df = run_blastp_filter(union_df, db_path=blast_db, identity_threshold=identity_threshold)
-        print_blast_report(blast_df)
+        blast_df.to_csv(out_path, index=False)
+        return blast_df
 
-    out_path = output_dir / f"{input_stem}_blast_report.csv"
+    input_hash = _phase_input_hash(union_df, blast_db, identity_threshold)
+    cached = _load_phase_checkpoint("Fase 4", out_path, input_hash)
+    if cached is not None:
+        return cached
+
+    blast_df = run_blastp_filter(union_df, db_path=blast_db, identity_threshold=identity_threshold)
+    print_blast_report(blast_df)
+
     blast_df.to_csv(out_path, index=False)
+    _write_phase_checkpoint(out_path, input_hash)
     print(f"-> Informe de tolerancia guardado en: {out_path}")
     return blast_df
 
@@ -630,6 +710,11 @@ def fase_4b_alergenicidad(safe_df: pd.DataFrame, output_dir: Path, input_stem: s
         empty_df.to_csv(final_path, index=False)
         return empty_df
 
+    input_hash = _phase_input_hash(safe_df)
+    cached = _load_phase_checkpoint("Fase 4b", final_path, input_hash)
+    if cached is not None:
+        return cached
+
     peptides = safe_df["sequence"].tolist()
     print(f"Peptidos a evaluar: {len(peptides)}")
 
@@ -637,6 +722,7 @@ def fase_4b_alergenicidad(safe_df: pd.DataFrame, output_dir: Path, input_stem: s
     print_allergenicity_report(report)
 
     report.to_csv(final_path, index=False)
+    _write_phase_checkpoint(final_path, input_hash)
     print(f"-> Reporte de alergenicidad guardado en: {final_path}")
     return report
 
@@ -673,6 +759,11 @@ def fase_4c_glicosilacion(safe_df: pd.DataFrame, output_dir: Path, input_stem: s
         empty_df.to_csv(final_path, index=False)
         return empty_df
 
+    input_hash = _phase_input_hash(safe_df)
+    cached = _load_phase_checkpoint("Fase 4c", final_path, input_hash)
+    if cached is not None:
+        return cached
+
     peptides = safe_df["sequence"].tolist()
     print(f"Peptidos a evaluar: {len(peptides)}")
 
@@ -686,6 +777,7 @@ def fase_4c_glicosilacion(safe_df: pd.DataFrame, output_dir: Path, input_stem: s
         print(f"Resumen Fase 4c: {n_glyco}/{len(report)} sequon(es) predicho(s) como glicosilado(s).")
 
     report.to_csv(final_path, index=False)
+    _write_phase_checkpoint(final_path, input_hash)
     print(f"-> Reporte de N-glicosilacion guardado en: {final_path}")
     return report
 
@@ -733,6 +825,11 @@ def fase_5_th_promiscuidad(
         traceback_df.to_csv(final_path, index=False)
         return traceback_df
 
+    input_hash = _phase_input_hash(safe_df, allele_panel)
+    cached = _load_phase_checkpoint("Fase 5", final_path, input_hash)
+    if cached is not None:
+        return cached
+
     peptides = safe_df["sequence"].tolist()
     print(f"Panel HLA-DR: {allele_panel} | Peptidos a evaluar: {len(peptides)}")
 
@@ -747,6 +844,7 @@ def fase_5_th_promiscuidad(
     print_traceback_table(traceback_df)
 
     traceback_df.to_csv(final_path, index=False)
+    _write_phase_checkpoint(final_path, input_hash)
     print(f"-> Reporte final guardado en: {final_path}")
     return traceback_df
 
@@ -791,6 +889,11 @@ def fase_5b_tc_promiscuidad(safe_df: pd.DataFrame, output_dir: Path, input_stem:
         traceback_df.to_csv(final_path, index=False)
         return traceback_df
 
+    input_hash = _phase_input_hash(safe_df)
+    cached = _load_phase_checkpoint("Fase 5b", final_path, input_hash)
+    if cached is not None:
+        return cached
+
     peptides = safe_df["sequence"].tolist()
     print(f"Panel HLA-A/B: {NETMHCPAN_REFERENCE_PANEL} | Peptidos a evaluar: {len(peptides)}")
 
@@ -812,6 +915,7 @@ def fase_5b_tc_promiscuidad(safe_df: pd.DataFrame, output_dir: Path, input_stem:
     print_traceback_table(traceback_df)
 
     traceback_df.to_csv(final_path, index=False)
+    _write_phase_checkpoint(final_path, input_hash)
     print(f"-> Reporte final MHC-I guardado en: {final_path}")
     return traceback_df
 
@@ -848,6 +952,11 @@ def fase_6_bnab_crossref(safe_df: pd.DataFrame, output_dir: Path, input_stem: st
         empty_df.to_csv(final_path, index=False)
         return empty_df
 
+    input_hash = _phase_input_hash(safe_df, Settings.LANL_CATNAP_MIN_OVERLAP)
+    cached = _load_phase_checkpoint("Fase 6", final_path, input_hash)
+    if cached is not None:
+        return cached
+
     peptides = safe_df["sequence"].tolist()
     print(f"Peptidos a evaluar: {len(peptides)}")
 
@@ -867,6 +976,7 @@ def fase_6_bnab_crossref(safe_df: pd.DataFrame, output_dir: Path, input_stem: st
               f"({n_neutralizing} de ellos con >=1 anticuerpo neutralizante confirmado).")
 
     report.to_csv(final_path, index=False)
+    _write_phase_checkpoint(final_path, input_hash)
     print(f"-> Reporte de cruce bnAb guardado en: {final_path}")
     return report
 
@@ -934,6 +1044,7 @@ def main(argv: List[str] = None) -> int:
         )
 
         raw_dfs = fase_2_antigenicidad(active_engines, input_path.stem, clean_fasta, structure_record, output_dir)
+        _log_peak_memory("Fase 2 (antigenicidad)")
 
         union_df = fase_3_mapeo_y_union(
             raw_dfs, structure_record,
@@ -948,9 +1059,12 @@ def main(argv: List[str] = None) -> int:
         )
         safe_df = blast_df[blast_df["status"] == "Segura"] if not blast_df.empty else blast_df
         fase_4b_alergenicidad(safe_df, output_dir, input_path.stem)
+        _log_peak_memory("Fase 4b (alergenicidad)")
         fase_4c_glicosilacion(safe_df, output_dir, input_path.stem)
+        _log_peak_memory("Fase 4c (N-glicosilacion, StackGlyEmbed -- 3 modelos pesados)")
         fase_5_th_promiscuidad(safe_df, output_dir, input_path.stem, allele_extra=args.alelo_extra)
         fase_5b_tc_promiscuidad(safe_df, output_dir, input_path.stem)
+        _log_peak_memory("Fase 5b (MHC-I + NetCleave)")
         fase_6_bnab_crossref(safe_df, output_dir, input_path.stem)
     except PipelineError as exc:
         logger.error("Pipeline detenido: %s", exc)
