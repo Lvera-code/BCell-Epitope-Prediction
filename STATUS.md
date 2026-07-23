@@ -1,6 +1,6 @@
 # STATUS — pipeline standalone de descubrimiento de epitopos vacunales
 
-Ultima actualizacion: 2026-07-22. Documento de estado limpio (no diario de
+Ultima actualizacion: 2026-07-23. Documento de estado limpio (no diario de
 sesion): refleja el estado FINAL verificado, no el historial de idas y
 vueltas para llegar ahi. Mantener actualizado al final de cada sesion
 futura — si algo cambia, ACTUALIZAR la seccion correspondiente en vez de
@@ -134,18 +134,24 @@ del input de cada fase): verificado con corridas de 2 pasadas — segunda
 pasada instantanea (38s -> 0.4s en un caso real), y que cambiar un
 parametro invalida el checkpoint en cascada correctamente.
 
-**Fase 3b (TMbed, agregada 2026-07-22, misma sesion que Tabla B):**
-`predict_tm_signal_regions` corrido de verdad (subprocess real, no mockeado)
-contra `VDAC1_P21796` (canal mitocondrial de 19 tiras beta, sin peptido
-senal) reprodujo EXACTAMENTE las 18 regiones `TM_beta_strand` (mismas
-coordenadas 1-indexadas) que valida el test del plugin Scipion -- confirma
-que el parseo reimplementado en `tmbed_engine.py` (sin importar el plugin,
-que depende de `pwchem`) es equivalente byte-a-byte. Pipeline completo
-corrido end-to-end sobre `fasta_inputs/OVA_test.fasta` (ovoalbumina, no
-transmembrana): Fase 3b corrio limpio, TMbed no detecto ninguna region (
-resultado esperado biologicamente), la union anotada paso sin cambios a
-Fase 4, y el resto de fases (4b-8) completaron sin errores hasta
-`PIPELINE COMPLETADO`.
+**Fase 3b (TMbed):** `predict_tm_signal_regions` (subprocess real, no
+mockeado) contra `VDAC1_P21796` (canal mitocondrial de 19 tiras beta, sin
+peptido senal) reproduce EXACTAMENTE las 18 regiones `TM_beta_strand`
+(mismas coordenadas 1-indexadas) que valida el test del plugin Scipion --
+confirma que el parseo reimplementado en `tmbed_engine.py` (sin importar el
+plugin, que depende de `pwchem`) es equivalente byte-a-byte.
+
+Enmascarado verificado en ambos sentidos con corridas end-to-end reales:
+sobre `GP120.fasta` (envoltura VIH-1, con TM citoplasmatica C-terminal) y
+`OVA_test.fasta` (ovoalbumina, no transmembrana) TMbed detecta las regiones
+esperadas pero ningun candidato de Fase 3 se solapa con ellas -- la union
+pasa sin cambios a Fase 4. Sobre `SLC8A1_P32418_AF.pdb` (transportador
+multi-pass, 10 helices TM + peptido senal) el enmascarado SI descarta
+candidatos reales: de 15 en `union_epitopes.csv`, 3 se eliminan en
+`union_epitopes_masked.csv` por solapar con regiones TM/senal (32-51 con el
+peptido senal 1-34; 251-325 y 924-941 con helices TM) -- confirma que Fase
+3b filtra activamente, no solo detecta sin efecto. En los 3 casos el resto
+de fases (4b-8) completa sin errores hasta `PIPELINE COMPLETADO`.
 
 **Suite de tests** (`pytest tests/`): 211 tests (201 previos + 10 nuevos de
 `tmbed_engine.py`), sin depender de ningun venv/binario externo instalado
@@ -333,6 +339,8 @@ standalone. Lo unico fuera de alcance de este documento:
    por el usuario — standalone-script-first, Scipion-integration despues, en
    una sesion aparte (ver Tabla A/B para lo que YA esta portado, y
    "Auditoria de Scipion-readiness" arriba).
-2. Test individual de PSMD7/PODXL/THBS2/SLC8A1 (proteinas humanas de prueba,
-   camino FASTA) — no bloqueante, mismo camino de codigo ya confirmado con
-   GP120.
+2. Re-correr PSMD7/PODXL/THBS2 (estructuras AlphaFold, camino PDB) con el
+   pipeline actual de 11 fases: las salidas existentes en `fasta_outputs/`
+   corresponden a una version anterior a Fase 3b (no tienen
+   `union_epitopes_masked.csv`). No bloqueante — mismo camino de codigo ya
+   confirmado con SLC8A1 (misma familia, proteina de membrana) y GP120.
