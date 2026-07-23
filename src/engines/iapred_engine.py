@@ -5,9 +5,9 @@ github.com/sebamiles/IApred, open source), mismo patron que
 ``netcleave_engine.py``. Reemplazo de VaxiJen: VaxiJen (la herramienta de
 referencia historica para "antigenicidad de proteina completa") NO es
 open-source, no tiene binario standalone descargable ni API publica
-documentada para uso programatico -- descartado explicitamente, ver
-STATUS.md. IApred es, a la fecha, la unica alternativa open-source/local
-publicada especificamente para llenar ese hueco (2025).
+documentada para uso programatico -- descartado explicitamente. IApred es
+la unica alternativa open-source/local publicada especificamente para
+llenar ese hueco.
 
 A diferencia de los motores de Fase 2 (BepiPred/EpiDope/DiscoTope/ScanNet,
 que puntuan antigenicidad POR RESIDUO para localizar epitopos), IApred
@@ -16,8 +16,7 @@ fisicoquimicas agregadas, sin PyTorch/TensorFlow) -- exactamente la pregunta
 que hace falta en Fase 8 ("es antigenico este constructo como un todo"), no
 "donde estan los epitopos dentro de el".
 
-Detalles de instalacion verificados empiricamente (no documentados en el
-propio repo):
+Detalles de instalacion (no documentados en el propio repo):
 
 1. ``models_folder = "models"`` en ``IApred.py`` es una ruta RELATIVA
    resuelta contra el CWD del proceso, no contra la ubicacion del script.
@@ -35,8 +34,8 @@ propio repo):
    falta ``numpy``/``Bio``/``sklearn``/``joblib`` (OJO: esa lista NO incluye
    ``imbalanced-learn``/``matplotlib``/``seaborn``, ver punto 2). Con el venv
    de este proyecto ya completo (los 7 paquetes instalados), esa rama nunca
-   se ejecuta -- confirmado empiricamente, no asumido -- pero si alguna vez
-   el venv se reinstala sin completar el punto 2, el riesgo real es un
+   se ejecuta, pero si alguna vez el venv se reinstala sin completar el
+   punto 2, el riesgo real es un
    ``ModuleNotFoundError``, no una llamada de red silenciosa (la lista
    chequeada por esa funcion no cubre las 3 dependencias faltantes).
 """
@@ -66,12 +65,12 @@ def _resolve_binary() -> Path:
     if not python_bin.is_file():
         raise EngineExecutionError(
             f"No se encontro el interprete Python del venv de IApred en '{python_bin}'. "
-            "Ver STATUS.md o apunta IAPRED_PYTHON_BIN a la ubicacion correcta."
+            "Ver README.md (Seccion 14) o apunta IAPRED_PYTHON_BIN a la ubicacion correcta."
         )
     if not script.is_file():
         raise EngineExecutionError(
             f"No se encontro el script 'IApred.py' en '{script}'. "
-            "Ver STATUS.md o apunta IAPRED_HOME a la ubicacion correcta del clon."
+            "Ver README.md (Seccion 14) o apunta IAPRED_HOME a la ubicacion correcta del clon."
         )
     if not (home / "models").is_dir():
         raise EngineExecutionError(
@@ -180,13 +179,16 @@ def predict_intrinsic_antigenicity(sequences: List[str], output_dir: Path, filen
 def print_iapred_report(report_df: pd.DataFrame) -> None:
     """Imprime el informe de antigenicidad intrinseca del constructo."""
     if report_df.empty:
-        print("No hay secuencias candidatas para evaluar antigenicidad intrinseca.")
+        print("No hay secuencias candidatas para evaluar antigenicidad.")
         return
 
-    seq_width = max(30, report_df["sequence"].str.len().max() + 2)
     columns = [
-        Column("Secuencia", lambda r: r.sequence, seq_width, "<"),
         Column("Score", lambda r: f"{r.iapred_score:.4f}" if pd.notna(r.iapred_score) else "-", 10, ">"),
         Column("Categoria", lambda r: r.iapred_categoria, 30, ">"),
     ]
     print_fixed_width_table(report_df.itertuples(index=False), columns)
+
+    categoria = report_df.iloc[0]["iapred_categoria"]
+    score = report_df.iloc[0]["iapred_score"]
+    score_txt = f"{score:.4f}" if pd.notna(score) else "-"
+    print(f"\nResumen antigenicidad: {categoria} (score {score_txt}).")

@@ -1,7 +1,7 @@
 """Inmunogenicidad T-citotoxica (MHC-I) via NetMHCpan-4.2 LOCAL.
 
-ADR de 2026-07-12 (descartar MHC-I) REVERTIDO 2026-07-21
-----------------------------------------------------------
+ADR: MHC-I descartado, luego revertido
+----------------------------------------
 Ver docstring de ``netmhciipan_engine.py`` para el historial completo. Este
 modulo es la reintroduccion de MHC-I, como parte del set ampliado de
 chequeos de construccion (tox/aller/antigenicidad, N-glico, TM/senal,
@@ -28,8 +28,7 @@ defecto -- DISTINTOS de los de NetMHCIIpan, 1.0/5.0: MHC-I tiene su propia
 escala de %Rank, no comparable 1:1), en al menos
 ``Settings.NETMHCPAN_MIN_PROMISCUOUS_ALLELES`` alelos distintos del panel.
 
-**Composicion del panel (investigado a fondo 2026-07-22, ver commit que
-agrego HLA-C):**
+**Composicion del panel:**
 - **HLA-A/B (12 alelos, sin cambios desde el diseño original):**
   representativos de los 12 supertipos HLA clase I de Sidney et al. 2008
   ("HLA class I supertypes: a revised and updated classification",
@@ -45,7 +44,7 @@ agrego HLA-C):**
   decision deliberada de este proyecto, sino que reproducia una omision
   real y bien documentada en las dos referencias mas citadas del campo
   para paneles de MHC-I.
-- **HLA-C (11 alelos, agregados 2026-07-22):** `HLA-C01:02`, `HLA-C03:04`,
+- **HLA-C (11 alelos):** `HLA-C01:02`, `HLA-C03:04`,
   `HLA-C04:01`, `HLA-C05:01`, `HLA-C06:02`, `HLA-C07:01`, `HLA-C07:02`,
   `HLA-C08:02`, `HLA-C12:03`, `HLA-C15:02`, `HLA-C16:01`. HLA-C SI es un
   elemento de restriccion CD8+ real (solo que historicamente menos
@@ -76,8 +75,8 @@ agrego HLA-C):**
   de 3, nunca escalado como fraccion del tamaño del panel). Dicho eso, 3
   de 23 es una barra relativamente mas laxa que 3 de 12 -- si en el futuro
   se decide que la "promiscuidad" deberia escalar con el tamaño del panel,
-  este es el lugar a revisar, pero cambiar ese umbral no fue parte de esta
-  investigacion (se pidio agregar HLA-C, no redefinir promiscuidad).
+  este es el lugar a revisar; redefinir ese criterio esta fuera del alcance
+  de agregar HLA-C al panel.
 
 A diferencia de NetMHCIIpan, el .xls de NetMHCpan-4.2 NO tiene columna
 ``Inverted``: el nucleo de union MHC-I no sufre el artefacto de alineacion
@@ -89,10 +88,10 @@ ningun filtro equivalente aqui -- confirmado leyendo las columnas reales del
 Buffer overflow del binario en modo peptido exacto: igual que NetMHCIIpan,
 NetMHCpan-4.2 (Linux_x86_64) revienta con "*** buffer overflow detected ***"
 (SIGABRT, core dump, exit code 0 -- el wrapper tcsh NO propaga el fallo) para
-peptidos demasiado largos en modo ``-p``. Verificado empiricamente: 55 aa OK,
-57 aa crash -- RE-verificado 2026-07-22 con el panel ampliado de 23 alelos
-(no solo con los 12 originales): el limite NO cambia con el tamaño del
-panel, es una propiedad del parseo interno de la longitud del peptido, no
+peptidos demasiado largos en modo ``-p``: 55 aa OK, 57 aa crash, verificado
+tanto con el panel de 12 como con el de 23 alelos -- el limite NO cambia con
+el tamaño del panel, es una propiedad del parseo interno de la longitud del
+peptido, no
 de cuantos alelos se pasan por '-a' (mismo binario/arquitectura de buffer
 que NetMHCIIpan, cuyo limite tambien cae en ese rango). Peptidos mas largos
 que ``_MAX_PEPTIDE_MODE_LENGTH`` se enrutan a modo FASTA/proteina (``-l``,
@@ -118,10 +117,10 @@ from src.utils.table_format import Column, print_fixed_width_table
 logger = setup_logger(__name__)
 
 # Panel de referencia de 23 alelos HLA-A/B/C. HLA-A/B (12): representativos
-# de los 12 supertipos de Sidney et al. 2008 (no cubre HLA-C). HLA-C (11,
-# agregados 2026-07-22): comunes globalmente segun Rasmussen et al. 2014 +
-# criterio de frecuencia poblacional >=1% de IEDB -- ver docstring del
-# modulo para el detalle completo de la investigacion y las fuentes.
+# de los 12 supertipos de Sidney et al. 2008 (no cubre HLA-C). HLA-C (11):
+# comunes globalmente segun Rasmussen et al. 2014 + criterio de frecuencia
+# poblacional >=1% de IEDB -- ver docstring del modulo para el detalle
+# completo y las fuentes.
 # NUNCA se le agregan espacios entre comas: NetMHCpan lo pasa tal cual a su
 # parser de '-a' y un espacio rompe el parseo del alelo siguiente.
 NETMHCPAN_REFERENCE_PANEL = (
@@ -138,8 +137,8 @@ _MIN_PEPTIDE_LENGTH = 8
 # Longitud maxima segura para el modo peptido exacto ('-p'). El binario
 # NetMHCpan-4.2 (Linux_x86_64) revienta con "*** buffer overflow detected
 # ***" (SIGABRT, core dump) en ese modo para entradas demasiado largas --
-# confirmado empiricamente contra NETMHCPAN_REFERENCE_PANEL (12 alelos): 55
-# aa OK, 57 aa crash. El wrapper 'netMHCpan' (tcsh) NO propaga ese crash como
+# verificado contra NETMHCPAN_REFERENCE_PANEL (23 alelos): 55 aa OK, 57 aa
+# crash. El wrapper 'netMHCpan' (tcsh) NO propaga ese crash como
 # exit code distinto de cero (ver ``_require_xls_output``). Se deja un margen
 # de seguridad considerable (40, no 55) por si el limite real del binario
 # varia entre builds o paneles de alelos -- mismo valor y misma logica que

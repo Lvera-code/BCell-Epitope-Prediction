@@ -1,7 +1,7 @@
 """Fase 2 (local) + Fase 3 (local) de prediccion de antigenicidad via BepiPred-3.0.
 
-ADR — pivote a ejecucion 100% local (2026-07-10)
---------------------------------------------------
+ADR — pivote a ejecucion 100% local
+------------------------------------
 Se abandono definitivamente la estrategia via BioLib (API/nube): bajo carga
 publica, los cold-start de los contenedores ESM-2 subyacentes resultaron
 impracticos (peticiones que no completaban ni siquiera tras ~1h de espera).
@@ -187,8 +187,8 @@ class BepiPredEngine(BaseEngine[str, pd.DataFrame]):
     def _locate_raw_output(result_dir: Path) -> Path:
         """Ubica el CSV de scores crudos dentro de los artefactos generados.
 
-        Primero intenta el nombre confirmado empiricamente en el codigo
-        fuente oficial (``Settings.BEPIPRED_RAW_OUTPUT_FILENAME``). Si una
+        Primero intenta el nombre que usa el codigo fuente oficial
+        (``Settings.BEPIPRED_RAW_OUTPUT_FILENAME``). Si una
         version futura de BepiPred lo renombra, cae a cualquier ``.csv``
         presente y lo loggea para que quede registro de la desviacion.
         """

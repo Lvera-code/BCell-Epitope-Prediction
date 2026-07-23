@@ -24,13 +24,13 @@ esa ambiguedad de raiz.
 
 Resolucion de residuos via CCD (``gemmi.find_tabulated_residue``): esto
 resuelve automaticamente residuos modificados (MSE->M, SEP->S, TPO->T,
-PTR->Y, CSO->C, etc. -- confirmado empiricamente que ``one_letter_code``
-viene en MINUSCULA para residuos no estandar con padre canonico, de ahi el
-``.upper()``). Un residuo sin codigo de una sola letra resoluble usa 'X'.
+PTR->Y, CSO->C, etc. -- ``one_letter_code`` viene en MINUSCULA para residuos
+no estandar con padre canonico, de ahi el ``.upper()``). Un residuo sin
+codigo de una sola letra resoluble usa 'X'.
 
-Deliberadamente NO se usa ``ResidueSpan.make_one_letter_sequence()``: se
-confirmo empiricamente que, ante un nombre de residuo no reconocido por el
-CCD, esa funcion puede insertar caracteres extra (p. ej. un '-' de relleno)
+Deliberadamente NO se usa ``ResidueSpan.make_one_letter_sequence()``: ante
+un nombre de residuo no reconocido por el CCD, esa funcion puede insertar
+caracteres extra (p. ej. un '-' de relleno)
 que desalinean el conteo de caracteres respecto al numero real de residuos
 del polimero -- inviable para construir un mapeo de posiciones 1:1. En su
 lugar se itera ``Chain.get_polymer()`` residuo por residuo, resolviendo cada

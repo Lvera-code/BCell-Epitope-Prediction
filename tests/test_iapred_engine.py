@@ -120,8 +120,8 @@ def test_exit_code_distinto_de_cero_propaga_engine_execution_error(monkeypatch, 
 
 
 def test_output_dir_relativo_se_resuelve_a_ruta_absoluta(monkeypatch, tmp_path):
-    # Regresion real (2026-07-22, ver el mismo test en test_algpred_engine.py):
-    # el subprocess de IApred corre con 'cwd=Settings.IAPRED_HOME', asi que
+    # Regresion real (ver el mismo test en test_algpred_engine.py): el
+    # subprocess de IApred corre con 'cwd=Settings.IAPRED_HOME', asi que
     # un 'output_dir' relativo se resolveria contra ESA carpeta, no la de
     # pipeline.py, si no se resolviera a absoluto antes.
     monkeypatch.chdir(tmp_path)

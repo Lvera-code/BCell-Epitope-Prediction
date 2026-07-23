@@ -192,7 +192,7 @@ def predict_tm_signal_regions(
     return pd.DataFrame(rows, columns=_REGIONS_COLUMNS)
 
 
-def filter_overlapping_regions(union_df: pd.DataFrame, regions_df: pd.DataFrame) -> Tuple[pd.DataFrame, int]:
+def filter_overlapping_regions(union_df: pd.DataFrame, regions_df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """Descarta de ``union_df`` las filas cuyo rango ``[start, end]`` se solapa con una region TMbed de la misma accession.
 
     Args:
@@ -200,22 +200,39 @@ def filter_overlapping_regions(union_df: pd.DataFrame, regions_df: pd.DataFrame)
         regions_df: Salida de :func:`predict_tm_signal_regions` (mismo esquema de coordenadas).
 
     Returns:
-        Tupla ``(kept_df, n_discarded)``. ``kept_df`` conserva todas las
+        Tupla ``(kept_df, discarded_df)``. ``kept_df`` conserva todas las
         columnas originales de ``union_df``, con el mismo orden de filas
-        restantes; ``n_discarded`` es el numero de filas eliminadas.
+        restantes. ``discarded_df`` tiene columnas ``accession``/``start``/
+        ``end``/``type`` -- una fila por cada region TMbed con la que se
+        solapo la fila descartada de ``union_df`` (una misma fila descartada
+        puede solaparse con mas de una region TMbed, p. ej. un peptido que
+        cubre tanto el final del signal_peptide como el inicio de la
+        siguiente TM_alpha_helix, y aparece entonces una vez por cada una).
     """
     if union_df.empty or regions_df.empty:
-        return union_df, 0
+        return union_df, pd.DataFrame(columns=["accession", "start", "end", "type"])
 
-    def _overlaps(row) -> bool:
+    def _overlapping_regions(row) -> pd.DataFrame:
         acc_regions = regions_df[regions_df["accession"] == row["accession"]]
-        if acc_regions.empty:
-            return False
-        return bool(((acc_regions["start"] <= row["end"]) & (acc_regions["end"] >= row["start"])).any())
+        return acc_regions[(acc_regions["start"] <= row["end"]) & (acc_regions["end"] >= row["start"])]
 
-    mask = union_df.apply(_overlaps, axis=1)
-    kept = union_df[~mask].reset_index(drop=True)
-    return kept, int(mask.sum())
+    discarded_frames = []
+    keep_mask = []
+    for _, row in union_df.iterrows():
+        overlaps = _overlapping_regions(row)
+        keep_mask.append(overlaps.empty)
+        if not overlaps.empty:
+            discarded_frames.append(pd.DataFrame({
+                "accession": row["accession"], "start": row["start"], "end": row["end"],
+                "type": overlaps["type"].tolist(),
+            }))
+
+    kept = union_df[keep_mask].reset_index(drop=True)
+    discarded_df = (
+        pd.concat(discarded_frames, ignore_index=True) if discarded_frames
+        else pd.DataFrame(columns=["accession", "start", "end", "type"])
+    )
+    return kept, discarded_df
 
 
 def print_tmbed_regions_report(regions_df: pd.DataFrame) -> None:
@@ -235,3 +252,23 @@ def print_tmbed_regions_report(regions_df: pd.DataFrame) -> None:
     display_df = regions_df.sort_values(["accession", "start"]).reset_index(drop=True)
     print_fixed_width_table(display_df.itertuples(index=False), columns, group_by=lambda r: r.accession)
     print(f"\nTotal: {len(regions_df)} region(es) transmembrana/peptido senal en {regions_df['accession'].nunique()} accession(es).")
+
+
+def print_discarded_regions_report(discarded_df: pd.DataFrame) -> None:
+    """Imprime las regiones de la union anotada descartadas en Fase 3b por solaparse con una region TM/senal.
+
+    ``discarded_df`` es la salida de :func:`filter_overlapping_regions`: una
+    fila por cada (region descartada, region TMbed con la que se solapo) --
+    ``tipo`` explica el motivo puntual del descarte, no solo el conteo.
+    """
+    if discarded_df.empty:
+        return
+
+    columns = [
+        Column("accession", lambda r: r.accession, 28, "<"),
+        Column("start", lambda r: str(r.start), 7, ">"),
+        Column("end", lambda r: str(r.end), 7, ">"),
+        Column("tipo", lambda r: r.type, 18, "<", prefix="  "),
+    ]
+    display_df = discarded_df.sort_values(["accession", "start"]).reset_index(drop=True)
+    print_fixed_width_table(display_df.itertuples(index=False), columns, group_by=lambda r: r.accession)

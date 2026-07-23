@@ -84,8 +84,8 @@ def test_exit_code_distinto_de_cero_propaga_engine_execution_error(monkeypatch, 
 
 
 def test_output_dir_relativo_se_resuelve_a_ruta_absoluta(monkeypatch, tmp_path):
-    # Regresion real (2026-07-22, ver el mismo test en test_algpred_engine.py):
-    # el subprocess de ToxinPred2 corre con 'cwd=tmp' (el directorio temporal
+    # Regresion real (ver el mismo test en test_algpred_engine.py): el
+    # subprocess de ToxinPred2 corre con 'cwd=tmp' (el directorio temporal
     # del batch), asi que un 'output_dir' relativo se resolveria contra ESE
     # directorio, no el de pipeline.py, si no se resolviera a absoluto antes.
     monkeypatch.chdir(tmp_path)

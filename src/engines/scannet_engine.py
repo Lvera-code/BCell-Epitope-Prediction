@@ -17,16 +17,16 @@ Runtime dual (``Settings.SCANNET_RUNTIME``):
   ``docker run``, montando el PDB de entrada y ``output_dir`` como volumenes.
   Evita tener que resolver el stack antiguo a mano.
 
-ADR -- runtime Docker, validado empiricamente
+ADR -- runtime Docker, validado contra un PDB real
 ------------------------------------------------
-AMBOS runtimes fueron instalados y corridos contra un PDB real en esta tarea
-(2026-07-20). Para Docker: ``docker pull jertubiana/scannet`` +
-``docker inspect`` confirmaron que el ``WORKDIR`` de la imagen oficial es
-efectivamente ``/ScanNet`` (default de ``Settings.SCANNET_DOCKER_WORKDIR``,
-sin necesidad de ajuste), que tanto ``python`` como ``python3`` resuelven al
-interprete correcto (3.6.12) dentro de la imagen, y que una corrida real
-produjo resultados IDENTICOS byte a byte al runtime ``venv`` sobre el mismo
-PDB. Si en el futuro la imagen oficial cambia de layout,
+Ambos runtimes fueron instalados y corridos contra un PDB real. Para
+Docker: ``docker pull jertubiana/scannet`` + ``docker inspect`` confirman
+que el ``WORKDIR`` de la imagen oficial es efectivamente ``/ScanNet``
+(default de ``Settings.SCANNET_DOCKER_WORKDIR``, sin necesidad de ajuste),
+que tanto ``python`` como ``python3`` resuelven al interprete correcto
+(3.6.12) dentro de la imagen, y ambos runtimes producen resultados
+IDENTICOS byte a byte sobre el mismo PDB. Si en el futuro la imagen oficial
+cambia de layout,
 ``_validate_installation`` fallara de forma clara (contenedor no arranca /
 script no encontrado) en vez de silenciosamente producir un resultado
 incorrecto.
@@ -230,8 +230,8 @@ class ScanNetEngine(BaseEngine[str, pd.DataFrame]):
             # ya fija cwd=self._install_path para este runtime (ver ADR del
             # modulo sobre utilities/paths.py), asi que anteponer install_path
             # aqui tambien duplicaria el directorio (install_path/install_path/
-            # predict_bindingsites.py) -- confirmado empiricamente, exit code 2
-            # 'No such file or directory'. Mismo criterio que el runtime
+            # predict_bindingsites.py), fallando con exit code 2 'No such
+            # file or directory'. Mismo criterio que el runtime
             # 'docker', que ya usa el nombre pelado porque el WORKDIR del
             # contenedor cumple el mismo rol.
             return [

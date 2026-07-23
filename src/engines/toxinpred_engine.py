@@ -69,12 +69,12 @@ def _resolve_binary() -> Path:
     if not python_bin.is_file():
         raise EngineExecutionError(
             f"No se encontro el interprete Python del venv de ToxinPred2 en '{python_bin}'. "
-            "Ver STATUS.md o apunta TOXINPRED2_PYTHON_BIN a la ubicacion correcta."
+            "Ver README.md (Seccion 13) o apunta TOXINPRED2_PYTHON_BIN a la ubicacion correcta."
         )
     binary = python_bin.parent / Settings.TOXINPRED2_BINARY_NAME
     if not binary.is_file():
         raise EngineExecutionError(
-            f"No se encontro el ejecutable '{binary}'. Ver STATUS.md o reinstala ToxinPred2 "
+            f"No se encontro el ejecutable '{binary}'. Ver README.md (Seccion 13) o reinstala ToxinPred2 "
             f"en el venv de TOXINPRED2_PYTHON_BIN ('pip install toxinpred2')."
         )
     return binary
@@ -168,9 +168,7 @@ def print_toxicity_report(report_df: pd.DataFrame) -> None:
         print("No hay secuencias candidatas para evaluar toxicidad.")
         return
 
-    seq_width = max(30, report_df["sequence"].str.len().max() + 2)
     columns = [
-        Column("Secuencia", lambda r: r.sequence, seq_width, "<"),
         Column("ML_Score", lambda r: f"{r.toxinpred_score:.4f}", 12, ">"),
         Column("Veredicto", lambda r: r.toxinpred_veredicto, 16, ">"),
     ]

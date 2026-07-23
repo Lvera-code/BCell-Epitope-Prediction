@@ -5,9 +5,9 @@ propietario de NetMHCpan-4.2, con licencia academica -- mismo criterio de
 "sin mockear el binario real" que el resto del pipeline para engines
 DTU Health Tech no cubiertos aun). Este archivo cubre lo que SI se puede
 verificar sin el binario instalado: el formato y contenido de
-``NETMHCPAN_REFERENCE_PANEL`` en si, en particular la ampliacion con HLA-C
-(2026-07-22, ver docstring del modulo y STATUS.md para la investigacion
-completa) -- para que un futuro cambio accidental del panel (typo, alelo
+``NETMHCPAN_REFERENCE_PANEL`` en si, en particular la composicion con HLA-C
+(ver docstring del modulo para el detalle completo) -- para que un futuro
+cambio accidental del panel (typo, alelo
 duplicado, espacio que rompe el parser de NetMHCpan) falle un test en vez
 de solo notarse en una corrida real.
 """
@@ -39,8 +39,8 @@ def test_panel_incluye_hla_a_b_y_c():
 
 def test_panel_tiene_12_hla_a_b_y_11_hla_c():
     # 12 (Sidney et al. 2008, supertipos A/B) + 11 HLA-C (Rasmussen et al.
-    # 2014 + criterio de frecuencia poblacional >=1% de IEDB, agregados
-    # 2026-07-22). Ver docstring del modulo para el detalle completo.
+    # 2014 + criterio de frecuencia poblacional >=1% de IEDB). Ver docstring
+    # del modulo para el detalle completo.
     alleles = _alleles()
     n_a = sum(1 for a in alleles if a.startswith("HLA-A"))
     n_b = sum(1 for a in alleles if a.startswith("HLA-B"))

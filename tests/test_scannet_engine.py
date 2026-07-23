@@ -1,7 +1,6 @@
 """Tests de src/engines/scannet_engine.py: construccion pura del comando por runtime.
 
-Regresion (2026-07-20, hallado corriendo ./run.sh sin variables de entorno
-exportadas): el runtime 'venv' pasaba 'predict_bindingsites.py' PRECEDIDO de
+Regresion: el runtime 'venv' pasaba 'predict_bindingsites.py' PRECEDIDO de
 install_path (p. ej. 'ScanNet/predict_bindingsites.py') Y ADEMAS fijaba
 cwd=install_path en el subprocess -- la combinacion resolvia el argumento
 relativo al NUEVO cwd, buscando 'ScanNet/ScanNet/predict_bindingsites.py'

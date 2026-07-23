@@ -82,10 +82,9 @@ def predict_allergenicity(
     # Resuelto a absoluto: el subprocess de abajo corre con 'cwd' forzado a
     # la carpeta del script de AlgPred2 (algpred2.py necesita rutas propias
     # relativas a su instalacion), asi que un 'output_dir' relativo (default
-    # de Settings.FASTA_OUTPUT_DIR) se resolveria mal si se le pasa tal cual
-    # -- confirmado empiricamente: 'OSError: Cannot save file into a
-    # non-existent directory' porque el hijo interpreta la ruta relativa
-    # contra SU cwd, no el de pipeline.py.
+    # de Settings.FASTA_OUTPUT_DIR) se resolveria mal si se le pasa tal cual:
+    # 'OSError: Cannot save file into a non-existent directory' porque el
+    # hijo interpreta la ruta relativa contra SU cwd, no el de pipeline.py.
     raw_csv_path = (output_dir / f"{filename_prefix}algpred_raw.csv").resolve()
 
     with tempfile.TemporaryDirectory(prefix="algpred_") as tmp:
@@ -133,20 +132,26 @@ def predict_allergenicity(
     return result[_OUTPUT_COLUMNS]
 
 
-def print_allergenicity_report(report_df: pd.DataFrame) -> None:
-    """Imprime el informe de alergenicidad: analogo a ``blast_engine.print_blast_report``."""
+def print_allergenicity_report(report_df: pd.DataFrame, show_sequence: bool = True) -> None:
+    """Imprime el informe de alergenicidad: analogo a ``blast_engine.print_blast_report``.
+
+    ``show_sequence``: en Fase 4b (por peptido, muchos candidatos) la
+    secuencia es la unica forma de identificar cada fila -> True (default).
+    En Fase 8 (constructo ensamblado, una sola fila de 200+ aa) mostrarla
+    solo agrega ruido -> False (ver ``pipeline.py::fase_8_chequeo_constructo``).
+    """
     if report_df.empty:
         print("No hay peptidos candidatos de la Fase 4 para evaluar alergenicidad.")
         return
 
-    seq_width = max(30, report_df["sequence"].str.len().max() + 2)
-    columns = [
-        Column("Secuencia", lambda r: r.sequence, seq_width, "<"),
-        Column("ML_Score", lambda r: f"{r.algpred_score:.4f}", 12, ">"),
-        Column("Veredicto", lambda r: r.algpred_veredicto, 16, ">"),
-    ]
+    columns = []
+    if show_sequence:
+        seq_width = max(30, report_df["sequence"].str.len().max() + 2)
+        columns.append(Column("Secuencia", lambda r: r.sequence, seq_width, "<"))
+    columns.append(Column("ML_Score", lambda r: f"{r.algpred_score:.4f}", 12, ">"))
+    columns.append(Column("Veredicto", lambda r: r.algpred_veredicto, 16, ">"))
     print_fixed_width_table(report_df.itertuples(index=False), columns)
 
     n_allergen = int((report_df["algpred_veredicto"] == "Allergen").sum())
     n_non_allergen = int((report_df["algpred_veredicto"] == "Non-Allergen").sum())
-    print(f"\nResumen Fase 4b: {n_non_allergen} no alergeno(s) / {n_allergen} alergeno(s) potencial(es).")
+    print(f"\nResumen alergenicidad: {n_non_allergen} no alergeno(s) / {n_allergen} alergeno(s) potencial(es).")

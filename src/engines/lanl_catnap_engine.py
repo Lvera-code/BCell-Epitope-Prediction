@@ -1,10 +1,8 @@
 """Cruce de candidatos contra epitopos de bnAb conocidos (LANL Immunology DB + CATNAP), 100% local.
 
-bNAber (fuente original pedida por el usuario) esta muerta -- dominio
-parqueado/hijackeado, confirmado via Wayback Machine desde antes de mayo
-2025 (ver STATUS.md). Reemplazado por datos ya descargados en
-``reference_db/`` (decision del usuario, "busca una alternativa que cumpla
-la misma funcion"):
+bNAber (fuente original de referencia para este cruce) esta muerta --
+dominio parqueado/hijackeado, confirmado via Wayback Machine desde antes de
+mayo 2025. Reemplazado por datos ya descargados en ``reference_db/``:
 
 - ``reference_db/lanl_immunology/ab_all.csv``: LANL HIV Molecular Immunology
   Database, 1790+ registros de anticuerpos (mismo origen que alimentaba a
@@ -24,7 +22,7 @@ Este motor NO hace alineamiento estructural ni mapeo de coordenadas HXB2:
 compara directamente las secuencias lineales de los candidatos contra las
 de ``ab_all.csv`` por solapamiento de subcadena. Es deliberadamente simple
 -- sin red, sin dependencias nuevas, sobre CSVs locales ya descargados
-(pandas puro, ver STATUS.md) -- a costa de no capturar epitopos
+(pandas puro) -- a costa de no capturar epitopos
 conformacionales (fuera de alcance: requeririan estructura 3D, no solo
 secuencia).
 """
@@ -48,6 +46,14 @@ _OUTPUT_COLUMNS = [
 ]
 
 _AA_ONLY = re.compile(r"[A-Zx]+")
+
+# LANL deja markup HTML crudo en texto libre (ej. antibody_name
+# "m66.6 Y100c<sub>HC</sub>S-F100d<sub>HC</sub>S", notacion Kabat de cadena
+# pesada/ligera): se ve confirmado en 445 filas de ab_all.csv. Se quita solo
+# la etiqueta (<sub>/</sub>/<sup>/etc.), nunca el texto que envuelve (ahi
+# suele ir informacion real, como "HC"), para no perder informacion ni dejar
+# basura visual en consola.
+_HTML_TAG = re.compile(r"<[^>]+>")
 
 # Por debajo de esto un solapamiento de subcadena es ruido estadistico
 # (aparece por azar en cualquier proteina): ver distribucion real de
@@ -301,6 +307,7 @@ def _display(value, max_len: Optional[int] = None, shorten: Optional[Callable[[s
     """
     if pd.isna(value) or value == "":
         return "-"
+    value = _HTML_TAG.sub("", value)
     text = shorten(value) if shorten else value
     return _truncate(text, max_len) if max_len else text
 
@@ -390,7 +397,12 @@ def print_bnab_crossref_report(report_df: pd.DataFrame, csv_path: Optional[Path]
 
     seq_col = Column("Secuencia", lambda r: r.sequence, _SEQ_WRAP, "<")
     rest_columns = [
-        Column("Ab", lambda r: _display(r.antibody_name, _AB_MAX, _short_name), ab_width, "<"),
+        # prefix="  ": un tramo de Secuencia de EXACTAMENTE _SEQ_WRAP
+        # caracteres no deja ningun padding (Column.width es un minimo, ver
+        # table_format.py), asi que sin este separador explicito el ultimo
+        # caracter de la secuencia queda pegado directo al nombre del
+        # anticuerpo (ej. "...TSEIYTLIm66.6").
+        Column("Ab", lambda r: _display(r.antibody_name, _AB_MAX, _short_name), ab_width, "<", prefix="  "),
         Column("Neutr", lambda r: _display(r.neutralizing), 8, ">"),
         Column("Subtipo", lambda r: _display(r.subtype, _SUBTYPE_MAX), subtype_width, ">"),
         # prefix="  ": "Subtipo" es right-aligned, sin este separador

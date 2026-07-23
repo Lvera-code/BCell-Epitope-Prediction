@@ -143,9 +143,12 @@ def test_filter_overlapping_regions_descarta_solo_filas_solapadas():
         "type": ["TM_alpha_helix"],
     })
 
-    kept, n_discarded = filter_overlapping_regions(union_df, regions_df)
+    kept, discarded = filter_overlapping_regions(union_df, regions_df)
 
-    assert n_discarded == 1
+    assert len(discarded) == 1
+    assert list(discarded["accession"]) == ["acc1"]
+    assert list(discarded["start"]) == [1]
+    assert list(discarded["type"]) == ["TM_alpha_helix"]
     assert list(kept["accession"]) == ["acc1", "acc2"]
     assert list(kept["start"]) == [20, 5]
 
@@ -153,7 +156,7 @@ def test_filter_overlapping_regions_descarta_solo_filas_solapadas():
 def test_filter_overlapping_regions_sin_regiones_no_descarta_nada():
     union_df = pd.DataFrame({"accession": ["acc1"], "start": [1], "end": [9], "sequence": ["AAAAAAAAA"]})
 
-    kept, n_discarded = filter_overlapping_regions(union_df, pd.DataFrame(columns=["accession", "start", "end", "type"]))
+    kept, discarded = filter_overlapping_regions(union_df, pd.DataFrame(columns=["accession", "start", "end", "type"]))
 
-    assert n_discarded == 0
+    assert discarded.empty
     assert kept.equals(union_df)

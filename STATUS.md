@@ -1,10 +1,9 @@
 # STATUS — pipeline standalone de descubrimiento de epitopos vacunales
 
-Ultima actualizacion: 2026-07-23. Documento de estado limpio (no diario de
-sesion): refleja el estado FINAL verificado, no el historial de idas y
-vueltas para llegar ahi. Mantener actualizado al final de cada sesion
-futura — si algo cambia, ACTUALIZAR la seccion correspondiente en vez de
-agregar una nueva marcada "resuelto mas tarde".
+Documento de estado limpio (no diario de sesion): refleja el estado FINAL
+verificado, no el historial de idas y vueltas para llegar ahi. Al
+actualizar, editar la seccion correspondiente en vez de agregar una nueva
+marcada "resuelto mas tarde".
 
 ## Tabla A — pipeline B-cell de 5 fases (ya portado a Scipion-Chem)
 
@@ -21,8 +20,8 @@ agregar una nueva marcada "resuelto mas tarde".
 
 Construido y validado: `scipion3 test tmbed.tests...` pasa.
 
-**2026-07-22 (mismo dia): TMbed TAMBIEN wireado al script standalone**, como
-Fase 3b (ver Tabla C, fila TMbed). No es una duplicacion de instalacion: el
+TMbed tambien esta wireado al script standalone, como Fase 3b (ver Tabla C,
+fila TMbed). No es una duplicacion de instalacion: el
 motor `src/engines/tmbed_engine.py` reusa el MISMO venv/pesos de este
 plugin (`TMBED_PYTHON_BIN`/`TMBED_MODEL_DIR` en `settings.py`, apuntando
 directo a `scipion-chem-tmbed/.venv-tmbed` y
@@ -43,7 +42,7 @@ ejecucion.
 | Herramienta | Instalacion | Motor Python (`src/engines/`) | Fase | Notas |
 |---|---|---|---|---|
 | TMbed (enmascarado TM/senal) | venv en `scipion-chem-tmbed/.venv-tmbed` (REUSADO del plugin Scipion, ver Tabla B), pesos ProtT5-XL-U50 en `scipion-chem-tmbed/tmbed_src/tmbed/models/t5` (REUSADOS por StackGlyEmbed, mismo encoder) | `tmbed_engine.py` | 3b, ANTES de BLASTp (Fase 4) -- corre sobre la secuencia COMPLETA de cada accession, no por peptido candidato | Formato de salida `--out-format 1`: 'B'/'H'/'S' (tira/helice TM/senal) se colapsan en regiones de enmascarado, 'i'/'o' (no-membrana) se ignoran. Parseo reimplementado en forma pura (sin importar el plugin Scipion, que depende de `pwchem` no instalado en el venv principal) -- verificado byte-a-byte contra VDAC1_P21796 (18 regiones `TM_beta_strand`, mismas coordenadas que el test del plugin). Cache por hash de las secuencias completas (no de `union_df`): un cambio de umbral de Fase 3 no invalida el cache de TMbed. |
-| NetMHCpan-4.2 (MHC-I) | `B-Cell-Epitope-Prediction/netMHCpan-4.2/` | `netmhcpan_engine.py` | 5b, paralela a Fase 5 (MHC-II), NO fusionada (vias de presentacion antigenica distintas) | **Panel ampliado 2026-07-22: 12 -> 23 alelos (agregado HLA-C, ver abajo).** Buffer overflow del binario en modo peptido exacto para entradas >55aa (verificado empiricamente, exit code 0 silencioso, RE-verificado con el panel de 23 alelos -- el limite no cambia) -- enrutado automaticamente a modo proteina para evitarlo. Sin columna `Inverted` (a diferencia de NetMHCIIpan, verificado, no asumido). |
+| NetMHCpan-4.2 (MHC-I) | `B-Cell-Epitope-Prediction/netMHCpan-4.2/` | `netmhcpan_engine.py` | 5b, paralela a Fase 5 (MHC-II), NO fusionada (vias de presentacion antigenica distintas) | **Panel de 23 alelos (12 HLA-A/B + 11 HLA-C, ver abajo).** Buffer overflow del binario en modo peptido exacto para entradas >55aa (exit code 0 silencioso, el limite no cambia con el tamaño del panel) -- enrutado automaticamente a modo proteina para evitarlo. Sin columna `Inverted` (a diferencia de NetMHCIIpan, verificado, no asumido). |
 | AlgPred 2.0 (alergenicidad) | venv en `scipion-chem-algpred/.venv-algpred` | `algpred_engine.py` | 4b (per-peptido) y reusado en 8 (constructo completo) | Bug real del script upstream: revienta con `ValueError` si el batch tiene exactamente 1 secuencia (bug de reshape de sklearn). Workaround: se duplica la secuencia y se descarta la fila extra. En Fase 8 este es el camino NORMAL (siempre 1 secuencia por corrida), no un caso de borde. |
 | NetCleave (cleavage MHC-I) | venv en `scipion-chem-netcleave/.venv-netcleave`, modelo pre-entrenado bundled | `netcleave_engine.py` | Anotacion dentro del reporte de Fase 5b | Verifica si hay un corte proteasomal EXACTO en el residuo inmediatamente posterior al candidato aceptado por NetMHCpan (no solo "hay algun corte en la region"). Señal complementaria, no filtro. El .xlsx de salida se nombra `<stem>_<primer-token-del-header-fasta>_NetCleave.xlsx`; el wrapper usa glob, no el nombre exacto. |
 | StackGlyEmbed (N-glicosilacion) | Repo clonado en `StackGlyEmbed/` (venv `.venv-stackglyembed`), `protein_bert` instalado `--no-deps`, ProteinBERT/ESM-2 650M/ProtT5 cacheados localmente | `stackglyembed_engine.py` (scanner de secuones propio) + `src/engines/stackglyembed_predict_local.py` (extraccion+prediccion, reemplaza los scripts originales que llamaban a red) | 4c (per-peptido) | `StackGlyEmbed/` es un repo git anidado (su propio `.git`): git NO permite des-ignorar un archivo dentro de un repo anidado con ningun patron de `.gitignore` -- por eso `stackglyembed_predict_local.py` vive en `src/engines/` (arbol versionado normal), no dentro del clon. ESM-2 vía `transformers.EsmModel` (offline real) en vez de `torch.hub.load(...)` del script original (pega red siempre). ProtT5 REUSA los pesos de TMbed (`Rostlab/prot_t5_xl_half_uniref50-enc`, mismo encoder). |
@@ -55,10 +54,9 @@ ejecucion.
 
 ## Tabla D — Fase 7 (ensamblaje de constructo) + Fase 8 (chequeo del constructo)
 
-Resuelve el pedido original de Carlos: alergenicidad/toxicidad/antigenicidad
-evaluadas sobre el CONSTRUCTO MULTI-EPITOPO FINAL ensamblado, no por
-peptido individual (eso ya lo cubre Fase 4b/4c, insuficiente por si solo
-para este pedido).
+Evalua alergenicidad/toxicidad/antigenicidad sobre el CONSTRUCTO
+MULTI-EPITOPO FINAL ensamblado, no por peptido individual (eso ya lo cubre
+Fase 4b/4c, insuficiente por si solo para este chequeo).
 
 **Fase 7 — ensamblaje (`construct_assembly.py`, logica pura, sin subprocess):**
 
@@ -75,20 +73,19 @@ para este pedido).
   `AAY` intra-CTL (sitio de corte del proteasoma), `GPGPG` intra-HTL e
   inter-bloque (espaciador universal, Livingston et al. 2002), `KK`
   intra-B-cell.
-- **Orden de bloques: B-cell → HTL → CTL.** Decision final del usuario
-  (2026-07-22): sin consenso fuerte en la literatura sobre orden optimo (los
-  linkers ya garantizan liberacion correcta por procesamiento, independiente
-  de la posicion); se ancla en B-cell por ser el foco humoral original del
-  proyecto (bnAb/HIV).
-- **Sin adjuvante.** Decision activa del usuario de NO incluir uno en esta
-  version (la eleccion de adjuvante -beta-defensina, PADRE, flagelina,
-  L7/L12, etc.- requiere criterio biologico/estrategico especifico del
-  patogeno/huesped, fuera de scope). Hook de diseño ya implementado
-  (`adjuvant_sequence` en `assemble_construct`, con linker rigido EAAAK) para
-  agregarlo sin rediseñar si se decide mas adelante.
-- **Sin fusion de epitopos solapados entre clases.** Decision final del
-  usuario: fusionar epitopos de clases distintas (p. ej. un B-cell que se
-  solapa en posicion con un HTL) romperia la semantica de los linkers -cada
+- **Orden de bloques: B-cell → HTL → CTL.** Decision final: sin consenso
+  fuerte en la literatura sobre orden optimo (los linkers ya garantizan
+  liberacion correcta por procesamiento, independiente de la posicion); se
+  ancla en B-cell por ser el foco humoral original del proyecto (bnAb/HIV).
+- **Sin adjuvante.** Decision activa de NO incluir uno por defecto (la
+  eleccion de adjuvante -beta-defensina, PADRE, flagelina, L7/L12, etc.-
+  requiere criterio biologico/estrategico especifico del patogeno/huesped,
+  fuera de scope). Hook de diseño ya implementado (`adjuvant_sequence` en
+  `assemble_construct`, con linker rigido EAAAK) para agregarlo sin
+  rediseñar si se decide mas adelante.
+- **Sin fusion de epitopos solapados entre clases.** Decision final:
+  fusionar epitopos de clases distintas (p. ej. un B-cell que se solapa en
+  posicion con un HTL) romperia la semantica de los linkers -cada
   bloque espera un peptido de ESA clase, no un hibrido-. La fusion
   INTRA-clase ya la resuelve la Fase 3 (union de regiones solapadas del
   mismo tipo de motor, antes de que las clases se separen).
@@ -131,8 +128,8 @@ resultantes. PIPELINE COMPLETADO sin errores en ambos caminos.
 
 **Checkpointing** (Fase 3b/4/4b/4c/5/5b/6/7/8, auto-cache por hash de contenido
 del input de cada fase): verificado con corridas de 2 pasadas — segunda
-pasada instantanea (38s -> 0.4s en un caso real), y que cambiar un
-parametro invalida el checkpoint en cascada correctamente.
+pasada instantanea (38s -> 0.4s en un caso real), y cambiar un parametro
+invalida el checkpoint en cascada correctamente.
 
 **Fase 3b (TMbed):** `predict_tm_signal_regions` (subprocess real, no
 mockeado) contra `VDAC1_P21796` (canal mitocondrial de 19 tiras beta, sin
@@ -154,12 +151,12 @@ peptido senal 1-34; 251-325 y 924-941 con helices TM) -- confirma que Fase
 3b filtra activamente, no solo detecta sin efecto. En los 3 casos el resto
 de fases (4b-8) completa sin errores hasta `PIPELINE COMPLETADO`.
 
-**Suite de tests** (`pytest tests/`): 211 tests (201 previos + 10 nuevos de
-`tmbed_engine.py`), sin depender de ningun venv/binario externo instalado
+**Suite de tests** (`pytest tests/`): incluye cobertura dedicada de
+`tmbed_engine.py`, sin depender de ningun venv/binario externo instalado
 (logica pura + `subprocess.run` mockeado).
 
-**Bug real encontrado y corregido (2026-07-22, misma sesion, expuesto por la
-primera corrida real de Fase 3b con candidatos que SI llegan a Fase 4b):**
+**Bug real encontrado y corregido** (expuesto por la primera corrida real
+de Fase 3b con candidatos que SI llegan a Fase 4b):
 `algpred_engine.py`/`toxinpred_engine.py`/`iapred_engine.py` (Fase 4b y 8)
 forzaban `cwd=` del subprocess a la carpeta del script externo instalado
 (necesario para que ese script encuentre sus propios recursos relativos),
@@ -181,11 +178,11 @@ motores. `stackglyembed_engine.py`/`netcleave_engine.py` NO tenian este bug
 la copia a `output_dir` ocurre despues en Python puro, sin pasar por el
 subprocess). Agregados 3 tests de regresion (uno por motor, `output_dir`
 relativo + `monkeypatch.chdir`), verifican que el argumento de salida pasado
-al subprocess es siempre absoluto. Suite: 214 tests.
+al subprocess es siempre absoluto.
 
-**Panel de alelos NetMHCpan (MHC-I) ampliado con HLA-C (2026-07-22):**
-investigado a fondo porque el panel original (`NETMHCPAN_REFERENCE_PANEL`,
-12 alelos) solo cubria HLA-A/B, sin ninguna justificacion documentada en el
+**Panel de alelos NetMHCpan (MHC-I) incluye HLA-C:** el panel original
+(`NETMHCPAN_REFERENCE_PANEL`, 12 alelos) solo cubria HLA-A/B, sin ninguna
+justificacion documentada en el
 repo para la ausencia de HLA-C -- resulto ser una omision heredada, no una
 decision deliberada: ni Sidney et al. 2008 (los supertipos que ya usaba este
 panel) ni el panel homologo de 27 alelos de IEDB para MHC-I (Weiskopf et al.
@@ -204,20 +201,20 @@ alelos confirmados presentes en `netMHCpan-4.2/data/allelenames` y con
 pseudo-secuencia en `MHC_pseudo.dat` ANTES de agregarlos al panel; (b)
 corrida real con el panel de 23 alelos contra 2 epitopos de referencia
 conocidos (NLVPMVATV/CMV pp65, GILGFVFTL/Flu M1, ambos HLA-A*02:01) sin
-errores, resultados biologicamente sensatos; (c) RE-verificado el limite de
+errores, resultados biologicamente sensatos; (c) verificado el limite de
 buffer overflow del binario en modo peptido exacto (55 aa OK, 57 aa crash)
-con el panel ampliado -- el limite no cambio, es una propiedad del largo del
-peptido, no del tamaño del panel de alelos.
+con el panel de 23 alelos -- el limite no cambia, es una propiedad del
+largo del peptido, no del tamaño del panel de alelos.
 
-**Decision explicita que se dejo SIN CAMBIOR:**
+**Decision explicita que se dejo sin cambiar:**
 `Settings.NETMHCPAN_MIN_PROMISCUOUS_ALLELES` sigue en 3 pese a que el panel
 paso de 12 a 23 alelos (3/23 es una barra mas laxa que 3/12) -- sigue la
 misma convencion ya establecida por el panel de MHC-II (27 alelos, mismo
-umbral fijo de 3, nunca escalado como fraccion). No se pidio redefinir
-"promiscuidad", solo agregar HLA-C, asi que este umbral se dejo intacto a
-proposito. Si en el futuro se decide que deberia escalar con el tamaño del
-panel, revisar `Settings.NETMHCPAN_MIN_PROMISCUOUS_ALLELES` en
-`settings.py`.
+umbral fijo de 3, nunca escalado como fraccion). Redefinir "promiscuidad"
+esta fuera de alcance de agregar HLA-C al panel, asi que este umbral se
+dejo intacto a proposito. Si en el futuro se decide que deberia escalar con
+el tamaño del panel, revisar `Settings.NETMHCPAN_MIN_PROMISCUOUS_ALLELES`
+en `settings.py`.
 
 ## Restriccion no negociable
 
@@ -258,11 +255,11 @@ runtime. Cada wrapper nuevo se audita para que nunca dispare `requests`,
 - **VaxiJen descartado** (no open-source, sin standalone/API local),
   reemplazado por IApred.
 
-## Testing exhaustivo de robustez (2026-07-22)
+## Testing de robustez
 
-Pedido explicito del usuario: confirmar que el pipeline es "irrompible" con
-casos extremos reales, no solo el camino feliz. Corridas/pruebas realizadas
-esta ronda (mas alla de la validacion end-to-end ya documentada arriba):
+Casos extremos probados, mas alla de la validacion end-to-end ya
+documentada arriba (confirman que el pipeline es robusto, no solo
+funcional en el camino feliz):
 
 - **Camino de estructura con Fase 7/8** (no probado hasta ahora): `7c4s.pdb`
   produjo 2 candidatos B-cell y CERO HTL/CTL -- el constructo se ensamblo
@@ -282,7 +279,7 @@ esta ronda (mas alla de la validacion end-to-end ya documentada arriba):
   ToxinPred2, IApred, SignalP-6.0): 1 aa, 2-3 aa, homopolimero (30x 'A'),
   secuencia de 1000 aa. Sin crashes en ningun caso.
 
-**Bug real encontrado y corregido en esta ronda:** IApred exige un MINIMO
+**Bug real encontrado y corregido:** IApred exige un MINIMO
 de 20 aa (verificado leyendo `IApred.py`) -- para secuencias mas cortas
 escribe el texto literal `'Sequence too short'` en la columna de score (no
 un numero). `iapred_engine.py` no lo manejaba: `print_iapred_report`
@@ -296,15 +293,15 @@ string mezclado en la columna) con una categoria informativa
 (`'No evaluado (secuencia < 20 aa)'`), y el formateador de tabla tolera
 `NaN`. 3 tests de regresion agregados (`test_iapred_engine.py`).
 
-Suite completa tras esta ronda: **201 tests**, sin regresiones.
+Suite completa: **219 tests**, sin regresiones.
 
-## Auditoria de Scipion-readiness (2026-07-22)
+## Auditoria de Scipion-readiness
 
 Decision de secuenciacion vigente: standalone-script-first, integracion a
-Scipion en una sesion aparte (ver Tabla A/B para lo que YA esta portado de
-la version anterior del pipeline). Esta sesion NO escribio protocolos
-Scipion nuevos -- eso sigue fuera de alcance -- pero se audito que la
-arquitectura actual no introduzca nada que complique esa migracion futura:
+Scipion como paso siguiente (ver Tabla A/B para lo que YA esta portado de
+la version anterior del pipeline). Protocolos Scipion nuevos siguen fuera
+de alcance de este documento; se audito que la arquitectura actual no
+introduzca nada que complique esa migracion futura:
 
 - **Sin `argparse` dentro de `src/engines/`**: el unico modulo con
   `argparse` es `stackglyembed_predict_local.py`, que es un SCRIPT
@@ -329,19 +326,29 @@ arquitectura actual no introduzca nada que complique esa migracion futura:
   un protocolo Scipion llamaria unicamente a las primeras.
 
 Conclusion: no hace falta ningun refactor previo a portar estos motores a
-protocolos Scipion cuando llegue esa sesion.
+protocolos Scipion.
 
-## Siguiente sesion
+## Portabilidad del repositorio
+
+Todos los defaults de `Settings` que apuntan DENTRO de este repositorio
+(venvs, pesos, `reference_db/`) usan rutas relativas a la raiz del proyecto,
+nunca absolutas -- cualquier clon funciona sin editar `settings.py`. Los
+defaults que apuntan a herramientas que viven en repos hermanos (AlgPred2 en
+`scipion-chem-algpred/`, NetCleave en `scipion-chem-netcleave/`, TMbed en
+`scipion-chem-tmbed/`) SI son rutas absolutas por necesidad (no son parte de
+este repo) y deben ajustarse via variable de entorno si esos repos hermanos
+viven en otra ubicacion -- ver el comentario de cada `Settings.*_PYTHON_BIN`
+correspondiente en `src/config/settings.py`.
+
+## Pendientes
 
 No queda ningun item de scope bloqueado o pendiente de decision del pipeline
 standalone. Lo unico fuera de alcance de este documento:
 
-1. **Integracion a Scipion**: decision de secuenciacion tomada explicitamente
-   por el usuario — standalone-script-first, Scipion-integration despues, en
-   una sesion aparte (ver Tabla A/B para lo que YA esta portado, y
-   "Auditoria de Scipion-readiness" arriba).
+1. **Integracion a Scipion**: decision de secuenciacion — standalone-script-
+   first, Scipion-integration despues (ver Tabla A/B para lo que YA esta
+   portado, y "Auditoria de Scipion-readiness" arriba).
 2. Re-correr PSMD7/PODXL/THBS2 (estructuras AlphaFold, camino PDB) con el
-   pipeline actual de 11 fases: las salidas existentes en `fasta_outputs/`
-   corresponden a una version anterior a Fase 3b (no tienen
-   `union_epitopes_masked.csv`). No bloqueante — mismo camino de codigo ya
-   confirmado con SLC8A1 (misma familia, proteina de membrana) y GP120.
+   pipeline actual de 11 fases, si no se hizo ya desde el ultimo borrado de
+   cache de `fasta_outputs/` -- mismo camino de codigo ya confirmado con
+   SLC8A1 (misma familia, proteina de membrana) y GP120.

@@ -1,24 +1,25 @@
 """Fase 5: Prediccion de presentacion T-helper (MHC-II) via NetMHCIIpan-4.3 LOCAL.
 
-ADR - pivote metodologico: se descarta MHC-I (2026-07-12), REVERTIDO (2026-07-21)
-----------------------------------------------------------------------------------
+ADR - pivote metodologico: MHC-I descartado, luego revertido
+--------------------------------------------------------------
 Toda la logica de prediccion de presentacion MHC-I (celulas T citotoxicas
 CD8+, servida anteriormente por MHCflurry/NetMHCpan) fue eliminada de este
-pipeline el 2026-07-12. La Fase 5 evaluaba exclusivamente presentacion MHC-II
-(celulas T-helper CD4+), requisito para activar una respuesta humoral
-sostenida (T-B cross-talk) en el diseno de vacunas de subunidad.
+pipeline en una version anterior. La Fase 5 evaluaba exclusivamente
+presentacion MHC-II (celulas T-helper CD4+), requisito para activar una
+respuesta humoral sostenida (T-B cross-talk) en el diseno de vacunas de
+subunidad.
 
-Esta decision se REVIRTIO el 2026-07-21: el scope del proyecto crecio (ver
+Esta decision se REVIRTIO despues: el scope del proyecto crecio (ver
 ``netmhcpan_engine.py``) para cubrir tambien evaluacion de inmunogenicidad
 CD8+ (MHC-I, NetMHCpan-4.2), como parte del set ampliado de chequeos de
 construccion (tox/aller/antigenicidad, N-glico, TM/senal, cross-ref bnAb) mas
 alla del pipeline original de 5 fases centrado solo en B-cell/T-helper. La
 prediccion MHC-I NO se fusiono dentro de esta Fase 5 (que sigue siendo
 exclusivamente MHC-II, con su propio modulo/reporte independiente en
-``netmhcpan_engine.py``): la razon original de 2026-07-12 (foco en respuesta
-humoral, no citotoxica) sigue siendo valida para el veredicto final de esta
-fase especifica, asi que MHC-I se anade como una senal adicional en paralelo
-en vez de reemplazar o mezclarse con el criterio de promiscuidad T-helper de
+``netmhcpan_engine.py``): la razon original (foco en respuesta humoral, no
+citotoxica) sigue siendo valida para el veredicto final de esta fase
+especifica, asi que MHC-I se anade como una senal adicional en paralelo en
+vez de reemplazar o mezclarse con el criterio de promiscuidad T-helper de
 aqui.
 
 Este modulo es, igual que ``blast_engine.py`` y ``bepipred_engine.py``, un
@@ -38,8 +39,8 @@ DEFECTO del propio NetMHCIIpan-4.3, en al menos
 CON REGISTRO DE UNION EN ORIENTACION NORMAL.
 
 Fiabilidad para sintesis/validacion experimental - alelos invertidos se
-DESCARTAN por completo, no solo del veredicto (ADR 2026-07-15, revisada
-2026-07-15): NetMHCIIpan marca ``Inverted=1`` en un alelo cuando su
+DESCARTAN por completo, no solo del veredicto: NetMHCIIpan marca
+``Inverted=1`` en un alelo cuando su
 procedimiento de alineacion del core (entrenado por Gibbs sampling sobre
 datos de eluido por espectrometria de masas) ajusta mejor leyendo el
 peptido en reversa que en su sentido N->C real. No hay evidencia
@@ -151,8 +152,8 @@ _MIN_PEPTIDE_LENGTH = 9
 # Longitud maxima segura para el modo peptido exacto ('-p', -inptype 1). El
 # binario NetMHCIIpan-4.3 (Linux_x86_64) revienta con "*** buffer overflow
 # detected ***" (SIGABRT, core dump) en ese modo para entradas demasiado
-# largas -confirmado empiricamente contra el panel real de 27 alelos de
-# IEDB_REFERENCE_PANEL: 55 aa OK, 56 aa crash, reproducible con contenido
+# largas -contra el panel real de 27 alelos de IEDB_REFERENCE_PANEL: 55 aa
+# OK, 56 aa crash, reproducible con contenido
 # aleatorio, no depende de la secuencia concreta-. El umbral exacto de
 # crash puede variar segun el panel de alelos evaluado (el tamano de ``-a``
 # influye en el buffer interno del binario), asi que este numero es valido

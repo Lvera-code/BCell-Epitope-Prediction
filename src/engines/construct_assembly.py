@@ -7,8 +7,8 @@ linkers estandar del campo de diseno de vacunas multi-epitopo en un unico
 FASTA, junto con una tabla de metadata 100% trazable (que peptido individual
 aporto cada tramo, en que orden, que linker se uso en cada union).
 
-Reglas de ensamblaje (decision FINAL del usuario, 2026-07-22, convencion
-estandar del campo con multiples fuentes que coinciden):
+Reglas de ensamblaje (convencion estandar del campo, con multiples fuentes
+que coinciden):
 
 * Linker intra-bloque CTL: ``AAY`` -- sitio de corte del proteasoma en
   celulas de mamifero, libera cada epitopo correctamente durante el
@@ -34,9 +34,9 @@ estandar del campo con multiples fuentes que coinciden):
   el N-terminal con su propio linker rigido EAAAK (Arai et al. 2001) sin
   rediseñar nada, si se decide agregar uno mas adelante.
 
-Seleccion top-N por clase (decision del usuario, 2026-07-22, confirmada tras
-mostrar numeros reales de una corrida con GP120: Fase 5/HTL dio 18
-candidatos validos, demasiados para un constructo manejable):
+Seleccion top-N por clase (necesaria en la practica: una corrida real con
+GP120 dio 18 candidatos validos solo en HTL/Fase 5, demasiados para un
+constructo manejable):
 
 * B-cell: de ``safe_df`` (Fase 4 'Segura'), se descartan los marcados
   'Allergen' por AlgPred2 (Fase 4b) y los que tienen AL MENOS un sequon
@@ -66,9 +66,9 @@ candidatos validos, demasiados para un constructo manejable):
   -exactamente el escenario B-cell-. Un nucleo de 8-11 aa que vive escondido
   en el surco del MHC nunca circula libre de esa forma, asi que el
   fundamento mecanicista para descartarlo por "alergenico" es mucho mas
-  debil -- decision explicita del usuario de no aplicar ese filtro ahi
-  (2026-07-23), para no descartar candidatos MHC validos sin una razon
-  biologica solida. La exclusion por glicosilacion SI aplica a las 3 clases
+  debil -- deliberadamente no se aplica ese filtro ahi, para no descartar
+  candidatos MHC validos sin una razon biologica solida. La exclusion por
+  glicosilacion SI aplica a las 3 clases
   porque su mecanismo (bloqueo fisico por el glicano) no depende de la via
   de reconocimiento.
 

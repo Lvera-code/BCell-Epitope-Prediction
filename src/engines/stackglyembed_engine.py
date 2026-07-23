@@ -59,17 +59,17 @@ def _resolve_binary() -> None:
     if not python_bin.is_file():
         raise EngineExecutionError(
             f"No se encontro el interprete Python del venv de StackGlyEmbed en '{python_bin}'. "
-            "Ver STATUS.md o apunta STACKGLYEMBED_PYTHON_BIN a la ubicacion correcta."
+            "Ver README.md (Seccion 11) o apunta STACKGLYEMBED_PYTHON_BIN a la ubicacion correcta."
         )
     if not script.is_file():
         raise EngineExecutionError(
             f"No se encontro el script 'stackglyembed_predict_local.py' en '{script}'. "
-            "Ver STATUS.md o apunta STACKGLYEMBED_SCRIPT_PATH a la ubicacion correcta."
+            "Ver README.md (Seccion 11) o apunta STACKGLYEMBED_SCRIPT_PATH a la ubicacion correcta."
         )
     if not (models_dir / "base_layer_pickle_files" / "SVM_meta_layer.sav").is_file():
         raise EngineExecutionError(
             f"No se encontraron los pickles del clasificador de StackGlyEmbed en '{models_dir}'. "
-            "Este clon externo debe descargarse aparte (ver STATUS.md), apunta "
+            "Este clon externo debe descargarse aparte (ver README.md, Seccion 11), apunta "
             "STACKGLYEMBED_MODELS_DIR a su carpeta 'prediction/' si esta en otra ubicacion."
         )
 

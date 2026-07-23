@@ -416,8 +416,8 @@ y `BLAST_EVALUE_SHORT` / `BLAST_EVALUE_MEDIUM` / `BLAST_EVALUE_LONG`.
 efecto secundario: un fragmento minúsculo (5-6 aa) 100% idéntico dentro de
 un péptido de 9-30 aa es estadísticamente esperable *por puro azar* contra
 el proteoma humano completo (~11M residuos), no una homología real —
-CONFIRMADO EMPÍRICAMENTE (2026-07-20) que sin filtrar esto, casi cualquier
-péptido corto se rechazaba por "Autoinmunidad" sin importar su origen. Un
+sin filtrar esto, casi cualquier péptido corto se rechazaba por
+"Autoinmunidad" sin importar su origen. Un
 hit solo cuenta hacia `max_pident` si su alineamiento cubre al menos
 `BLAST_MIN_QUERY_COVERAGE` (90% por defecto) de la longitud del péptido
 consultado.
@@ -520,13 +520,13 @@ export SCANNET_RUNTIME=venv   # default es 'docker' (ver abajo)
 ```
 
 **Alternativa Docker** (`SCANNET_RUNTIME=docker`, imagen oficial
-`jertubiana/scannet`): evita resolver el stack antiguo a mano. **Validado
-empíricamente** (2026-07-20: `docker pull jertubiana/scannet` + corrida real
-contra un PDB, resultados idénticos byte a byte al runtime `venv`) — el
-`WORKDIR` de la imagen es efectivamente `/ScanNet` (default de
-`SCANNET_DOCKER_WORKDIR`, confirmado con `docker inspect`), y tanto `python`
-como `python3` resuelven al intérprete correcto (3.6.12) dentro de la
-imagen. Es la alternativa mas simple para quien no quiera lidiar con conda:
+`jertubiana/scannet`): evita resolver el stack antiguo a mano. **Validado**
+(`docker pull jertubiana/scannet` + corrida real contra un PDB, resultados
+idénticos byte a byte al runtime `venv`) — el `WORKDIR` de la imagen es
+efectivamente `/ScanNet` (default de `SCANNET_DOCKER_WORKDIR`, confirmado
+con `docker inspect`), y tanto `python` como `python3` resuelven al
+intérprete correcto (3.6.12) dentro de la imagen. Es la alternativa mas
+simple para quien no quiera lidiar con conda:
 
 ```bash
 docker pull jertubiana/scannet
@@ -849,11 +849,28 @@ defecto documentado.
 
 ### Salida en consola
 
-Las tablas de la Fase 5 resaltan en color el núcleo de unión de 9 aa dentro
-de la ventana de 15 aa evaluada (solo en terminal, no afecta el CSV). Cuando
-el FASTA de entrada tiene varias proteínas (varios `accession`), la tabla
-final se ordena por proteína/posición y separa cada una con una línea
-divisoria, para no leerlas como una lista continua.
+Las tablas de la Fase 5 (y Fase 5b) resaltan en color el núcleo de unión de
+9 aa dentro de la ventana de 15 aa evaluada (solo en terminal, no afecta el
+CSV). Cuando el FASTA de entrada tiene varias proteínas (varios
+`accession`), las tablas de Fase 2 (BepiPred-3.0/EpiDope/DiscoTope-3.0/
+ScanNet), Fase 3b y Fase 6 separan cada proteína con una línea divisoria,
+para no leerlas como una lista continua.
+
+La Fase 3b, además de la tabla de regiones transmembrana/péptido señal
+detectadas, imprime también qué regiones de la unión anotada se
+descartaron por solaparse con ellas (`accession`/`start`/`end`/`tipo`),
+cuando corresponde.
+
+La Fase 6 corta la columna `Secuencia` cada 40 caracteres en vez de
+estirar la tabla a lo ancho (un péptido HIV Env candidato puede medir 70+
+aa); el tramo que matchea el epítopo bnAb se resalta en amarillo. Los
+nombres de anticuerpo/dominio se acortan semánticamente (nunca una palabra
+cortada a la mitad) y se limpia cualquier markup HTML crudo que traiga el
+dato original de LANL (p. ej. `<sub>`).
+
+La Fase 8 (chequeo del constructo) solo muestra score/veredicto/resumen
+por motor, sin repetir la secuencia completa del constructo (ya visible en
+la tabla de Fase 7).
 
 ### Archivos generados en `fasta_outputs/`
 
@@ -943,7 +960,7 @@ completo) con las columnas de los 4 motores combinadas: `algpred_score`/
 
 ## Tests
 
-La suite de tests (`tests/`, `pytest`, 201 tests) cubre la lógica pura de
+La suite de tests (`tests/`, `pytest`, 219 tests) cubre la lógica pura de
 cada fase — enrutamiento de input (FASTA vs. estructura), extracción de
 estructura (residuos modificados, selección de cadena), unión anotada de N
 motores en Fase 3, selección de task/E-value en Fase 4, parseo del `.xls` de
@@ -974,5 +991,5 @@ Estos tests unitarios validan la lógica de cada motor de forma aislada, no
 que el pipeline completo funcione de punta a punta con los binarios/venvs
 reales instalados — para eso, correr `pipeline.py` contra un input real (ver
 "Uso" arriba) sigue siendo necesario. `STATUS.md` documenta la última
-validación end-to-end real (corrida completa de las 10 fases contra
+validación end-to-end real (corrida completa de las 11 fases contra
 `fasta_inputs/GP120.fasta`, un HIV-1 Env real).

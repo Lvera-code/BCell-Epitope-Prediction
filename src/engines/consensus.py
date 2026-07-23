@@ -52,13 +52,8 @@ aritmetica: si algun motor reporta coordenadas mas alla de la longitud de la
 secuencia derivada (senal de que ese motor parseo un subconjunto de residuos
 distinto al que uso ``structure_parser``, p. ej. por una regla de backbone
 incompleto distinta), se loggea un WARNING explicito en vez de fallar en
-silencio o fabricar una traduccion no verificada. CONFIRMADO empiricamente
-(2026-07-20, PDB real 7c4s vs. instalacion real de DiscoTope-3.0/ScanNet): la
-numeracion de ambos motores coincidio exactamente con ``fasta_position`` en
-las 282 posiciones de la cadena de prueba, sin disparar ningun warning de
-este chequeo. Sigue siendo una unica estructura de ejemplo -- si una
-estructura distinta dispara este warning, este es el punto exacto del codigo
-a revisar.
+silencio o fabricar una traduccion no verificada. Si una estructura dispara
+este warning, este es el punto exacto del codigo a revisar.
 """
 
 from typing import Dict, List, Optional, Sequence

@@ -4,24 +4,22 @@ Wrapper 100% local sobre ``signalp6`` (DTU Health Tech, licencia academica,
 descarga manual obligatoria -- mismo patron que BepiPred-3.0/NetMHCIIpan-4.3/
 NetMHCpan-4.2), mismo criterio de subprocess que el resto de motores.
 
-Proposito en Fase 8 (verificar con el usuario si difiere, ver STATUS.md):
-confirmar que el constructo multi-epitopo final ensamblado NO tenga un
-peptido senal predicho en su extremo N-terminal. Un constructo de fusion
-sintetico pensado para expresion recombinante estandar no deberia tener
-uno -- si SignalP predice uno, es señal de que la union de fragmentos (o el
-propio primer epitopo B-cell) genero por accidente un motivo con esa forma,
-y vale la pena revisarlo antes de dar el constructo por valido. Es
-puramente informativo aqui, no un filtro automatico.
+Proposito en Fase 8: confirmar que el constructo multi-epitopo final
+ensamblado NO tenga un peptido senal predicho en su extremo N-terminal. Un
+constructo de fusion sintetico pensado para expresion recombinante estandar
+no deberia tener uno -- si SignalP predice uno, es señal de que la union de
+fragmentos (o el propio primer epitopo B-cell) genero por accidente un
+motivo con esa forma, y vale la pena revisarlo antes de dar el constructo
+por valido. Es puramente informativo aqui, no un filtro automatico.
 
-Modo ``slow-sequential`` (el que el usuario ya tenia descargado, ~9.2GB de
-pesos): corre el modelo completo (no la aproximacion rapida) de forma
-secuencial en vez de en paralelo, mismo footprint de RAM que el modo
-``fast`` pero ~6x mas lento -- pensado para maquinas sin GPU con RAM
-limitada (el modo ``slow`` en paralelo requiere >14GB libres). Encaja con
-esta maquina (CPU-only, confirmado).
+Modo ``slow-sequential`` (~9.2GB de pesos): corre el modelo completo (no la
+aproximacion rapida) de forma secuencial en vez de en paralelo, mismo
+footprint de RAM que el modo ``fast`` pero ~6x mas lento -- pensado para
+maquinas CPU-only con RAM limitada (el modo ``slow`` en paralelo requiere
+>14GB libres).
 
-Detalle de instalacion verificado empiricamente (no en el README oficial):
-los pesos se referencian por ``--model_dir`` apuntando DIRECTO a la carpeta
+Detalle de instalacion (no documentado en el README oficial de DTU): los
+pesos se referencian por ``--model_dir`` apuntando DIRECTO a la carpeta
 que ya contiene ``sequential_models_signalp6/`` (``Settings.SIGNALP_MODEL_DIR``),
 en vez de copiarlos dentro del paquete instalado (paso "4" del README
 oficial) -- evita duplicar ~9.2GB. Venv con Python 3.10 + ``torch>1.7,<2``
@@ -54,12 +52,12 @@ def _resolve_binary() -> Path:
     if not python_bin.is_file():
         raise EngineExecutionError(
             f"No se encontro el interprete Python del venv de SignalP-6.0 en '{python_bin}'. "
-            "Ver STATUS.md o apunta SIGNALP_PYTHON_BIN a la ubicacion correcta."
+            "Ver README.md (Seccion 15) o apunta SIGNALP_PYTHON_BIN a la ubicacion correcta."
         )
     binary = python_bin.parent / Settings.SIGNALP_BINARY_NAME
     if not binary.is_file():
         raise EngineExecutionError(
-            f"No se encontro el ejecutable '{binary}'. Ver STATUS.md o reinstala SignalP-6.0 "
+            f"No se encontro el ejecutable '{binary}'. Ver README.md (Seccion 15) o reinstala SignalP-6.0 "
             "en el venv de SIGNALP_PYTHON_BIN ('pip install ./signalp-6.0')."
         )
     model_dir = Path(Settings.SIGNALP_MODEL_DIR)
@@ -167,9 +165,7 @@ def print_signalp_report(report_df: pd.DataFrame) -> None:
         print("No hay secuencias candidatas para evaluar peptido senal.")
         return
 
-    seq_width = max(30, report_df["sequence"].str.len().max() + 2)
     columns = [
-        Column("Secuencia", lambda r: r.sequence, seq_width, "<"),
         Column("Prediccion", lambda r: r.signalp_prediction, 16, ">"),
         Column("Prob(OTHER)", lambda r: f"{r.signalp_prob_other:.4f}", 12, ">"),
         # prefix="  ": 'CS pos: 24-25. Pr: 0.9771' (texto crudo de SignalP)

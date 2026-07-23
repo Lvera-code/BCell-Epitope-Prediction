@@ -12,6 +12,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import pandas as pd
 
 from src.utils.logger_config import setup_logger
+from src.utils.table_format import Column, print_fixed_width_table
 
 logger = setup_logger(__name__)
 
@@ -171,16 +172,26 @@ def build_sequence_lookup(
 
 
 def print_epitope_table(epitopes_df: pd.DataFrame, empty_message: str) -> None:
-    """Imprime una tabla de regiones de epitopo en consola."""
+    """Imprime una tabla de regiones de epitopo en consola.
+
+    Con ``group_by``: cada vez que cambia el accession se imprime una linea
+    separadora antes de esa fila, mismo patron que Fase 3/3b para que un FASTA
+    multi-registro (p. ej. clados VIH) se lea como bloques por proteina en vez
+    de una lista continua.
+    """
     if epitopes_df.empty:
         print(empty_message)
         return
 
-    header = f"{'accession':<28}{'start':>7}{'end':>7}{'len':>6}{'mean':>8}{'max':>8}  sequence"
-    print(header)
-    print("-" * len(header))
-    for row in epitopes_df.itertuples(index=False):
-        print(
-            f"{row.accession:<28}{row.start:>7}{row.end:>7}{row.length:>6}"
-            f"{row.mean_score:>8.4f}{row.max_score:>8.4f}  {row.sequence}"
-        )
+    columns = [
+        Column("accession", lambda r: r.accession, 28, "<"),
+        Column("start", lambda r: str(r.start), 7, ">"),
+        Column("end", lambda r: str(r.end), 7, ">"),
+        Column("len", lambda r: str(r.length), 6, ">"),
+        Column("mean", lambda r: f"{r.mean_score:.4f}", 8, ">"),
+        Column("max", lambda r: f"{r.max_score:.4f}", 8, ">"),
+        Column("sequence", lambda r: r.sequence, 0, "<", prefix="  "),
+    ]
+    print_fixed_width_table(
+        epitopes_df.itertuples(index=False), columns, group_by=lambda r: r.accession
+    )

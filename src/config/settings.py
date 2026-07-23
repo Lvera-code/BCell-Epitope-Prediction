@@ -9,6 +9,17 @@ import os
 import sys
 from pathlib import Path
 
+# Raiz del repositorio (3 niveles arriba de este archivo: src/config/settings.py).
+# Usado para que los defaults de rutas DENTRO de este repo sean absolutos sin
+# hardcodear la maquina: varios motores invocan subprocess con 'cwd' distinto
+# del cwd de pipeline.py (p. ej. la carpeta del script externo), y en ese caso
+# un default relativo se resolveria mal (confirmado empiricamente con
+# STACKGLYEMBED_PYTHON_BIN -- ver ADR en stackglyembed_engine.py). Nunca se usa
+# para las herramientas que viven en repos hermanos (fuera de este arbol): esas
+# siguen con default absoluto explicito, ver cada 'Settings.*_PYTHON_BIN'
+# correspondiente.
+_REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+
 
 def _env_str(key: str, default: str) -> str:
     return os.environ.get(key, default)
@@ -45,12 +56,10 @@ class Settings:
     """Punto unico de verdad para toda configuracion del pipeline."""
 
     # --- Fase 2: Prediccion de Antigenicidad (BepiPred-3.0, ejecucion LOCAL) ---
-    # Pivote de arquitectura (2026-07-10): se abandono definitivamente la
-    # estrategia via BioLib (API/nube) por la latencia e imprevisibilidad de
-    # los cold-start de los contenedores ESM-2 bajo carga publica (ver
-    # historial de src/engines/bepipred_engine.py). BepiPred-3.0 ahora corre
-    # 100% en local via subprocess contra el codigo fuente oficial descargado
-    # manualmente (licencia academica DTU Health Tech).
+    # BepiPred-3.0 corre 100% en local via subprocess contra el codigo fuente
+    # oficial descargado manualmente (licencia academica DTU Health Tech), no
+    # via BioLib (API/nube): la latencia e imprevisibilidad de los cold-start
+    # de los contenedores ESM-2 bajo carga publica lo hacen inviable.
     #
     # Ninguna ruta se hardcodea: todo se resuelve desde variables de entorno,
     # con defaults que asumen el paquete descomprimido en la raiz del
@@ -218,22 +227,21 @@ class Settings:
     # 'jertubiana/scannet'), pensado para evitar tener que resolver ese stack
     # antiguo a mano.
     #
-    # AMBOS runtimes fueron instalados y validados empiricamente (2026-07-20,
-    # ver ADR en scannet_engine.py): 'docker pull jertubiana/scannet' +
-    # 'docker inspect' confirmaron WORKDIR=/ScanNet (el default de
-    # SCANNET_DOCKER_WORKDIR, sin ajuste necesario) y una corrida real dio
-    # resultados identicos byte a byte al runtime 'venv' sobre el mismo PDB.
+    # Ambos runtimes estan validados (ver ADR en scannet_engine.py):
+    # 'docker pull jertubiana/scannet' + 'docker inspect' confirman
+    # WORKDIR=/ScanNet (el default de SCANNET_DOCKER_WORKDIR, sin ajuste
+    # necesario) y ambos runtimes dan resultados identicos byte a byte sobre
+    # el mismo PDB.
     SCANNET_RUNTIME: str = _env_str("SCANNET_RUNTIME", "docker")  # 'docker' | 'venv'
     SCANNET_INSTALL_PATH: Path = Path(_env_str("SCANNET_INSTALL_PATH", "ScanNet"))
-    # NOTA (confirmado al instalar/validar realmente el runtime 'venv'): pese
-    # al nombre de la variable, en la practica NINGUN sistema moderno trae ya
-    # un interprete Python 3.6.12 instalado (requisito exacto de ScanNet) del
-    # que un simple 'python3 -m venv' pueda partir. Lo que si funciona de
-    # forma reproducible es crear el entorno con conda, que SI distribuye
-    # builds de Python 3.6.12: 'conda create -n scannet_env python=3.6.12'
-    # seguido de 'pip install -r ScanNet/requirements.txt' dentro de ese
-    # entorno. SCANNET_PYTHON_BIN admite cualquier interprete (venv o conda);
-    # el default de abajo asume conda por ser la ruta que de verdad funciono.
+    # NOTA: pese al nombre de la variable, en la practica NINGUN sistema
+    # moderno trae ya un interprete Python 3.6.12 instalado (requisito exacto
+    # de ScanNet) del que un simple 'python3 -m venv' pueda partir. Lo que si
+    # funciona de forma reproducible es crear el entorno con conda, que SI
+    # distribuye builds de Python 3.6.12: 'conda create -n scannet_env
+    # python=3.6.12' seguido de 'pip install -r ScanNet/requirements.txt'
+    # dentro de ese entorno. SCANNET_PYTHON_BIN admite cualquier interprete
+    # (venv o conda); el default de abajo asume conda.
     SCANNET_PYTHON_BIN: str = _env_str(
         "SCANNET_PYTHON_BIN", str(Path.home() / "miniconda3" / "envs" / "scannet_env" / "bin" / "python")
     )
@@ -246,10 +254,10 @@ class Settings:
     # site probability' (columna cruda del CSV oficial, escala 0.00-1.00 por
     # residuo, salida sigmoide del modelo).
     #
-    # INVESTIGADO A FONDO (2026-07-20): a diferencia de DiscoTope-3.0 (que SI
-    # publica un umbral oficial via 'calibrated_score', ver
-    # DISCOTOPE_THRESHOLD), los autores de ScanNet NO publican un punto de
-    # corte fijo para el modelo de epitopos (revisado el paper, el repo
+    # A diferencia de DiscoTope-3.0 (que SI publica un umbral oficial via
+    # 'calibrated_score', ver DISCOTOPE_THRESHOLD), los autores de ScanNet
+    # NO publican un punto de corte fijo para el modelo de epitopos
+    # (revisado el paper, el repo
     # completo y su propio 'utilities/chimera.py': los unicos numeros que
     # usan son un gradiente de 8 colores para visualizacion, 0.05-1.00, no un
     # umbral de clasificacion). Tiene sentido: el score bruto de ScanNet varia
@@ -285,8 +293,7 @@ class Settings:
     # blast_engine.py), igual que la validacion de instalacion de BepiPred.
     BLAST_HUMAN_DB: str = _env_str("BLAST_HUMAN_DB", "reference_db/human_proteome_db")
     BLAST_IDENTITY_THRESHOLD: float = _env_float("BLAST_IDENTITY_THRESHOLD", 75.0)
-    # CONFIRMADO EMPIRICAMENTE (2026-07-20, PDBs reales 1fv2/7c4s/7lkh via
-    # DiscoTope-3.0/ScanNet): 'max_pident' original tomaba el %identidad
+    # 'max_pident' original tomaba el %identidad
     # maximo de CUALQUIER hit de BLAST, sin considerar cuanto del peptido
     # realmente cubria ese alineamiento. Con 'blastp-short' + evalue=50 (laxo
     # a proposito, ver BLAST_EVALUE_SHORT), un fragmento de 5-6 aa 100%
@@ -344,8 +351,8 @@ class Settings:
     NETMHCIIPAN_MIN_PROMISCUOUS_ALLELES: int = _env_int("NETMHCIIPAN_MIN_PROMISCUOUS_ALLELES", 3)
 
     # --- Inmunogenicidad T-citotoxica (MHC-I, NetMHCpan-4.2 LOCAL) ---
-    # ADR de 2026-07-12 (descartar MHC-I) REVERTIDO 2026-07-21: ver docstring
-    # de netmhciipan_engine.py. Mismo patron 100% local por subprocess que el
+    # ADR (descartar MHC-I, luego revertido): ver docstring de
+    # netmhciipan_engine.py. Mismo patron 100% local por subprocess que el
     # resto de motores; NUNCA se hardcodea la ruta.
     NETMHCPAN_HOME: Path = Path(_env_str("NETMHCPAN_HOME", "netMHCpan-4.2"))
     NETMHCPAN_BINARY_NAME: str = _env_str("NETMHCPAN_BINARY_NAME", "netMHCpan")
@@ -408,7 +415,7 @@ class Settings:
     # unica vez como paso de SETUP.
     STACKGLYEMBED_PYTHON_BIN: str = _env_str(
         "STACKGLYEMBED_PYTHON_BIN",
-        "/home/enzo/DiffSBDD/B-Cell-Epitope-Prediction/StackGlyEmbed/.venv-stackglyembed/bin/python",
+        str(_REPO_ROOT / "StackGlyEmbed" / ".venv-stackglyembed" / "bin" / "python"),
     )
     # A diferencia de los demas motores, el script NO vive dentro del clon
     # externo ('StackGlyEmbed/', ignorado por git): es codigo propio, ver
@@ -422,7 +429,7 @@ class Settings:
     # clasificador ya entrenado (power_transformer_*.sav, base_layer_pickle_files/).
     STACKGLYEMBED_MODELS_DIR: str = _env_str(
         "STACKGLYEMBED_MODELS_DIR",
-        "/home/enzo/DiffSBDD/B-Cell-Epitope-Prediction/StackGlyEmbed/prediction",
+        str(_REPO_ROOT / "StackGlyEmbed" / "prediction"),
     )
     STACKGLYEMBED_T5_MODEL_PATH: str = _env_str(
         "STACKGLYEMBED_T5_MODEL_PATH",
@@ -445,8 +452,7 @@ class Settings:
     # accesibles a anticuerpos en la proteína madura/anclada a membrana (o,
     # en el caso del péptido señal, se escinden y no forman parte de la
     # proteína madura), asi que proponerlos como epitopo B-cell no tiene
-    # sentido biologico. Resuelve el item de scoping de Carlos marcado como
-    # "posiblemente ya existente" (ver STATUS.md).
+    # sentido biologico.
     #
     # Pesos ProtT5-XL-U50 (~2.4 GB) NO se descargan en tiempo de ejecucion
     # (politica local-only/no-scraping del proyecto): ya estan cacheados en
@@ -487,19 +493,19 @@ class Settings:
     # No requiere venv aparte: pandas ya esta en el entorno que corre pipeline.py.
     LANL_AB_ALL_PATH: str = _env_str(
         "LANL_AB_ALL_PATH",
-        "/home/enzo/DiffSBDD/B-Cell-Epitope-Prediction/reference_db/lanl_immunology/ab_all.csv",
+        str(_REPO_ROOT / "reference_db" / "lanl_immunology" / "ab_all.csv"),
     )
     CATNAP_ABS_PATH: str = _env_str(
         "CATNAP_ABS_PATH",
-        "/home/enzo/DiffSBDD/B-Cell-Epitope-Prediction/reference_db/catnap/abs_2026-07-01.txt",
+        str(_REPO_ROOT / "reference_db" / "catnap" / "abs_2026-07-01.txt"),
     )
     LANL_CATNAP_MIN_OVERLAP: int = _env_int("LANL_CATNAP_MIN_OVERLAP", 6)
 
     # --- Fase 7: ensamblaje automatico del constructo multi-epitopo ---
-    # Decision del usuario (2026-07-22): top-N fijo por clase, no expuesto
-    # como flag de CLI (a diferencia de otros umbrales de este proyecto).
-    # Ver docstring de 'construct_assembly.py' para el criterio de ranking
-    # exacto por clase y las fuentes de literatura de cada linker.
+    # Top-N fijo por clase, no expuesto como flag de CLI (a diferencia de
+    # otros umbrales de este proyecto). Ver docstring de
+    # 'construct_assembly.py' para el criterio de ranking exacto por clase y
+    # las fuentes de literatura de cada linker.
     CONSTRUCT_TOP_N_PER_CLASS: int = _env_int("CONSTRUCT_TOP_N_PER_CLASS", 3)
     CONSTRUCT_LINKER_BCELL: str = _env_str("CONSTRUCT_LINKER_BCELL", "KK")
     CONSTRUCT_LINKER_HTL: str = _env_str("CONSTRUCT_LINKER_HTL", "GPGPG")
@@ -507,7 +513,7 @@ class Settings:
     CONSTRUCT_LINKER_INTERBLOQUE: str = _env_str("CONSTRUCT_LINKER_INTERBLOQUE", "GPGPG")
     # Linker rigido EAAAK (Arai et al. 2001), usado SOLO si se pasa un
     # adjuvante via el parametro opcional de 'assemble_construct' -- ningun
-    # adjuvante se elige por defecto en esta sesion (ver docstring del modulo).
+    # adjuvante se elige por defecto (ver docstring del modulo).
     CONSTRUCT_LINKER_ADJUVANTE: str = _env_str("CONSTRUCT_LINKER_ADJUVANTE", "EAAAK")
 
     # --- Fase 8a: Toxicidad del constructo (ToxinPred2 LOCAL) ---
@@ -521,7 +527,7 @@ class Settings:
     # rompe contra el pandas 1.5.3 needed).
     TOXINPRED2_PYTHON_BIN: str = _env_str(
         "TOXINPRED2_PYTHON_BIN",
-        "/home/enzo/DiffSBDD/B-Cell-Epitope-Prediction/.venv-toxinpred2/bin/python",
+        str(_REPO_ROOT / ".venv-toxinpred2" / "bin" / "python"),
     )
     TOXINPRED2_BINARY_NAME: str = _env_str("TOXINPRED2_BINARY_NAME", "toxinpred2")
     TOXINPRED2_THRESHOLD: float = _env_float("TOXINPRED2_THRESHOLD", 0.6)
@@ -535,9 +541,9 @@ class Settings:
     # Fase 2) -- exactamente lo que hace falta a nivel de constructo.
     IAPRED_PYTHON_BIN: str = _env_str(
         "IAPRED_PYTHON_BIN",
-        "/home/enzo/DiffSBDD/B-Cell-Epitope-Prediction/IApred/.venv-iapred/bin/python",
+        str(_REPO_ROOT / "IApred" / ".venv-iapred" / "bin" / "python"),
     )
-    IAPRED_HOME: str = _env_str("IAPRED_HOME", "/home/enzo/DiffSBDD/B-Cell-Epitope-Prediction/IApred")
+    IAPRED_HOME: str = _env_str("IAPRED_HOME", str(_REPO_ROOT / "IApred"))
     IAPRED_SCRIPT_NAME: str = _env_str("IAPRED_SCRIPT_NAME", "IApred.py")
     IAPRED_TIMEOUT_SECONDS: int = _env_int("IAPRED_TIMEOUT_SECONDS", 300)
 
@@ -555,12 +561,10 @@ class Settings:
     # a 'signalp-6.0/models/', sin duplicarlos dentro del venv.
     SIGNALP_PYTHON_BIN: str = _env_str(
         "SIGNALP_PYTHON_BIN",
-        "/home/enzo/DiffSBDD/B-Cell-Epitope-Prediction/.venv-signalp/bin/python",
+        str(_REPO_ROOT / ".venv-signalp" / "bin" / "python"),
     )
     SIGNALP_BINARY_NAME: str = _env_str("SIGNALP_BINARY_NAME", "signalp6")
-    SIGNALP_MODEL_DIR: str = _env_str(
-        "SIGNALP_MODEL_DIR", "/home/enzo/DiffSBDD/B-Cell-Epitope-Prediction/signalp-6.0/models"
-    )
+    SIGNALP_MODEL_DIR: str = _env_str("SIGNALP_MODEL_DIR", str(_REPO_ROOT / "signalp-6.0" / "models"))
     SIGNALP_ORGANISM: str = _env_str("SIGNALP_ORGANISM", "other")
     SIGNALP_TIMEOUT_SECONDS: int = _env_int("SIGNALP_TIMEOUT_SECONDS", 300)
 

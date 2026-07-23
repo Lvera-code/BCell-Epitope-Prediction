@@ -252,8 +252,8 @@ def test_traceback_camino2_sin_columnas_de_motores_de_secuencia():
 
 
 def test_dedup_fusiona_solo_si_core_y_promiscuidad_coinciden_exacto():
-    # Replica el ejemplo real acordado con el usuario (AGR38513.1, 66-83):
-    # filas 1 y 2 comparten core pero distinta promiscuidad -> NO se fusionan.
+    # Replica un caso real (AGR38513.1, 66-83): filas 1 y 2 comparten core
+    # pero distinta promiscuidad -> NO se fusionan.
     # filas 3 y 4 comparten core Y promiscuidad -> se fusionan, gana el de menor %Rank.
     parent = _parent_df("AGR38513.1", 66, "NEAAITDSAVAVAAASST")
     report = pd.DataFrame(
@@ -326,7 +326,7 @@ def test_validate_allele_extra_formatos_invalidos(value):
 
 
 def test_max_peptide_mode_length_sigue_bajo_el_margen_de_crash_conocido():
-    # Ver netmhciipan_engine.py: crash confirmado empiricamente en 56 aa con el
-    # panel de 27 alelos de IEDB_REFERENCE_PANEL. Este test documenta el supuesto
+    # Ver netmhciipan_engine.py: el binario crashea en 56 aa con el panel de
+    # 27 alelos de IEDB_REFERENCE_PANEL. Este test documenta el supuesto
     # como regresion: si alguien baja el margen por error, se entera aqui.
     assert _MAX_PEPTIDE_MODE_LENGTH < 56

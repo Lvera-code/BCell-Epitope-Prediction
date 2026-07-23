@@ -6,10 +6,8 @@ ignorado por git, ver ``.gitignore``) para uso desde
 ``src/engines/stackglyembed_engine.py``. Este script vive en el arbol
 versionado del proyecto (NO dentro del clon ignorado) porque es codigo
 propio, no parte del repo original: ``StackGlyEmbed/`` tiene su propio
-``.git`` (es un repo anidado, igual que los demas ``scipion-chem-*``
-hermanos), y git no permite "des-ignorar" un archivo dentro de un repo
-anidado con ningun patron de ``.gitignore`` -- se descubrio este limite al
-intentar trackearlo ahi, ver commit que introduce este archivo. Los
+``.git`` (es un repo anidado), y git no permite "des-ignorar" un archivo
+dentro de un repo anidado con ningun patron de ``.gitignore``. Los
 pickles del clasificador (``power_transformer_*.sav``,
 ``base_layer_pickle_files/``) SI viven dentro del clon ignorado y se
 referencian por ``--models-dir`` (nunca hardcodeados).
@@ -36,7 +34,7 @@ Cambios respecto al original:
 
 3. **ProteinBERT sin cambios de fondo**: ``load_pretrained_model()`` ya es
    offline-segura una vez que ``~/proteinbert_models/default.pkl`` existe (se
-   descargo una unica vez como paso de SETUP, ver STATUS.md) -- solo se le
+   descarga una unica vez como paso de instalacion) -- solo se le
    pasa ``download_model_dump_if_not_exists=False`` aqui para que *falle* con
    un error claro en vez de intentar red si por alguna razon el dump no
    esta, en lugar de descargar silenciosamente en medio de una corrida del

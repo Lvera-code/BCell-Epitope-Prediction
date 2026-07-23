@@ -193,8 +193,8 @@ def test_camino3_con_residuo_no_mapeable_excluye_bepipred_epidope(tmp_path, mock
 
 
 def test_desfase_de_filas_de_motor_estructural_se_loguea(tmp_path, monkeypatch, caplog):
-    # Reproduce el hallazgo real (2026-07-20, PDB sintetico con residuo no
-    # mapeable): DiscoTope-3.0 descarto en silencio 1 de 3 residuos (2 filas
+    # Reproduce un caso real (PDB sintetico con residuo no mapeable):
+    # DiscoTope-3.0 descarto en silencio 1 de 3 residuos (2 filas
     # de salida en vez de 3). _cached_structural_raw_scores debe detectar
     # ese desfase apenas recibe los scores crudos, sin depender de que se
     # llegue a extraer una region de epitopo.
@@ -231,7 +231,7 @@ def test_desfase_de_filas_de_motor_estructural_se_loguea(tmp_path, monkeypatch, 
 
 
 def test_cache_se_invalida_cuando_cambia_el_contenido_del_input(tmp_path, monkeypatch):
-    # Regresion real (2026-07-20, 6xc2.pdb corrido primero con estrategia
+    # Regresion real (un PDB multi-cadena corrido primero con estrategia
     # 'longest' -pica el Fab del anticuerpo- y despues con 'explicit' -pica
     # el antigeno real-): el cache anterior (keyed solo por input_stem, sin
     # mirar el contenido real del FASTA/PDB) se reusaba en silencio pese a

@@ -90,16 +90,15 @@ def sanitize_sequence(raw_sequence: str) -> Tuple[str, List[str]]:
     (ambiguedades IUPAC como X/B/Z/J, selenocisteina U, pirrolisina O, gaps
     '-', stops '*', digitos, etc.): borrarlos desplaza la numeracion de
     posicion y fusiona residuos que en la proteina real no son vecinos,
-    pudiendo fabricar un "epitopo" quimerico en la costura (confirmado
-    empiricamente con GPX1_HUMAN real, selenoproteina con 'U' en su secuencia
-    canonica de UniProt: la version anterior de este saneamiento borraba la
-    'U' y esa costura fabricada fue marcada como epitopo). Sustituirlos por
-    un marcador tampoco es viable: BepiPred-3.0 rechaza en bloque (exit code
-    1) cualquier caracter fuera de los 20 aminoacidos estandar, incluida 'X'
-    (confirmado empiricamente). La unica opcion robusta es rechazar el
-    registro por completo (ver :func:`load_and_sanitize`) y que sea el
-    investigador quien decida como resolver ese residuo antes de correr el
-    pipeline.
+    pudiendo fabricar un "epitopo" quimerico en la costura (caso real:
+    GPX1_HUMAN, selenoproteina con 'U' en su secuencia canonica de UniProt --
+    borrar la 'U' fusiona los dos fragmentos vecinos y esa costura fabricada
+    puede marcarse como epitopo). Sustituirlos por un marcador tampoco es
+    viable: BepiPred-3.0 rechaza en bloque (exit code 1) cualquier caracter
+    fuera de los 20 aminoacidos estandar, incluida 'X'. La unica opcion
+    robusta es rechazar el registro por completo (ver
+    :func:`load_and_sanitize`) y que sea el investigador quien decida como
+    resolver ese residuo antes de correr el pipeline.
 
     Args:
         raw_sequence: Secuencia de aminoacidos sin procesar.
@@ -118,10 +117,9 @@ def is_bepipred_compatible(sequence: str) -> Tuple[bool, List[str]]:
     """Indica si ``sequence`` puede enviarse a BepiPred-3.0/EpiDope sin ser rechazada.
 
     Reutiliza el mismo alfabeto canonico que ``load_and_sanitize`` (nunca se
-    relaja: confirmado empiricamente -reintentado el 2026-07-20 contra la
-    instalacion local real- que BepiPred-3.0 sigue rechazando en bloque,
-    exit code 1, cualquier caracter fuera de los 20 aminoacidos estandar,
-    incluida 'X'). Pensada para el Camino 3 (PDB -> FASTA derivado, ver
+    relaja: BepiPred-3.0 rechaza en bloque, exit code 1, cualquier caracter
+    fuera de los 20 aminoacidos estandar, incluida 'X'). Pensada para el
+    Camino 3 (PDB -> FASTA derivado, ver
     ``src.utils.structure_parser``): a diferencia de un FASTA subido por el
     usuario (Camino 1, donde un residuo no canonico sigue siendo fatal via
     ``load_and_sanitize``), un residuo no mapeable en la extraccion ATMSEQ de
@@ -157,8 +155,8 @@ def load_and_sanitize(path: Path) -> List[FastaRecord]:
             esa agrupacion las fusiona en una cadena unica y una ventana de
             epitopo puede caer exactamente sobre la costura entre ambas,
             fabricando un peptido quimerico que no existe en ninguna de las
-            dos proteinas reales (confirmado empiricamente). Se detecta y se
-            detiene aqui, antes de que el resto del pipeline corra.
+            dos proteinas reales. Se detecta y se detiene aqui, antes de que
+            el resto del pipeline corra.
         InvalidSequenceError: Si NINGUN registro tiene secuencia (fatal a
             nivel de archivo). El descarte de registros individuales
             genuinamente vacios solo se loggea como warning y no detiene el
@@ -193,7 +191,7 @@ def load_and_sanitize(path: Path) -> List[FastaRecord]:
                 "de pathlib (bepipred3.py::get_esm2_represention_on_accs_seqs), asi que "
                 "cualquier '/' en el accession crea un subdirectorio inesperado que "
                 "nunca se crea con mkdir y hace fallar el subproceso con "
-                "'Parent directory ... does not exist' (confirmado empiricamente).",
+                "'Parent directory ... does not exist'.",
                 accession, path.name, sane_accession,
             )
             accession = sane_accession

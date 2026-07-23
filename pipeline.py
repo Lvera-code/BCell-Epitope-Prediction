@@ -8,7 +8,6 @@ archivo (``src.utils.input_router``) y, para input de estructura, segun
 
     Camino 1 (input FASTA):
         Fase 1 (saneamiento) -> Fase 2 con BepiPred-3.0 + EpiDope.
-        Comportamiento identico al pipeline original, sin cambios.
     Camino 2 (input PDB/mmCIF, PDB_PROCESSING_MODE='structure_only'):
         Fase 1.5 (extraccion de estructura) -> Fase 2 con DiscoTope-3.0 +
         ScanNet UNICAMENTE. BepiPred-3.0/EpiDope nunca se invocan.
@@ -18,9 +17,9 @@ archivo (``src.utils.input_router``) y, para input de estructura, segun
         si contiene residuos no canonicos (ver ``is_bepipred_compatible``):
         en ese caso se omiten solo esos dos motores para esta corrida (con
         aviso claro), sin frenar los motores estructurales ni el resto del
-        pipeline (confirmado empiricamente que BepiPred-3.0 rechaza en
-        bloque, exit code 1, cualquier caracter fuera de los 20 aminoacidos
-        estandar -ver ``src.utils.fasta_parser``-).
+        pipeline (BepiPred-3.0 rechaza en bloque, exit code 1, cualquier
+        caracter fuera de los 20 aminoacidos estandar -ver
+        ``src.utils.fasta_parser``-).
 
 A partir de Fase 2, el resto del flujo es identico para los 3 caminos:
 
@@ -165,7 +164,10 @@ from src.engines.scannet_engine import extract_epitopes as extract_scannet_epito
 from src.engines.scannet_engine import print_epitope_table as print_scannet_epitope_table
 from src.engines.signalp_engine import predict_signal_peptide, print_signalp_report
 from src.engines.stackglyembed_engine import predict_nglycosylation, print_glycosylation_report
-from src.engines.tmbed_engine import filter_overlapping_regions, predict_tm_signal_regions, print_tmbed_regions_report
+from src.engines.tmbed_engine import (
+    filter_overlapping_regions, predict_tm_signal_regions,
+    print_discarded_regions_report, print_tmbed_regions_report,
+)
 from src.engines.toxinpred_engine import predict_toxicity, print_toxicity_report
 from src.utils.exceptions import PipelineError
 from src.utils.fasta_parser import FastaRecord, is_bepipred_compatible, load_and_sanitize, write_fasta
@@ -411,11 +413,11 @@ def _phase_input_hash(*parts) -> str:
 def _load_phase_checkpoint(engine_name: str, cache_path: Path, input_hash: str) -> Optional[pd.DataFrame]:
     """Carga ``cache_path`` si su sidecar de hash coincide con ``input_hash`` (cache-hit); ``None`` si no.
 
-    Motivado por el OOM que origino ``STATUS.md``: sin esto, un crash a mitad
-    de una corrida larga (p. ej. durante Fase 5b/NetMHCpan, tras ya haber
-    corrido BLAST/AlgPred2/StackGlyEmbed/NetMHCIIpan) obligaba a repetir TODO
-    desde cero. Con este checkpoint por fase, reiniciar la misma corrida
-    (mismo input, mismos parametros) salta directo a la fase que fallo.
+    Sin esto, un crash a mitad de una corrida larga (p. ej. un OOM durante
+    Fase 5b/NetMHCpan, tras ya haber corrido BLAST/AlgPred2/StackGlyEmbed/
+    NetMHCIIpan) obligaria a repetir TODO desde cero. Con este checkpoint por
+    fase, reiniciar la misma corrida (mismo input, mismos parametros) salta
+    directo a la fase que fallo.
     """
     hash_path = _hash_sidecar_path(cache_path)
     if cache_path.is_file() and hash_path.is_file() and hash_path.read_text().strip() == input_hash:
@@ -458,14 +460,13 @@ def _cached_raw_scores(
 
     El cache se invalida por CONTENIDO, no solo por nombre de archivo:
     ``cache_path`` va acompañado de un sidecar ``{cache_path}.inputhash`` con
-    el hash del ``clean_fasta`` que lo genero. CONFIRMADO EMPIRICAMENTE
-    (2026-07-20): sin esto, dos corridas del MISMO input_stem con un
-    ``clean_fasta``/cadena distinta (p. ej. 6xc2.pdb corrido una vez con
-    ``PDB_CHAIN_SELECTION_STRATEGY=longest`` -pica la cadena del Fab- y otra
-    con ``explicit``/cadena A -el antigeno real-) reusaba en silencio el CSV
-    crudo de la corrida anterior, mezclando datos de una cadena con los de
-    otra sin ningun aviso. Si el hash no coincide (input cambio) o falta el
-    sidecar (cache de una version anterior sin este mecanismo), se trata como
+    el hash del ``clean_fasta`` que lo genero. Sin esto, dos corridas del
+    MISMO input_stem con un ``clean_fasta``/cadena distinta (p. ej. un PDB
+    multi-cadena corrido una vez con ``PDB_CHAIN_SELECTION_STRATEGY=longest``
+    y otra con ``explicit``/otra cadena) reusarian en silencio el CSV crudo
+    de la corrida anterior, mezclando datos de una cadena con los de otra sin
+    ningun aviso. Si el hash no coincide (input cambio) o falta el sidecar
+    (cache de una version anterior sin este mecanismo), se trata como
     cache-miss y se re-ejecuta.
     """
     current_hash = _content_hash(clean_fasta)
@@ -506,13 +507,12 @@ def _cached_structural_raw_scores(
     ``Path(pdb_path).stem`` tal cual, sin ningun ajuste de negocio propio.
 
     Tambien verifica que el motor haya devuelto una fila por cada residuo de
-    ``structure_record.sequence`` (ATMSEQ). CONFIRMADO EMPIRICAMENTE
-    (2026-07-20, PDB sintetico con un residuo no mapeable al CCD): a
-    diferencia de nuestro propio ``structure_parser`` -que conserva CADA
-    residuo del polimero, usando 'X' cuando no puede resolver una letra-,
-    DiscoTope-3.0 DESCARTA en silencio los residuos que su propio parser no
-    reconoce (3 residuos de entrada -> 2 filas de salida en ese caso). El
-    chequeo de limites de ``consensus._warn_if_out_of_bounds`` NO detecta
+    ``structure_record.sequence`` (ATMSEQ): a diferencia de nuestro propio
+    ``structure_parser`` -que conserva CADA residuo del polimero, usando 'X'
+    cuando no puede resolver una letra-, DiscoTope-3.0 descarta en silencio
+    los residuos que su propio parser no reconoce (p. ej. un residuo no
+    mapeable al CCD produce menos filas de salida que residuos de entrada).
+    El chequeo de limites de ``consensus._warn_if_out_of_bounds`` NO detecta
     esto por si solo: solo compara coordenadas de regiones YA extraidas, y si
     la secuencia es corta o el score no llega al umbral en ningun lado, nunca
     se llega a comparar nada. Este chequeo es mas temprano y mas fuerte: se
@@ -751,13 +751,15 @@ def fase_3b_tm_signal_masking(
 
     print_tmbed_regions_report(regions_df)
 
-    masked_df, n_discarded = filter_overlapping_regions(union_df, regions_df)
+    masked_df, discarded_df = filter_overlapping_regions(union_df, regions_df)
+    n_discarded = len(discarded_df.drop_duplicates(["accession", "start", "end"]))
     if n_discarded:
         print(
             f"[AVISO] {n_discarded} region(es) de la union anotada descartada(s) por solaparse con una "
             "helice/tira transmembrana o peptido senal (no accesibles a anticuerpos en la proteina "
             "madura/anclada a membrana)."
         )
+        print_discarded_regions_report(discarded_df)
     else:
         print("Ninguna region de la union anotada se solapa con una region TM/peptido senal detectada.")
 
@@ -921,9 +923,8 @@ def fase_5_th_promiscuidad(
         output_dir: Carpeta donde persistir el reporte final y el .xls crudo.
         input_stem: Nombre del archivo de entrada sin extension, usado como
             prefijo de ``candidatos_finales.csv`` y de los .xls crudos de
-            NetMHCIIpan. CONFIRMADO (2026-07-20): sin este prefijo, corridas
-            sucesivas con inputs distintos pisaban el mismo archivo -- unica
-            salida de todo el pipeline que no llevaba el nombre del input.
+            NetMHCIIpan -- sin este prefijo, corridas sucesivas con inputs
+            distintos pisarian el mismo archivo.
         allele_extra: Alelo(s) HLA-DR/DQ/DP adicionales (formato NetMHCIIpan,
             separados por coma sin espacios) a anexar a
             ``IEDB_REFERENCE_PANEL``. Se admiten sin romper el panel por
@@ -970,10 +971,10 @@ def fase_5b_tc_promiscuidad(safe_df: pd.DataFrame, output_dir: Path, input_stem:
 
     Paso independiente en paralelo a ``fase_5_th_promiscuidad`` (MHC-II), NO
     fusionado con ella: son vias de presentacion antigenica distintas (ver
-    ADR revertido 2026-07-21 en ``src/engines/netmhciipan_engine.py`` y el
-    docstring completo de ``src/engines/netmhcpan_engine.py``). El criterio
-    de veredicto de Fase 5 (T-helper/CD4+) no se toca; esto es una senal
-    adicional, con su propio archivo de salida
+    ADR en ``src/engines/netmhciipan_engine.py`` y el docstring completo de
+    ``src/engines/netmhcpan_engine.py``). El criterio de veredicto de Fase 5
+    (T-helper/CD4+) no se toca; esto es una senal adicional, con su propio
+    archivo de salida
     (``<input_stem>_candidatos_finales_mhc1.csv``) para no mezclar ambas
     tablas.
 
@@ -1005,15 +1006,14 @@ def fase_5b_tc_promiscuidad(safe_df: pd.DataFrame, output_dir: Path, input_stem:
         traceback_df.to_csv(final_path, index=False)
         return traceback_df
 
-    # Bug real encontrado y corregido (2026-07-22, al ampliar
-    # NETMHCPAN_REFERENCE_PANEL de 12 a 23 alelos): a diferencia de Fase 5
-    # (MHC-II, que SI incluye 'allele_panel' en su hash), este checkpoint
-    # solo hasheaba 'safe_df' -- un cambio al panel de alelos en el CODIGO
-    # FUENTE (sin tocar el input) no invalidaba el cache, sirviendo en
-    # silencio un reporte calculado contra un panel viejo. NETMHCPAN_REFERENCE_PANEL
-    # no es configurable por CLI (a diferencia del panel de MHC-II, que
-    # admite '--alelo-extra'), asi que incluir el valor actual de la
-    # constante alcanza para detectar cualquier cambio futuro.
+    # A diferencia de Fase 5 (MHC-II, que SI incluye 'allele_panel' en su
+    # hash), este checkpoint tambien debe incluir el panel de alelos: un
+    # cambio a NETMHCPAN_REFERENCE_PANEL en el CODIGO FUENTE (sin tocar el
+    # input) no invalidaria el cache si solo se hashea 'safe_df', sirviendo
+    # en silencio un reporte calculado contra un panel viejo.
+    # NETMHCPAN_REFERENCE_PANEL no es configurable por CLI (a diferencia del
+    # panel de MHC-II, que admite '--alelo-extra'), asi que incluir el valor
+    # actual de la constante alcanza para detectar cualquier cambio futuro.
     input_hash = _phase_input_hash(safe_df, NETMHCPAN_REFERENCE_PANEL)
     cached = _load_phase_checkpoint("Fase 5b", final_path, input_hash)
     if cached is not None:
@@ -1181,8 +1181,9 @@ def fase_8_chequeo_constructo(construct_sequence: str, output_dir: Path, input_s
 
     A diferencia de Fase 4b/4c (por peptido individual, antes de saber
     siquiera cuales terminan en el constructo), esta fase corre sobre la
-    secuencia COMPLETA del constructo de Fase 7 -- el pedido original de
-    Carlos que Fase 4b no cubria por si sola (ver STATUS.md).
+    secuencia COMPLETA del constructo de Fase 7 -- cubre la evaluacion a
+    nivel de constructo ensamblado que Fase 4b, al ser por-peptido, no puede
+    cubrir por si sola.
 
     4 motores independientes, cada uno informativo (ninguno filtra ni
     aborta el pipeline; el usuario decide que hacer con el resultado):
@@ -1229,13 +1230,13 @@ def fase_8_chequeo_constructo(construct_sequence: str, output_dir: Path, input_s
 
     print("\n-- Alergenicidad (AlgPred2) --")
     algpred_df = predict_allergenicity(sequences, output_dir, filename_prefix=f"{input_stem}_constructo_")
-    print_allergenicity_report(algpred_df)
+    print_allergenicity_report(algpred_df, show_sequence=False)
 
     print("\n-- Toxicidad (ToxinPred2) --")
     toxinpred_df = predict_toxicity(sequences, output_dir, filename_prefix=f"{input_stem}_constructo_")
     print_toxicity_report(toxinpred_df)
 
-    print("\n-- Antigenicidad intrinseca (IApred) --")
+    print("\n-- Antigenicidad (IApred) --")
     iapred_df = predict_intrinsic_antigenicity(sequences, output_dir, filename_prefix=f"{input_stem}_constructo_")
     print_iapred_report(iapred_df)
 

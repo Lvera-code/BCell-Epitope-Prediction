@@ -69,11 +69,10 @@ _RAW_SCORE_COLUMN = "calibrated_score"
 
 # ADR -- por que 'calibrated_score' y no 'DiscoTope-3.0_score'
 # ----------------------------------------------------------------
-# CORREGIDO (2026-07-20): la version original de este motor usaba la columna
-# cruda 'DiscoTope-3.0_score' (0.00-1.00) con un umbral CALIBRADO A MANO
-# contra una unica estructura de ejemplo (7c4s, ver historial de
-# Settings.DISCOTOPE_THRESHOLD) -- una limitacion real, sin respaldo de los
-# autores. 'calibrated_score' es una columna DISTINTA que el propio
+# La columna cruda 'DiscoTope-3.0_score' (0.00-1.00) requeriria un umbral
+# CALIBRADO A MANO contra una estructura de ejemplo (p. ej. 7c4s) -- una
+# limitacion real, sin respaldo de los autores. 'calibrated_score' es una
+# columna DISTINTA que el propio
 # DiscoTope-3.0 ya calcula (normalizada por longitud de cadena y superficie
 # accesible, ver README oficial) y para la que los autores SI publican
 # umbrales de referencia con recall esperado (confirmado via el paper,

@@ -55,10 +55,10 @@ def test_hit_vacio_devuelve_serie_vacia():
 
 
 def test_fragmento_minusculo_100pct_identico_no_cuenta_si_cobertura_insuficiente():
-    # Regresion (2026-07-20, PDBs reales 1fv2/7c4s/7lkh): un hit de 5 aa
-    # 100% identico dentro de un peptido de 14 aa (cobertura ~36%) es
-    # estadisticamente esperable por azar contra un proteoma completo, NO
-    # una homologia real -- no debe contar hacia max_pident.
+    # Regresion: un hit de 5 aa 100% identico dentro de un peptido de 14 aa
+    # (cobertura ~36%) es estadisticamente esperable por azar contra un
+    # proteoma completo, NO una homologia real -- no debe contar hacia
+    # max_pident.
     hits = pd.DataFrame([_hit(0, pident=100.0, length=5)])
     query_lengths = pd.Series({0: 14})
 
