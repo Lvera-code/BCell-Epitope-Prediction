@@ -228,7 +228,9 @@ def print_tmbed_regions_report(regions_df: pd.DataFrame) -> None:
         Column("accession", lambda r: r.accession, 28, "<"),
         Column("start", lambda r: str(r.start), 7, ">"),
         Column("end", lambda r: str(r.end), 7, ">"),
-        Column("tipo", lambda r: r.type, 18, "<"),
+        # prefix="  ": "end" es right-aligned (">"), sin este separador
+        # explicito queda pegada a "tipo" (mismo caso que signalp_engine.py).
+        Column("tipo", lambda r: r.type, 18, "<", prefix="  "),
     ]
     print_fixed_width_table(regions_df.itertuples(index=False), columns)
     print(f"\nTotal: {len(regions_df)} region(es) transmembrana/peptido senal en {regions_df['accession'].nunique()} accession(es).")

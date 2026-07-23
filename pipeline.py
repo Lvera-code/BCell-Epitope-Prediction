@@ -139,7 +139,7 @@ from src.engines.epidope_engine import extract_epitopes as extract_epidope_epito
 from src.engines.epidope_engine import ACCESSION_COLUMN as EPIDOPE_ACCESSION_COLUMN
 from src.engines.epidope_engine import RESIDUE_COLUMN as EPIDOPE_RESIDUE_COLUMN
 from src.engines.epitope_mapping import build_sequence_lookup, print_epitope_table
-from src.engines.lanl_catnap_engine import query_bnab_crossref
+from src.engines.lanl_catnap_engine import query_bnab_crossref, print_bnab_crossref_report
 from src.engines.netcleave_engine import annotate_cterm_cleavage, predict_cleavage
 from src.engines.netmhciipan_engine import (
     IEDB_REFERENCE_PANEL,
@@ -159,7 +159,7 @@ from src.engines.scannet_engine import ScanNetEngine
 from src.engines.scannet_engine import extract_epitopes as extract_scannet_epitopes
 from src.engines.scannet_engine import print_epitope_table as print_scannet_epitope_table
 from src.engines.signalp_engine import predict_signal_peptide, print_signalp_report
-from src.engines.stackglyembed_engine import predict_nglycosylation
+from src.engines.stackglyembed_engine import predict_nglycosylation, print_glycosylation_report
 from src.engines.tmbed_engine import filter_overlapping_regions, predict_tm_signal_regions, print_tmbed_regions_report
 from src.engines.toxinpred_engine import predict_toxicity, print_toxicity_report
 from src.utils.exceptions import PipelineError
@@ -883,12 +883,9 @@ def fase_4c_glicosilacion(safe_df: pd.DataFrame, output_dir: Path, input_stem: s
 
     report = predict_nglycosylation(peptides, output_dir, filename_prefix=f"{input_stem}_")
 
-    if report.empty:
-        print("Ningun peptido 'Seguro' contiene un sequon N-X-[S/T] (X != Prolina): nada que reportar.")
-    else:
-        n_glyco = int((report["stackglyembed_veredicto"] == "Glicosilado").sum())
+    if not report.empty:
         print(f"Sequones evaluados: {len(report)} (de {report['sequence'].nunique()} peptido(s) con >=1 sequon).")
-        print(f"Resumen Fase 4c: {n_glyco}/{len(report)} sequon(es) predicho(s) como glicosilado(s).")
+    print_glycosylation_report(report)
 
     report.to_csv(final_path, index=False)
     _write_phase_checkpoint(final_path, input_hash)
@@ -1090,13 +1087,7 @@ def fase_6_bnab_crossref(safe_df: pd.DataFrame, output_dir: Path, input_stem: st
         min_overlap=Settings.LANL_CATNAP_MIN_OVERLAP,
     )
 
-    if report.empty:
-        print("Ningun peptido coincide con un epitopo lineal de bnAb conocido (esperado si la entrada no es HIV Env).")
-    else:
-        n_candidates = report["sequence"].nunique()
-        n_neutralizing = report[report["neutralizing"] == "yes"]["sequence"].nunique()
-        print(f"Resumen Fase 6: {n_candidates} peptido(s) coinciden con >=1 epitopo de bnAb conocido "
-              f"({n_neutralizing} de ellos con >=1 anticuerpo neutralizante confirmado).")
+    print_bnab_crossref_report(report)
 
     report.to_csv(final_path, index=False)
     _write_phase_checkpoint(final_path, input_hash)
@@ -1142,6 +1133,9 @@ def fase_7_ensamblaje_constructo(
     cached_metadata = _load_phase_checkpoint("Fase 7", metadata_path, input_hash)
     if cached_metadata is not None:
         cached_sequence = "".join(cached_metadata["sequence"]) if not cached_metadata.empty else ""
+        if cached_sequence:
+            print(f"Constructo ensamblado: {len(cached_sequence)} aa.")
+            print(f">{input_stem}_constructo\n{cached_sequence}")
         return cached_sequence, cached_metadata
 
     construct_sequence, metadata_df = assemble_construct(safe_df, algpred_df, stackgly_df, htl_df, ctl_df)
@@ -1157,6 +1151,7 @@ def fase_7_ensamblaje_constructo(
     n_ctl = int((metadata_df["block"] == "CTL").sum())
     print(f"Constructo ensamblado: {len(construct_sequence)} aa ({n_bcell} B-cell + {n_htl} HTL + {n_ctl} CTL, "
           f"top-{Settings.CONSTRUCT_TOP_N_PER_CLASS} por clase).")
+    print(f">{input_stem}_constructo\n{construct_sequence}")
 
     fasta_path.write_text(f">{input_stem}_constructo\n{construct_sequence}\n")
     metadata_df.to_csv(metadata_path, index=False)

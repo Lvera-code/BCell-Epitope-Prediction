@@ -27,6 +27,7 @@ import pandas as pd
 from src.config.settings import Settings
 from src.utils.exceptions import EngineExecutionError
 from src.utils.logger_config import setup_logger
+from src.utils.table_format import Column, print_fixed_width_table
 
 logger = setup_logger(__name__)
 
@@ -176,3 +177,23 @@ def predict_nglycosylation(sequences: List[str], output_dir: Path, filename_pref
                 idx += 1
 
     return pd.DataFrame(rows)[_OUTPUT_COLUMNS]
+
+
+def print_glycosylation_report(report_df: pd.DataFrame) -> None:
+    """Imprime el informe de N-glicosilacion: analogo a ``algpred_engine.print_allergenicity_report``."""
+    if report_df.empty:
+        print("Ningun peptido 'Seguro' contiene un sequon N-X-[S/T] (X != Prolina): nada que reportar.")
+        return
+
+    seq_width = max(30, report_df["sequence"].str.len().max() + 2)
+    columns = [
+        Column("Secuencia", lambda r: r.sequence, seq_width, "<"),
+        Column("Sequon (pos)", lambda r: str(r.sequon_position), 12, ">"),
+        Column("Score", lambda r: f"{r.stackglyembed_score:.4f}", 10, ">"),
+        Column("Veredicto", lambda r: r.stackglyembed_veredicto, 16, ">"),
+    ]
+    print_fixed_width_table(report_df.itertuples(index=False), columns)
+
+    n_glyco = int((report_df["stackglyembed_veredicto"] == "Glicosilado").sum())
+    n_non_glyco = int((report_df["stackglyembed_veredicto"] == "No glicosilado").sum())
+    print(f"\nResumen Fase 4c: {n_non_glyco} no glicosilado(s) / {n_glyco} glicosilado(s) predicho(s).")

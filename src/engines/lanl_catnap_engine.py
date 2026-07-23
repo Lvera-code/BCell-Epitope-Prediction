@@ -37,6 +37,7 @@ from typing import List, Optional
 import pandas as pd
 
 from src.utils.logger_config import setup_logger
+from src.utils.table_format import Column, print_fixed_width_table
 
 logger = setup_logger(__name__)
 
@@ -184,3 +185,29 @@ def query_bnab_crossref(
             rows.append(record)
 
     return pd.DataFrame(rows, columns=_OUTPUT_COLUMNS) if rows else pd.DataFrame(columns=_OUTPUT_COLUMNS)
+
+
+def print_bnab_crossref_report(report_df: pd.DataFrame) -> None:
+    """Imprime el detalle del cruce con bnAb: analogo a ``algpred_engine.print_allergenicity_report``."""
+    if report_df.empty:
+        print("Ningun peptido coincide con un epitopo lineal de bnAb conocido (esperado si la entrada no es HIV Env).")
+        return
+
+    seq_width = max(30, report_df["sequence"].str.len().max() + 2)
+    ab_width = max(14, report_df["antibody_name"].str.len().max() + 2)
+    epitope_width = max(20, report_df["epitope_sequence"].str.len().max() + 2)
+    columns = [
+        Column("Secuencia", lambda r: r.sequence, seq_width, "<"),
+        Column("Anticuerpo", lambda r: r.antibody_name, ab_width, "<"),
+        Column("Epitopo bnAb", lambda r: r.epitope_sequence, epitope_width, "<"),
+        Column("Match(aa)", lambda r: str(r.match_length), 10, ">"),
+        Column("Neutralizante", lambda r: r.neutralizing, 14, ">"),
+        Column("IC50 medio", lambda r: f"{r.catnap_mean_ic50:.3f}" if pd.notna(r.catnap_mean_ic50) else "-", 11, ">"),
+        Column("N virus", lambda r: str(int(r.catnap_n_viruses)) if pd.notna(r.catnap_n_viruses) else "-", 8, ">"),
+    ]
+    print_fixed_width_table(report_df.itertuples(index=False), columns)
+
+    n_candidates = report_df["sequence"].nunique()
+    n_neutralizing = report_df[report_df["neutralizing"] == "yes"]["sequence"].nunique()
+    print(f"\nResumen Fase 6: {n_candidates} peptido(s) coinciden con >=1 epitopo de bnAb conocido "
+          f"({n_neutralizing} de ellos con >=1 anticuerpo neutralizante confirmado).")
