@@ -47,14 +47,30 @@ candidatos validos, demasiados para un constructo manejable):
   De los que sobreviven, top-N por el MAYOR de sus ``'{motor}_score'``
   disponibles (BepiPred/EpiDope/DiscoTope/ScanNet, el que exista para esa fila).
 * HTL/CTL: de los ``'Candidato Valido'`` de Fase 5/5b (``build_traceback_report``
-  ya filtra a esos), se colapsan por ``core_9aa`` (mismo nucleo de union
-  evaluado en ventanas de posicion vecinas es la misma prediccion, no
-  epitopos distintos -- mismo criterio que ``_deduplicate_protein_mode_windows``
-  de ``netmhciipan_engine.py``/``netmhcpan_engine.py``, pero aqui colapsando
+  ya filtra a esos), se descartan las ventanas cuyo rango ``start``/``end``
+  solapa la posicion ABSOLUTA de un sequon 'Glicosilado' de Fase 4c (ver
+  ``_glycosylated_regions``/``_overlaps_glyco_region`` -- mismo mecanismo de
+  solapamiento por posicion que usa ``tmbed_engine`` para enmascarar TM/senal
+  en Fase 3b). Las sobrevivientes se colapsan por ``core_9aa`` (mismo nucleo
+  de union evaluado en ventanas de posicion vecinas es la misma prediccion,
+  no epitopos distintos -- mismo criterio que
+  ``_deduplicate_protein_mode_windows`` de
+  ``netmhciipan_engine.py``/``netmhcpan_engine.py``, pero aqui colapsando
   TODA la promiscuidad, no solo por trio exacto), quedandose con la mejor
   fila (mas alelos promiscuos, luego menor %Rank; en CTL ademas prioriza
   ``netcleave_c_term_match == True`` primero). Top-N sobre esas filas
   deduplicadas, mismo criterio de orden.
+* NO se excluye HTL/CTL por alergenicidad (AlgPred2), a diferencia de
+  B-cell: AlgPred2 predice potencial IgE/mastocitario, que depende de que el
+  epitopo circule INTACTO y expuesto para ser reconocido por un anticuerpo
+  -exactamente el escenario B-cell-. Un nucleo de 8-11 aa que vive escondido
+  en el surco del MHC nunca circula libre de esa forma, asi que el
+  fundamento mecanicista para descartarlo por "alergenico" es mucho mas
+  debil -- decision explicita del usuario de no aplicar ese filtro ahi
+  (2026-07-23), para no descartar candidatos MHC validos sin una razon
+  biologica solida. La exclusion por glicosilacion SI aplica a las 3 clases
+  porque su mecanismo (bloqueo fisico por el glicano) no depende de la via
+  de reconocimiento.
 
 Decision de diseno: el "epitopo" insertado en los bloques HTL/CTL es
 ``core_9aa`` (el nucleo de union real evaluado por NetMHCIIpan/NetMHCpan),
@@ -80,6 +96,7 @@ from typing import List, NamedTuple, Optional, Tuple
 import pandas as pd
 
 from src.config.settings import Settings
+from src.utils.table_format import Column, print_fixed_width_table
 
 
 class _Block(NamedTuple):
@@ -127,22 +144,82 @@ def _dedupe_by_core(candidate_df: pd.DataFrame, sort_columns: List[Tuple[str, bo
     return ordered.drop_duplicates(subset="core_9aa", keep="first")
 
 
-def _select_htl_candidates(htl_df: pd.DataFrame, top_n: int) -> pd.DataFrame:
-    """Colapsa por 'core_9aa' (mejor promiscuidad/%Rank), top-N."""
+def _glycosylated_regions(safe_df: pd.DataFrame, stackgly_df: pd.DataFrame) -> pd.DataFrame:
+    """Traduce cada sequon 'Glicosilado' de Fase 4c a su posicion ABSOLUTA en la proteina completa.
+
+    ``stackgly_df['sequon_position']`` es 1-indexado pero LOCAL al peptido
+    'Segura' padre (ver ``stackglyembed_engine.print_glycosylation_report``),
+    no a la proteina completa -- para poder comparar contra el ``start``/``end``
+    (absolutos) de ``htl_df``/``ctl_df`` hay que sumarle el ``start`` de ese
+    peptido padre en ``safe_df``.
+
+    Returns:
+        DataFrame con columnas ``accession``/``start``/``end`` (1-indexado,
+        3 residuos del motivo N-X-[S/T]), una fila por sequon glicosilado.
+        Vacio si no hay ningun sequon 'Glicosilado'.
+    """
+    if stackgly_df.empty or safe_df.empty:
+        return pd.DataFrame(columns=["accession", "start", "end"])
+    glyco = stackgly_df[stackgly_df["stackglyembed_veredicto"] == "Glicosilado"]
+    if glyco.empty:
+        return pd.DataFrame(columns=["accession", "start", "end"])
+    parent = safe_df[["accession", "start", "sequence"]].rename(columns={"start": "parent_start"})
+    merged = glyco.merge(parent, on="sequence", how="inner")
+    merged["start"] = merged["parent_start"] + merged["sequon_position"] - 1
+    merged["end"] = merged["start"] + 2
+    return merged[["accession", "start", "end"]]
+
+
+def _overlaps_glyco_region(row, glyco_regions: pd.DataFrame) -> bool:
+    """Indica si ``row`` (con ``accession``/``start``/``end``) solapa algun sequon glicosilado.
+
+    Mismo mecanismo de solapamiento por posicion que
+    ``tmbed_engine.discard_overlapping_regions`` usa para enmascarar TM/senal
+    en Fase 3b -- acá se aplica a nivel de candidato individual HTL/CTL en vez
+    de a la union de Fase 3.
+    """
+    if glyco_regions.empty:
+        return False
+    acc_regions = glyco_regions[glyco_regions["accession"] == row["accession"]]
+    if acc_regions.empty:
+        return False
+    return bool(((acc_regions["start"] <= row["end"]) & (acc_regions["end"] >= row["start"])).any())
+
+
+def _select_htl_candidates(htl_df: pd.DataFrame, glyco_regions: pd.DataFrame, top_n: int) -> pd.DataFrame:
+    """Colapsa por 'core_9aa' (mejor promiscuidad/%Rank), excluye ventanas glicosiladas, top-N.
+
+    Un glicano real sentado sobre un residuo DENTRO del nucleo de 9 aa que se
+    mete en el surco del MHC-II puede bloquear fisicamente la union -- a
+    diferencia de la alergenicidad (ver docstring de modulo), esta exclusion
+    SI aplica a HTL/CTL igual que a B-cell, no es exclusiva de un mecanismo
+    de reconocimiento por anticuerpo/IgE.
+    """
     if htl_df.empty:
         return htl_df
+    candidates = htl_df[~htl_df.apply(lambda r: _overlaps_glyco_region(r, glyco_regions), axis=1)]
+    if candidates.empty:
+        return candidates
     sort_columns = [("n_alelos_promiscuos", False), ("min_rank_el", True)]
-    deduped = _dedupe_by_core(htl_df, sort_columns)
+    deduped = _dedupe_by_core(candidates, sort_columns)
     deduped = deduped.sort_values(by=[c for c, _ in sort_columns], ascending=[a for _, a in sort_columns])
     return deduped.head(top_n)
 
 
-def _select_ctl_candidates(ctl_df: pd.DataFrame, top_n: int) -> pd.DataFrame:
-    """Colapsa por 'core_9aa', priorizando evidencia de corte NetCleave, luego promiscuidad/%Rank, top-N."""
+def _select_ctl_candidates(ctl_df: pd.DataFrame, glyco_regions: pd.DataFrame, top_n: int) -> pd.DataFrame:
+    """Colapsa por 'core_9aa', excluye ventanas glicosiladas, prioriza NetCleave/promiscuidad/%Rank, top-N.
+
+    Mismo criterio de exclusion por glicosilacion que ``_select_htl_candidates``
+    (ver ese docstring): un glicano dentro del nucleo de union MHC-I tambien
+    puede bloquear el procesamiento/presentacion, sin importar la via.
+    """
     if ctl_df.empty:
         return ctl_df
+    candidates = ctl_df[~ctl_df.apply(lambda r: _overlaps_glyco_region(r, glyco_regions), axis=1)]
+    if candidates.empty:
+        return candidates
     sort_columns = [("netcleave_c_term_match", False), ("n_alelos_promiscuos", False), ("min_rank_el", True)]
-    deduped = _dedupe_by_core(ctl_df, sort_columns)
+    deduped = _dedupe_by_core(candidates, sort_columns)
     deduped = deduped.sort_values(by=[c for c, _ in sort_columns], ascending=[a for _, a in sort_columns])
     return deduped.head(top_n)
 
@@ -195,9 +272,10 @@ def assemble_construct(
     """
     top_n = top_n_per_class if top_n_per_class is not None else Settings.CONSTRUCT_TOP_N_PER_CLASS
 
+    glyco_regions = _glycosylated_regions(safe_df, stackgly_df)
     bcell_selected = _select_bcell_candidates(safe_df, algpred_df, stackgly_df, top_n)
-    htl_selected = _select_htl_candidates(htl_df, top_n)
-    ctl_selected = _select_ctl_candidates(ctl_df, top_n)
+    htl_selected = _select_htl_candidates(htl_df, glyco_regions, top_n)
+    ctl_selected = _select_ctl_candidates(ctl_df, glyco_regions, top_n)
 
     blocks: List[_Block] = []
     if not bcell_selected.empty:
@@ -265,3 +343,77 @@ def assemble_construct(
     construct_sequence = "".join(s["sequence"] for s in segments)
     metadata_df = pd.DataFrame(segments)
     return construct_sequence, metadata_df
+
+
+def print_construct_breakdown(metadata_df: pd.DataFrame) -> None:
+    """Imprime el constructo desglosado: Bloque/Start/End/Origen, un segmento por fila, en orden.
+
+    Analogo al resto de tablas de desglose del pipeline (ver
+    ``algpred_engine.print_allergenicity_report``): la consola solo mostraba
+    antes la secuencia concatenada del constructo completo, sin ver de que
+    peptidos/linkers individuales esta hecho ni de donde salio cada uno. La
+    secuencia de cada segmento se ve coloreada en ``print_construct_colored``
+    (linkers en rojo), no repetida acá como texto plano -- esta tabla es
+    solo la trazabilidad (posicion + origen); el detalle completo (score que
+    motivo la seleccion, posicion en la proteina de origen) sigue persistido
+    en ``constructo_metadata.csv``.
+    """
+    if metadata_df.empty:
+        return
+
+    def _origen(r) -> str:
+        return r.source_accession if pd.notna(r.source_accession) else "-"
+
+    columns = [
+        Column("Bloque", lambda r: r.block, 22, "<"),
+        Column("Start", lambda r: str(r.start), 6, ">"),
+        Column("End", lambda r: str(r.end), 6, ">"),
+        # prefix="  ": "End" es right-aligned, sin este separador explicito
+        # quedaria pegada a "Origen" (mismo caso que tmbed_engine.py/signalp_engine.py).
+        Column("Origen", _origen, 0, "<", prefix="  "),
+    ]
+    print_fixed_width_table(metadata_df.itertuples(index=False), columns)
+
+
+# Amarillo/negrita para los linkers dentro del constructo impreso -- MISMO
+# color que el nucleo MHC (netmhciipan_engine.py) y el sequon
+# (stackglyembed_engine.py), para mantener un unico codigo de resaltado
+# consistente en todo el pipeline.
+_LINKER_ANSI_START = "\033[1;33m"
+_LINKER_ANSI_END = "\033[0m"
+
+
+def print_construct_colored(metadata_df: pd.DataFrame) -> None:
+    """Imprime la secuencia completa del constructo con los linkers en amarillo.
+
+    Complementa ``print_construct_breakdown`` (da start/end/origen por
+    segmento pero no la secuencia): acá se ve el constructo entero tal cual
+    queda en el FASTA, con cada tramo de linker coloreado para diferenciarlo
+    a simple vista de los tramos de epitopo real. No es una tabla de ancho
+    fijo -- es una sola linea concatenada, asi que no aplica el problema de
+    alineado de ``table_format.Column`` (los codigos ANSI solo importan para
+    ``len()`` cuando hay padding de columna de por medio).
+    """
+    if metadata_df.empty:
+        return
+    parts = [
+        f"{_LINKER_ANSI_START}{row.sequence}{_LINKER_ANSI_END}" if row.block.startswith("Linker") else row.sequence
+        for row in metadata_df.itertuples(index=False)
+    ]
+    print("".join(parts))
+
+
+def print_multi_accession_warning(metadata_df: pd.DataFrame) -> None:
+    """Advierte si el constructo se armo con candidatos de mas de un accession distinto.
+
+    Chequeo simple por CANTIDAD de accessions distintos, sin evaluar similitud
+    de secuencia entre ellos -- no distingue "cepas relacionadas del mismo
+    patogeno" (ej. distintas cepas de VIH, resultado esperado y correcto) de
+    "antigenos sin relacion" (ej. mezclar dos patogenos distintos en un mismo
+    FASTA de entrada). Queda a criterio de quien lee la advertencia: revisar
+    la columna 'Origen' de ``print_construct_breakdown`` para decidir si el
+    resultado tiene sentido biologico.
+    """
+    accessions = metadata_df["source_accession"].dropna().unique()
+    if len(accessions) > 1:
+        print(f"\n[AVISO] Constructo realizado a partir de diferentes accessions: {', '.join(sorted(accessions))}")

@@ -364,7 +364,7 @@ def print_union_table(union_df: pd.DataFrame, engine_keys: Optional[Sequence[str
         columns.append(Column(header, lambda r, k=key: _score(getattr(r, f"{k}_score")), 10, ">", prefix="  "))
     columns.append(Column("sequence", lambda r: r.sequence, 0, "<", prefix="  "))
 
-    print_fixed_width_table(union_df.itertuples(index=False), columns)
+    print_fixed_width_table(union_df.itertuples(index=False), columns, group_by=lambda r: r.accession)
 
     origen_counts: Dict[str, int] = {}
     for value in union_df["origen"]:

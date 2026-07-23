@@ -143,7 +143,8 @@ plugin, que depende de `pwchem`) es equivalente byte-a-byte.
 
 Enmascarado verificado en ambos sentidos con corridas end-to-end reales:
 sobre `GP120.fasta` (envoltura VIH-1, con TM citoplasmatica C-terminal) y
-`OVA_test.fasta` (ovoalbumina, no transmembrana) TMbed detecta las regiones
+el registro de ovoalbumina en `positive_controls_suite.fasta` (no
+transmembrana) TMbed detecta las regiones
 esperadas pero ningun candidato de Fase 3 se solapa con ellas -- la union
 pasa sin cambios a Fase 4. Sobre `SLC8A1_P32418_AF.pdb` (transportador
 multi-pass, 10 helices TM + peptido senal) el enmascarado SI descarta

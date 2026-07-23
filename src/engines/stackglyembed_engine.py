@@ -20,7 +20,7 @@ import re
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import List, Tuple
+from typing import Any, List, Tuple
 
 import pandas as pd
 
@@ -179,8 +179,40 @@ def predict_nglycosylation(sequences: List[str], output_dir: Path, filename_pref
     return pd.DataFrame(rows)[_OUTPUT_COLUMNS]
 
 
+# Resaltado ANSI (negrita + amarillo) del sequon N-X-[S/T] dentro de la
+# columna Secuencia, mismo codigo de color que usa
+# ``netmhciipan_engine.print_traceback_table`` para el nucleo de union MHC
+# (consistencia visual entre fases, sin acoplar ambos modulos).
+_SEQUON_ANSI_START = "\033[1;33m"
+_SEQUON_ANSI_END = "\033[0m"
+
+
+def _highlight_sequon(line: str, row: Any) -> str:
+    """Inyecta el resaltado del sequon en ``line`` (fila ya formateada con padding).
+
+    ``sequon_position`` es 1-indexado y marca la 'N' del motivo (ver
+    ``scan_sequons``): el motivo completo son los 3 residuos
+    ``[sequon_position-1 : sequon_position+2]`` de ``row.sequence``. Se busca
+    primero donde cae ``row.sequence`` dentro de la linea ya formateada -mismo
+    motivo que en ``print_traceback_table``: insertar ANSI antes del padding
+    descoloca la columna, porque los codigos de color cuentan para ``len()``
+    aunque no ocupen espacio visible en la terminal.
+    """
+    seq_start = line.find(row.sequence)
+    if seq_start == -1:
+        return line
+    motif_start = seq_start + (row.sequon_position - 1)
+    motif_end = motif_start + 3
+    return f"{line[:motif_start]}{_SEQUON_ANSI_START}{line[motif_start:motif_end]}{_SEQUON_ANSI_END}{line[motif_end:]}"
+
+
 def print_glycosylation_report(report_df: pd.DataFrame) -> None:
-    """Imprime el informe de N-glicosilacion: analogo a ``algpred_engine.print_allergenicity_report``."""
+    """Imprime el informe de N-glicosilacion: analogo a ``algpred_engine.print_allergenicity_report``.
+
+    El sequon N-X-[S/T] evaluado se resalta en amarillo dentro de la columna
+    Secuencia (ver ``_highlight_sequon``), igual que el nucleo de union MHC en
+    ``netmhciipan_engine.print_traceback_table``.
+    """
     if report_df.empty:
         print("Ningun peptido 'Seguro' contiene un sequon N-X-[S/T] (X != Prolina): nada que reportar.")
         return
@@ -192,7 +224,7 @@ def print_glycosylation_report(report_df: pd.DataFrame) -> None:
         Column("Score", lambda r: f"{r.stackglyembed_score:.4f}", 10, ">"),
         Column("Veredicto", lambda r: r.stackglyembed_veredicto, 16, ">"),
     ]
-    print_fixed_width_table(report_df.itertuples(index=False), columns)
+    print_fixed_width_table(report_df.itertuples(index=False), columns, line_formatter=_highlight_sequon)
 
     n_glyco = int((report_df["stackglyembed_veredicto"] == "Glicosilado").sum())
     n_non_glyco = int((report_df["stackglyembed_veredicto"] == "No glicosilado").sum())

@@ -32,7 +32,7 @@ secuencia).
 import csv
 import re
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Callable, List, Optional, Tuple
 
 import pandas as pd
 
@@ -43,7 +43,7 @@ logger = setup_logger(__name__)
 
 _OUTPUT_COLUMNS = [
     "sequence", "antibody_name", "epitope_sequence", "match_length", "epitope_name",
-    "hxb2_location", "neutralizing", "antibody_type", "binding_region",
+    "hxb2_location", "neutralizing", "antibody_type", "subtype", "binding_region",
     "catnap_mean_ic50", "catnap_n_viruses",
 ]
 
@@ -67,7 +67,7 @@ def _load_bnab_epitopes(lanl_ab_all_path: Path) -> pd.DataFrame:
 
     idx = {name: i for i, name in enumerate(header)}
     required = ["Antibody name (alias)", "Epitope", "Epitope name", "HXB2 protein location",
-                "Neutralizing", "Antibody type", "Binding region"]
+                "Neutralizing", "Antibody type", "Binding region", "Subtype"]
     missing = [c for c in required if c not in idx]
     if missing:
         raise ValueError(f"'{lanl_ab_all_path}' no tiene las columnas esperadas: faltan {missing}.")
@@ -86,6 +86,7 @@ def _load_bnab_epitopes(lanl_ab_all_path: Path) -> pd.DataFrame:
                 "neutralizing": row[idx["Neutralizing"]].strip(),
                 "antibody_type": row[idx["Antibody type"]].strip(),
                 "binding_region": row[idx["Binding region"]].strip(),
+                "subtype": row[idx["Subtype"]].strip(),
             }
         )
     return pd.DataFrame.from_records(records)
@@ -173,6 +174,7 @@ def query_bnab_crossref(
                 "hxb2_location": ref.hxb2_location,
                 "neutralizing": ref.neutralizing,
                 "antibody_type": ref.antibody_type,
+                "subtype": ref.subtype,
                 "binding_region": ref.binding_region,
                 "catnap_mean_ic50": pd.NA,
                 "catnap_n_viruses": pd.NA,
@@ -187,25 +189,259 @@ def query_bnab_crossref(
     return pd.DataFrame(rows, columns=_OUTPUT_COLUMNS) if rows else pd.DataFrame(columns=_OUTPUT_COLUMNS)
 
 
-def print_bnab_crossref_report(report_df: pd.DataFrame) -> None:
-    """Imprime el detalle del cruce con bnAb: analogo a ``algpred_engine.print_allergenicity_report``."""
+_MAX_CONSOLE_ROWS = 30
+
+# Mismo amarillo/negrita que el nucleo MHC, el sequon y los linkers del
+# constructo -- un unico codigo de resaltado consistente en todo el pipeline.
+_MATCH_ANSI_START = "\033[1;33m"
+_MATCH_ANSI_END = "\033[0m"
+
+
+def _find_match_span(sequence: str, epitope_sequence: str, match_length: int) -> Optional[Tuple[int, int]]:
+    """Ubica dentro de ``sequence`` el primer tramo de ``match_length`` aa que tambien aparece en ``epitope_sequence``.
+
+    ``query_bnab_crossref`` solo persiste la LONGITUD del match (``match_length``,
+    via ``_longest_common_substring_len``), no su posicion -- para resaltarlo
+    hay que volver a ubicarlo. Con ``match_length`` ya confirmado por esa
+    funcion, alcanza con probar cada ventana de ese largo dentro de
+    ``sequence`` y ver cual aparece tambien en ``epitope_sequence`` (no hace
+    falta repetir la programacion dinamica completa).
+    """
+    if match_length <= 0 or match_length > len(sequence):
+        return None
+    for start in range(len(sequence) - match_length + 1):
+        if sequence[start:start + match_length] in epitope_sequence:
+            return start, start + match_length
+    return None
+
+
+_SEQ_WRAP = 40
+
+
+def _wrap_sequence(sequence: str, wrap: int) -> List[Tuple[int, str]]:
+    """Corta ``sequence`` en tramos de a lo sumo ``wrap`` caracteres: ``[(offset_absoluto, tramo), ...]``.
+
+    Es el mecanismo de "cortar la Secuencia hacia abajo": en vez de que la
+    columna se estire tanto como el peptido mas largo (hasta 76+ aa en
+    corridas reales de VIH, empujando el resto de columnas fuera de la
+    pantalla a la derecha), cada fila ocupa varias LINEAS con un tramo fijo
+    de ancho, y el resto de columnas solo se imprime una vez en la primera
+    linea de esa fila.
+    """
+    if not sequence:
+        return [(0, "")]
+    return [(i, sequence[i:i + wrap]) for i in range(0, len(sequence), wrap)]
+
+
+def _highlight_chunk(padded_cell: str, chunk_offset: int, chunk_len: int, span: Optional[Tuple[int, int]]) -> str:
+    """Inyecta amarillo en ``padded_cell`` (un tramo de Secuencia YA paddeado a ancho fijo).
+
+    Igual que en ``netmhciipan_engine.print_traceback_table``: el color se
+    inyecta DESPUES de paddear el texto plano, nunca antes -- los codigos
+    ANSI cuentan para ``len()`` aunque no ocupen espacio visible, asi que
+    colorear antes de aplicar el ancho fijo desalinea la columna.
+    """
+    if span is None:
+        return padded_cell
+    local_start = max(span[0], chunk_offset) - chunk_offset
+    local_end = min(span[1], chunk_offset + chunk_len) - chunk_offset
+    if local_start >= local_end:
+        return padded_cell
+    return f"{padded_cell[:local_start]}{_MATCH_ANSI_START}{padded_cell[local_start:local_end]}{_MATCH_ANSI_END}{padded_cell[local_end:]}"
+
+
+def _truncate(text: str, max_len: int) -> str:
+    """Corta ``text`` a ``max_len`` caracteres (con '...' final) -- ultimo recurso de
+    seguridad para el puñado de valores que ni ``_short_name``/``_short_domain``
+    logran acortar lo suficiente (ver ``_display``), nunca el mecanismo principal."""
+    if len(text) <= max_len:
+        return text
+    return text[: max_len - 1] + "…"
+
+
+def _short_name(value: str) -> str:
+    """Se queda con la parte de ``antibody_name`` ANTES del primer ' (' (alias/variantes
+    entre parentesis, ej. ``'1F10 (VHH 1F10, H2, VHH H2)'`` -> ``'1F10'``) -- nunca corta
+    una palabra a la mitad, el nombre completo sigue en el CSV."""
+    return value.split(" (", 1)[0].strip()
+
+
+def _short_domain(value: str) -> str:
+    """Reduce ``binding_region`` al dominio (``'gp120'``/``'gp41'``) solo, salvo que la
+    sub-region sea corta y especifica (``'V2'``/``'V3'``/``'MPER'``, <=4 caracteres, sin
+    '/') -- ahi se conserva completo (``'gp120 V3'``). Para cualquier otra cosa (listas
+    con '/', 'constant regions', 'other/undefined', composiciones de varias regiones)
+    se descarta el resto y solo queda el dominio -- nunca una palabra cortada a la mitad
+    ni un '...'."""
+    tokens = value.split()
+    if not tokens:
+        return value
+    if len(tokens) == 2 and len(tokens[1]) <= 4 and "/" not in tokens[1]:
+        return value
+    return tokens[0]
+
+
+def _display(value, max_len: Optional[int] = None, shorten: Optional[Callable[[str], str]] = None) -> str:
+    """Formatea un campo de texto de LANL para consola: '-' si es NaN O cadena vacia.
+
+    ``_load_bnab_epitopes`` deja estos campos como cadena vacia (``''``) para
+    'sin dato' (nunca ``NaN``, ver su docstring) -- solo se vuelven ``NaN`` si
+    el reporte se guarda a CSV y se vuelve a leer con ``pd.read_csv`` (ahi
+    pandas si convierte campos vacios a ``NaN``). Un chequeo que solo mire
+    ``pd.notna`` deja pasar la cadena vacia tal cual (celda en blanco en vez
+    de '-'), asi que hace falta cubrir ambos casos.
+
+    Args:
+        shorten: Reduccion SEMANTICA opcional (``_short_name``/``_short_domain``)
+            aplicada ANTES de cualquier truncado por caracteres -- el objetivo
+            es que la version corta siga siendo una palabra/codigo completo y
+            legible, nunca 'gp41 NHR/CH…' cortado a la mitad. ``max_len`` sigue
+            actuando como ultimo recurso de seguridad despues de ``shorten``,
+            para el puñado de valores que ni asi entran.
+    """
+    if pd.isna(value) or value == "":
+        return "-"
+    text = shorten(value) if shorten else value
+    return _truncate(text, max_len) if max_len else text
+
+
+def _tipo_anticuerpo(antibody_type) -> str:
+    """Simplifica ``antibody_type`` a 'mono'/'poli' para la columna compacta de consola (el CSV conserva el valor original)."""
+    if pd.isna(antibody_type):
+        return "-"
+    normalized = str(antibody_type).lower()
+    if "monoclonal" in normalized:
+        return "mono"
+    if normalized == "polyclonal":
+        return "poli"
+    return "-"
+
+
+def print_bnab_crossref_report(report_df: pd.DataFrame, csv_path: Optional[Path] = None) -> None:
+    """Imprime el detalle del cruce con bnAb: analogo a ``algpred_engine.print_allergenicity_report``.
+
+    Trunca la consola a ``_MAX_CONSOLE_ROWS`` filas: un peptido candidato
+    puede matchear contra decenas o cientos de anticuerpos de referencia
+    (444/440 matches reales en corridas de clado B/C de VIH-1), y volcar
+    todo eso a la terminal empuja el resultado de fases ANTERIORES fuera del
+    scrollback -- no alcanza con repetir la cabecera (eso ayuda a leer esta
+    tabla puntual, no evita que otras tablas mas arriba se pierdan). El CSV
+    persistido (``<input_stem>_bnab_crossref.csv``) siempre tiene el 100% de
+    los matches Y todas las columnas (incluidas ``epitope_sequence``/
+    ``epitope_name``/``hxb2_location``, que no se imprimen en consola), nunca
+    se pierde informacion, solo se deja de inundar la consola.
+
+    Las filas mostradas se priorizan (no es simplemente "las primeras N" en
+    el orden en que salieron de ``query_bnab_crossref``): primero los
+    anticuerpos neutralizantes confirmados, despues por mayor longitud de
+    solape -- son los matches mas relevantes biologicamente, los que mas
+    conviene ver si hay que truncar.
+
+    ``Secuencia`` se corta hacia ABAJO en vez de estirar la tabla a lo ancho
+    (ver ``_wrap_sequence``): un peptido candidato de HIV Env puede medir
+    70+ aa, y una sola columna asi de ancha empuja el resto de columnas
+    fuera de la pantalla a la derecha -- el objetivo es poder leer la fila
+    de izquierda a derecha sin que se superpongan. El tramo que matchea el
+    epitopo bnAb se resalta en amarillo (puede caer en cualquiera de los
+    tramos de una misma fila, ver ``_highlight_chunk``). Por el mismo motivo
+    de espacio, la columna ``Epitopo`` (``epitope_sequence`` completo) no se
+    imprime en consola -- solo se usa internamente para ubicar el tramo a
+    resaltar; sigue completa en el CSV.
+
+    ``Ab``/``Dominio`` (``antibody_name``/``binding_region`` del CSV) se
+    acortan SEMANTICAMENTE, no por cantidad de caracteres -- nunca queda una
+    palabra cortada a la mitad con '...' colgando:
+
+    * ``Ab`` (``_short_name``): solo la parte antes del primer ' (' -- ej.
+      ``'1F10 (VHH 1F10, H2, VHH H2)'`` -> ``'1F10'`` (hay ``antibody_name``
+      reales de hasta 193 caracteres, alias compuestos entre parentesis,
+      contra una mediana real de ~5-8).
+    * ``Dominio`` (``_short_domain``): solo el dominio (``'gp120'``/
+      ``'gp41'``), salvo que la sub-region sea corta y especifica (``'V2'``/
+      ``'V3'``/``'MPER'``) -- ahi se conserva completo (``'gp120 V3'``). Para
+      cualquier otra cosa (``'gp41 cluster I/II/III'``, ``'gp120 other/
+      undefined'``, composiciones con '/') se descarta el resto.
+
+    ``_AB_MAX``/``_DOMAIN_MAX``/``_SUBTYPE_MAX`` (ver ``_display``) son un
+    ultimo recurso de seguridad por caracteres, no el mecanismo principal --
+    rara vez se disparan con el acortado semantico ya aplicado. El CSV
+    siempre tiene el valor completo, nunca acortado. ``Tipo`` simplifica
+    ``antibody_type`` a 'mono'/'poli' (ver ``_tipo_anticuerpo``).
+
+    Args:
+        report_df: Salida de ``query_bnab_crossref``.
+        csv_path: Ruta del CSV persistido con el reporte completo, para
+            referenciarla en el aviso de truncado. Si se omite, el aviso no
+            menciona ningun nombre de archivo especifico.
+    """
     if report_df.empty:
         print("Ningun peptido coincide con un epitopo lineal de bnAb conocido (esperado si la entrada no es HIV Env).")
         return
 
-    seq_width = max(30, report_df["sequence"].str.len().max() + 2)
-    ab_width = max(14, report_df["antibody_name"].str.len().max() + 2)
-    epitope_width = max(20, report_df["epitope_sequence"].str.len().max() + 2)
-    columns = [
-        Column("Secuencia", lambda r: r.sequence, seq_width, "<"),
-        Column("Anticuerpo", lambda r: r.antibody_name, ab_width, "<"),
-        Column("Epitopo bnAb", lambda r: r.epitope_sequence, epitope_width, "<"),
-        Column("Match(aa)", lambda r: str(r.match_length), 10, ">"),
-        Column("Neutralizante", lambda r: r.neutralizing, 14, ">"),
-        Column("IC50 medio", lambda r: f"{r.catnap_mean_ic50:.3f}" if pd.notna(r.catnap_mean_ic50) else "-", 11, ">"),
-        Column("N virus", lambda r: str(int(r.catnap_n_viruses)) if pd.notna(r.catnap_n_viruses) else "-", 8, ">"),
+    _DOMAIN_MAX = 14
+    _SUBTYPE_MAX = 10
+    _AB_MAX = 16
+
+    ab_width = max(6, report_df["antibody_name"].apply(lambda v: len(_display(v, _AB_MAX, _short_name))).max() + 2)
+    domain_width = max(
+        9, report_df["binding_region"].apply(lambda v: len(_display(v, _DOMAIN_MAX, _short_domain))).max() + 2
+    )
+    subtype_width = max(9, report_df["subtype"].apply(lambda v: len(_display(v, _SUBTYPE_MAX))).max() + 2)
+
+    seq_col = Column("Secuencia", lambda r: r.sequence, _SEQ_WRAP, "<")
+    rest_columns = [
+        Column("Ab", lambda r: _display(r.antibody_name, _AB_MAX, _short_name), ab_width, "<"),
+        Column("Neutr", lambda r: _display(r.neutralizing), 8, ">"),
+        Column("Subtipo", lambda r: _display(r.subtype, _SUBTYPE_MAX), subtype_width, ">"),
+        # prefix="  ": "Subtipo" es right-aligned, sin este separador
+        # explicito queda pegada a "Dominio" (mismo caso que tmbed_engine.py).
+        Column("Dominio", lambda r: _display(r.binding_region, _DOMAIN_MAX, _short_domain), domain_width, "<", prefix="  "),
+        Column("Tipo", lambda r: _tipo_anticuerpo(r.antibody_type), 5, "<"),
+        Column("IC50", lambda r: f"{r.catnap_mean_ic50:.3f}" if pd.notna(r.catnap_mean_ic50) else "-", 7, ">"),
+        Column("Nvir", lambda r: str(int(r.catnap_n_viruses)) if pd.notna(r.catnap_n_viruses) else "-", 5, ">"),
     ]
-    print_fixed_width_table(report_df.itertuples(index=False), columns)
+
+    header_line = "".join(c._cell(c.header) for c in [seq_col] + rest_columns)
+    separator = "-" * len(header_line)
+    blank_rest = "".join(c._cell("") for c in rest_columns)
+
+    def _print_header() -> None:
+        print(header_line)
+        print(separator)
+
+    n_total = len(report_df)
+    if n_total > _MAX_CONSOLE_ROWS:
+        priority = (report_df["neutralizing"] == "yes").astype(int)
+        display_df = (
+            report_df.assign(_priority=priority)
+            .sort_values(["_priority", "match_length"], ascending=[False, False])
+            .drop(columns="_priority")
+            .head(_MAX_CONSOLE_ROWS)
+        )
+    else:
+        display_df = report_df
+
+    _print_header()
+    for i, row in enumerate(display_df.itertuples(index=False)):
+        if i > 0 and i % 30 == 0:
+            print()
+            _print_header()
+
+        span = _find_match_span(row.sequence, row.epitope_sequence, int(row.match_length))
+        chunks = _wrap_sequence(row.sequence, _SEQ_WRAP)
+        rest_line = "".join(c._cell(c.render(row)) for c in rest_columns)
+
+        offset, chunk = chunks[0]
+        first_cell = _highlight_chunk(seq_col._cell(chunk), offset, len(chunk), span)
+        print(f"{first_cell}{rest_line}")
+        for offset, chunk in chunks[1:]:
+            cell = _highlight_chunk(seq_col._cell(chunk), offset, len(chunk), span)
+            print(f"{cell}{blank_rest}")
+
+    if n_total > _MAX_CONSOLE_ROWS:
+        remaining = n_total - _MAX_CONSOLE_ROWS
+        where = f" -- ver '{csv_path}' para el detalle completo" if csv_path is not None else ""
+        print(f"\n[+{remaining} match(es) mas, no mostrados en consola{where}]")
 
     n_candidates = report_df["sequence"].nunique()
     n_neutralizing = report_df[report_df["neutralizing"] == "yes"]["sequence"].nunique()

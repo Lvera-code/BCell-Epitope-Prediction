@@ -62,7 +62,7 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import List
+from typing import List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -657,7 +657,53 @@ _CORE_ANSI_START = "\033[1;33m"
 _CORE_ANSI_END = "\033[0m"
 
 
-def print_traceback_table(traceback_df: pd.DataFrame) -> None:
+def _core_span_in_sequence(sequence: str, core: str) -> Optional[Tuple[int, int]]:
+    """Ubica el rango ``[start, end)`` de ``sequence`` que corresponde a ``core``.
+
+    ``core`` no siempre es una subcadena LITERAL de ``sequence`` -- NetMHCpan
+    lo construye alineando un nucleo teorico de 9 aa contra la ventana real,
+    y esa alineacion puede tener:
+
+    * Una insercion marcada con un guion literal (ventanas <9 aa, ej.
+      ``FTP-PHGGL`` para la secuencia de 8 aa ``FTPPHGGL``): el guion nunca
+      aparece en ``sequence``, asi que buscarlo como substring literal falla.
+    * Una delecion SIN marcar (ventanas >9 aa, ej. core ``FFPDHQLAF`` para la
+      secuencia de 11 aa ``FFPDHQLDPAF``: NetMHCpan omite 2 residuos del medio
+      sin dejar ningun caracter que indique el hueco): tambien falla como
+      substring literal, aunque las letras de ``core`` SI aparecen todas en
+      ``sequence``, en el mismo orden, solo que no consecutivas.
+
+    En ambos casos se resuelve con el mismo mecanismo: se quita cualquier
+    guion de ``core`` y se buscan sus letras como SUBSECUENCIA (mismo orden,
+    saltos permitidos) dentro de ``sequence``, de izquierda a derecha sin
+    retroceder. El rango devuelto va de la primera a la ultima letra
+    calzada, INCLUYENDO los residuos intermedios que el core se salta -- se
+    resalta el tramo completo de interaccion, no solo las letras exactas del
+    core (mas legible en terminal que un resaltado discontinuo, y para el
+    caso de guion el tramo termina siendo ``sequence`` completa, que es
+    ademas la lectura correcta: en una ventana de 8 aa el nucleo ocupa
+    practicamente todo el peptido).
+
+    Devuelve ``None`` si no se pudo alinear ninguna letra (no deberia pasar
+    en la practica: ``core`` siempre proviene del mismo alelo/ventana que
+    ``sequence``, nunca de un alelo invertido -ver docstring de clase-, pero
+    se maneja por robustez).
+    """
+    core_letters = core.replace("-", "")
+    if not core_letters:
+        return None
+    positions = []
+    pos = 0
+    for letter in core_letters:
+        idx = sequence.find(letter, pos)
+        if idx == -1:
+            return None
+        positions.append(idx)
+        pos = idx + 1
+    return positions[0], positions[-1] + 1
+
+
+def print_traceback_table(traceback_df: pd.DataFrame, require_exact_core: bool = False) -> None:
     """Imprime la tabla de candidatos validos enriquecida con su traceback a la Fase 3.
 
     El nucleo de union de 9 aa se resalta en color directamente dentro de la
@@ -676,9 +722,35 @@ def print_traceback_table(traceback_df: pd.DataFrame) -> None:
     dentro de que rango de esa linea cae la secuencia F5, para no confundir
     el match con la propia columna 'Core (9 aa)' si contiene el mismo texto-
     y se inyecta el color ahi, sin anadir ni quitar ningun caracter visible.
-    ``core_9aa`` siempre proviene de un alelo en orientacion normal (ver
-    ``_parse_xls``), asi que siempre es una subcadena literal de la
-    secuencia F5 -nunca cae en el fallback sin color por un core invertido-.
+
+    Args:
+        require_exact_core: Controla COMO se busca el core dentro de F5, y la
+            diferencia tiene una razon biologica real (no es solo un ajuste
+            visual):
+
+            * ``False`` (default, Fase 5/MHC-II): usa ``_core_span_in_sequence``
+              (subsecuencia, permite huecos). NetMHCIIpan tiene groove ABIERTO
+              en los dos extremos -- el core de 9 aa que encuentra es siempre
+              un tramo REAL y contiguo dentro de F5 (nunca necesita insertar
+              ni borrar residuos, solo elige el mejor registro de 9 aa dentro
+              del peptido dado), asi que el resaltado sigue siendo parcial y
+              con significado real: lo que queda sin colorear es flanco
+              genuino, no un artefacto.
+            * ``True`` (Fase 5b/MHC-I): usa ``sequence.find(core)`` LITERAL,
+              sin fallback -- NetMHCpan tiene groove CERRADO en los dos
+              extremos, asi que F5 y el core teorico de 9 aa casi nunca
+              coinciden para ventanas de 8/10/11 aa (core con guion insertado
+              o con 1-2 residuos borrados del medio, ver
+              ``_core_span_in_sequence``). Confirmado empiricamente: el
+              fallback por subsecuencia terminaba resaltando el 100% de F5 en
+              TODOS los casos de MHC-I (los huecos/borrados de NetMHCpan
+              nunca tocan las posiciones de anclaje P1/PΩ, que son los dos
+              extremos del peptido -- asi que la primera y ultima letra
+              siempre calzan en el borde, y el resaltado ya no distinguia
+              nada). Con ``True``, solo se colorea cuando F5 es exactamente
+              un 9-mero (core = F5 letra por letra); los 8/10/11-meros
+              quedan sin colorear -- correcto, ahi no hay "nucleo dentro de
+              flanco" que resaltar, todo el peptido corto ES el nucleo.
 
     Cuando la corrida cubre varias proteinas de entrada (FASTA multi-registro,
     p. ej. ``fasta_inputs/MonkeyPox/mpxv_targets.fasta`` con 6 accessions),
@@ -688,6 +760,13 @@ def print_traceback_table(traceback_df: pd.DataFrame) -> None:
     proteinas de entrada)- y se imprime una linea separadora cada vez que
     cambia el accession, para que cada proteina se lea como un bloque
     propio en vez de una lista continua.
+
+    Columna ``NetCleave`` condicional: esta misma funcion se reusa para Fase 5
+    (MHC-II, nunca corre NetCleave) y Fase 5b (MHC-I, si lo corre) -- la
+    columna solo se agrega si ``traceback_df`` trae ``netcleave_c_term_match``
+    (la anota ``netcleave_engine.annotate_cterm_cleavage`` ANTES de llamar a
+    esta funcion, ver ``pipeline.fase_5b_tc_promiscuidad``), asi que en Fase 5
+    la tabla queda igual que antes.
     """
     if traceback_df.empty:
         print("No hay candidatos validos con traceback a la Fase 3 para mostrar.")
@@ -697,6 +776,9 @@ def print_traceback_table(traceback_df: pd.DataFrame) -> None:
     display_df["Promiscuidad"] = (
         display_df["n_alelos_promiscuos"].astype(str) + "/" + display_df["n_alelos_evaluados"].astype(str)
     )
+    has_netcleave = "netcleave_c_term_match" in display_df.columns
+    if has_netcleave:
+        display_df["NetCleave"] = display_df["netcleave_c_term_match"].map({True: "Si", False: "No"})
     display_df = display_df.rename(
         columns={
             "accession": "Accession",
@@ -714,6 +796,8 @@ def print_traceback_table(traceback_df: pd.DataFrame) -> None:
         "Accession", seq_col, core_col, "Start", "End",
         "Origen", "Promiscuidad", "Min %Rank",
     ]
+    if has_netcleave:
+        columns_order.append("NetCleave")
     display_df = display_df[columns_order].reset_index(drop=True)
 
     # max_colwidth=None desactiva el truncado con '...' de pandas: con el
@@ -734,10 +818,17 @@ def print_traceback_table(traceback_df: pd.DataFrame) -> None:
         prev_accession = accession
 
         seq_start = line.find(sequence)
-        core_offset = sequence.find(core) if seq_start != -1 else -1
-        if core_offset == -1:
+        if seq_start == -1:
             print(line)
             continue
-        core_start = seq_start + core_offset
-        core_end = core_start + len(core)
+        if require_exact_core:
+            core_offset = sequence.find(core)
+            span = (core_offset, core_offset + len(core)) if core_offset != -1 else None
+        else:
+            span = _core_span_in_sequence(sequence, core)
+        if span is None:
+            print(line)
+            continue
+        core_start = seq_start + span[0]
+        core_end = seq_start + span[1]
         print(f"{line[:core_start]}{_CORE_ANSI_START}{line[core_start:core_end]}{_CORE_ANSI_END}{line[core_end:]}")

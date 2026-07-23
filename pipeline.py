@@ -128,7 +128,12 @@ from src.engines.bepipred_engine import RESIDUE_COLUMN_CANDIDATES as BEPIPRED_RE
 from src.engines.blast_engine import print_blast_report, run_blastp_filter
 from src.engines.algpred_engine import predict_allergenicity, print_allergenicity_report
 from src.engines.consensus import build_annotated_union_table, print_union_table
-from src.engines.construct_assembly import assemble_construct
+from src.engines.construct_assembly import (
+    assemble_construct,
+    print_construct_breakdown,
+    print_construct_colored,
+    print_multi_accession_warning,
+)
 from src.engines.iapred_engine import predict_intrinsic_antigenicity, print_iapred_report
 from src.engines.discotope_engine import DiscoTopeEngine
 from src.engines.discotope_engine import extract_epitopes as extract_discotope_epitopes
@@ -1032,7 +1037,7 @@ def fase_5b_tc_promiscuidad(safe_df: pd.DataFrame, output_dir: Path, input_stem:
         n_cterm_match = int(traceback_df["netcleave_c_term_match"].sum())
         print(f"Evidencia de corte C-terminal (NetCleave): {n_cterm_match}/{len(traceback_df)} candidato(s).")
 
-    print_traceback_table(traceback_df)
+    print_traceback_table(traceback_df, require_exact_core=True)
 
     traceback_df.to_csv(final_path, index=False)
     _write_phase_checkpoint(final_path, input_hash)
@@ -1066,7 +1071,7 @@ def fase_6_bnab_crossref(safe_df: pd.DataFrame, output_dir: Path, input_stem: st
         print("No hay peptidos 'Seguros' provenientes de la Fase 4 para evaluar.")
         empty_df = pd.DataFrame(columns=[
             "sequence", "antibody_name", "epitope_sequence", "match_length", "epitope_name",
-            "hxb2_location", "neutralizing", "antibody_type", "binding_region",
+            "hxb2_location", "neutralizing", "antibody_type", "subtype", "binding_region",
             "catnap_mean_ic50", "catnap_n_viruses",
         ])
         empty_df.to_csv(final_path, index=False)
@@ -1087,7 +1092,7 @@ def fase_6_bnab_crossref(safe_df: pd.DataFrame, output_dir: Path, input_stem: st
         min_overlap=Settings.LANL_CATNAP_MIN_OVERLAP,
     )
 
-    print_bnab_crossref_report(report)
+    print_bnab_crossref_report(report, csv_path=final_path)
 
     report.to_csv(final_path, index=False)
     _write_phase_checkpoint(final_path, input_hash)
@@ -1135,7 +1140,12 @@ def fase_7_ensamblaje_constructo(
         cached_sequence = "".join(cached_metadata["sequence"]) if not cached_metadata.empty else ""
         if cached_sequence:
             print(f"Constructo ensamblado: {len(cached_sequence)} aa.")
-            print(f">{input_stem}_constructo\n{cached_sequence}")
+            print()
+            print_construct_breakdown(cached_metadata)
+            print()
+            print(f">{input_stem}_constructo")
+            print_construct_colored(cached_metadata)
+            print_multi_accession_warning(cached_metadata)
         return cached_sequence, cached_metadata
 
     construct_sequence, metadata_df = assemble_construct(safe_df, algpred_df, stackgly_df, htl_df, ctl_df)
@@ -1151,7 +1161,12 @@ def fase_7_ensamblaje_constructo(
     n_ctl = int((metadata_df["block"] == "CTL").sum())
     print(f"Constructo ensamblado: {len(construct_sequence)} aa ({n_bcell} B-cell + {n_htl} HTL + {n_ctl} CTL, "
           f"top-{Settings.CONSTRUCT_TOP_N_PER_CLASS} por clase).")
-    print(f">{input_stem}_constructo\n{construct_sequence}")
+    print()
+    print_construct_breakdown(metadata_df)
+    print()
+    print(f">{input_stem}_constructo")
+    print_construct_colored(metadata_df)
+    print_multi_accession_warning(metadata_df)
 
     fasta_path.write_text(f">{input_stem}_constructo\n{construct_sequence}\n")
     metadata_df.to_csv(metadata_path, index=False)

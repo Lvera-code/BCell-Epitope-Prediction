@@ -232,5 +232,6 @@ def print_tmbed_regions_report(regions_df: pd.DataFrame) -> None:
         # explicito queda pegada a "tipo" (mismo caso que signalp_engine.py).
         Column("tipo", lambda r: r.type, 18, "<", prefix="  "),
     ]
-    print_fixed_width_table(regions_df.itertuples(index=False), columns)
+    display_df = regions_df.sort_values(["accession", "start"]).reset_index(drop=True)
+    print_fixed_width_table(display_df.itertuples(index=False), columns, group_by=lambda r: r.accession)
     print(f"\nTotal: {len(regions_df)} region(es) transmembrana/peptido senal en {regions_df['accession'].nunique()} accession(es).")
