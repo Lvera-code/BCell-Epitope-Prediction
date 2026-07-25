@@ -13,10 +13,17 @@ pura de pandas/stdlib, misma logica verificada por los tests de ese plugin.
 Proposito en Fase 3b (ver ``pipeline.py``): correr sobre la secuencia
 COMPLETA de cada accession (no por peptido candidato, a diferencia de
 Fase 4b/4c) y descartar de la union anotada de Fase 3 cualquier region que
-caiga dentro de una helice/tira transmembrana o del peptido senal
-N-terminal, ANTES de BLASTp (Fase 4) -- esos residuos no son accesibles a
-anticuerpos en la proteina madura/anclada a membrana (o, en el caso del
-peptido senal, se escinden y no forman parte de la proteina madura).
+caiga dentro de una helice/tira transmembrana, del peptido senal N-terminal
+o de un tramo intracelular (citoplasmatico), ANTES de BLASTp (Fase 4) --
+ninguno de esos residuos es accesible a anticuerpos en la proteina
+madura/anclada a membrana (el peptido senal, ademas, se escinde y no forma
+parte de la proteina madura). TMbed con ``--out-format 1`` ya reporta
+topologia completa por residuo, no solo las 3 clases enmascaradas
+historicamente: junto a 'B'/'H'/'S' devuelve 'i'/'o' para distinguir el
+lado citoplasmatico (dentro) del extracelular (fuera) de cada residuo sin
+membrana -- suficiente para inferir topologia completa (incluida una
+proteina enteramente citoplasmatica, sin TM ni peptido senal, como
+PSMD7) sin sumar ninguna herramienta de localizacion subcelular aparte.
 """
 
 import subprocess
@@ -36,12 +43,20 @@ logger = setup_logger(__name__)
 _REGIONS_COLUMNS = ["accession", "start", "end", "type"]
 
 # Letras de clase de 'tmbed predict --out-format 1' que se convierten en
-# region de enmascarado. 'i'/'o' (residuo no-membrana, adentro/afuera) se
-# dejan sin tocar -- ya se presumen accesibles al solvente.
+# region de enmascarado. 'i' (residuo no-membrana, lado citoplasmatico) se
+# enmascara igual que TM/senal -- no es accesible a anticuerpos. Solo 'o'
+# (no-membrana, lado extracelular) se deja sin tocar: es la unica clase que
+# se presume accesible al solvente en la proteina madura. Una accession sin
+# TM ni peptido senal cuya secuencia sea 100% 'i' (ej. PSMD7) termina asi
+# cubierta por una unica region 'intracellular' de punta a punta, lo que la
+# excluye por completo de la union anotada via el mismo mecanismo de
+# solapamiento (filter_overlapping_regions) sin necesitar una bandera aparte
+# a nivel de proteina.
 _MASKED_CLASS_TYPES = {
     "B": "TM_beta_strand",
     "H": "TM_alpha_helix",
     "S": "signal_peptide",
+    "i": "intracellular",
 }
 
 
@@ -134,9 +149,10 @@ def predict_tm_signal_regions(
 
     Returns:
         DataFrame con columnas ``accession``, ``start``, ``end`` (1-indexado,
-        inclusivo), ``type`` (``'TM_beta_strand'``, ``'TM_alpha_helix'`` o
-        ``'signal_peptide'``) -- una fila por region contigua detectada.
-        Vacio si TMbed no detecto ninguna region en ninguna accession.
+        inclusivo), ``type`` (``'TM_beta_strand'``, ``'TM_alpha_helix'``,
+        ``'signal_peptide'`` o ``'intracellular'``) -- una fila por region
+        contigua detectada. Vacio si TMbed no detecto ninguna region en
+        ninguna accession (secuencia 100% extracelular, clase 'o').
 
     Raises:
         EngineExecutionError: Si el venv/pesos no estan instalados, el

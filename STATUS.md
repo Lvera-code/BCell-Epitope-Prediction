@@ -41,7 +41,7 @@ ejecucion.
 
 | Herramienta | Instalacion | Motor Python (`src/engines/`) | Fase | Notas |
 |---|---|---|---|---|
-| TMbed (enmascarado TM/senal) | venv en `scipion-chem-tmbed/.venv-tmbed` (REUSADO del plugin Scipion, ver Tabla B), pesos ProtT5-XL-U50 en `scipion-chem-tmbed/tmbed_src/tmbed/models/t5` (REUSADOS por StackGlyEmbed, mismo encoder) | `tmbed_engine.py` | 3b, ANTES de BLASTp (Fase 4) -- corre sobre la secuencia COMPLETA de cada accession, no por peptido candidato | Formato de salida `--out-format 1`: 'B'/'H'/'S' (tira/helice TM/senal) se colapsan en regiones de enmascarado, 'i'/'o' (no-membrana) se ignoran. Parseo reimplementado en forma pura (sin importar el plugin Scipion, que depende de `pwchem` no instalado en el venv principal) -- verificado byte-a-byte contra VDAC1_P21796 (18 regiones `TM_beta_strand`, mismas coordenadas que el test del plugin). Cache por hash de las secuencias completas (no de `union_df`): un cambio de umbral de Fase 3 no invalida el cache de TMbed. |
+| TMbed (enmascarado TM/senal/intracelular) | venv en `scipion-chem-tmbed/.venv-tmbed` (REUSADO del plugin Scipion, ver Tabla B), pesos ProtT5-XL-U50 en `scipion-chem-tmbed/tmbed_src/tmbed/models/t5` (REUSADOS por StackGlyEmbed, mismo encoder) | `tmbed_engine.py` | 3b, ANTES de BLASTp (Fase 4) -- corre sobre la secuencia COMPLETA de cada accession, no por peptido candidato | Formato de salida `--out-format 1`: 'B'/'H'/'S'/'i' (tira/helice TM, senal, intracelular) se colapsan en regiones de enmascarado; solo 'o' (extracelular, no-membrana) se deja sin tocar. Desde 2026-07-25, 'i' se enmascara igual que TM/senal (antes se ignoraba) -- una accession sin TM ni peptido senal pero 100% citoplasmatica (ej. PSMD7) queda cubierta de punta a punta por una unica region `intracellular` y pierde todas sus candidatas, efecto equivalente a excluirla por completo sin bandera aparte. Parseo reimplementado en forma pura (sin importar el plugin Scipion, que depende de `pwchem` no instalado en el venv principal) -- verificado byte-a-byte contra VDAC1_P21796 (18 regiones `TM_beta_strand`, mismas coordenadas que el test del plugin). Cache por hash de las secuencias completas (no de `union_df`): un cambio de umbral de Fase 3 no invalida el cache de TMbed. |
 | NetMHCpan-4.2 (MHC-I) | `B-Cell-Epitope-Prediction/netMHCpan-4.2/` | `netmhcpan_engine.py` | 5b, paralela a Fase 5 (MHC-II), NO fusionada (vias de presentacion antigenica distintas) | **Panel de 23 alelos (12 HLA-A/B + 11 HLA-C, ver abajo).** Buffer overflow del binario en modo peptido exacto para entradas >55aa (exit code 0 silencioso, el limite no cambia con el tamaño del panel) -- enrutado automaticamente a modo proteina para evitarlo. Sin columna `Inverted` (a diferencia de NetMHCIIpan, verificado, no asumido). |
 | AlgPred 2.0 (alergenicidad) | venv en `scipion-chem-algpred/.venv-algpred` | `algpred_engine.py` | 4b (per-peptido) y reusado en 8 (constructo completo) | Bug real del script upstream: revienta con `ValueError` si el batch tiene exactamente 1 secuencia (bug de reshape de sklearn). Workaround: se duplica la secuencia y se descarta la fila extra. En Fase 8 este es el camino NORMAL (siempre 1 secuencia por corrida), no un caso de borde. |
 | NetCleave (cleavage MHC-I) | venv en `scipion-chem-netcleave/.venv-netcleave`, modelo pre-entrenado bundled | `netcleave_engine.py` | Anotacion dentro del reporte de Fase 5b | Verifica si hay un corte proteasomal EXACTO en el residuo inmediatamente posterior al candidato aceptado por NetMHCpan (no solo "hay algun corte en la region"). Señal complementaria, no filtro. El .xlsx de salida se nombra `<stem>_<primer-token-del-header-fasta>_NetCleave.xlsx`; el wrapper usa glob, no el nombre exacto. |
@@ -150,6 +150,34 @@ candidatos reales: de 15 en `union_epitopes.csv`, 3 se eliminan en
 peptido senal 1-34; 251-325 y 924-941 con helices TM) -- confirma que Fase
 3b filtra activamente, no solo detecta sin efecto. En los 3 casos el resto
 de fases (4b-8) completa sin errores hasta `PIPELINE COMPLETADO`.
+
+**Extension 2026-07-25: topologia completa (intra/extracelular).** La
+validacion previa de este parrafo se hizo con la logica original, que solo
+enmascaraba B/H/S ('i'/'o' se ignoraban) -- una accession sin TM ni peptido
+senal pero enteramente citoplasmatica (caso real: PSMD7, subunidad del
+proteasoma 26S) no tenia nada que enmascarar bajo esa regla, asi que sus
+candidatos pasaban intactos a Fase 4 pese a ser inaccesibles a anticuerpos.
+Investigacion previa a implementar (documentada en el vault,
+`01-Proyectos/BCell-Epitope-Prediction/Decisiones/2026-07-25-topologia-completa-fase3b-tmbed.md`):
+TMbed con `--out-format 1` YA reporta topologia completa por residuo ('i'
+citoplasmatico / 'o' extracelular ademas de B/H/S), asi que no hizo falta
+sumar DeepLoc/DeepTMHMM -- se corrigio `_MASKED_CLASS_TYPES` para tratar
+'i' como una region enmascarable mas (`intracellular`), mismo mecanismo que
+TM/senal, sin bandera nueva a nivel de proteina. Efecto colateral deseado,
+confirmado con Enzo antes de implementar: las asas citoplasmaticas de
+proteinas multipaso (ej. SLC8A1, 199 residuos 'i' entre sus 11 helices TM)
+ahora tambien se enmascaran, corrigiendo el mismo bug en su forma mas
+sutil. Validado reprocesando los `.pred` crudos YA cacheados de corridas
+reales (sin re-ejecutar TMbed): PSMD7 (`iiii...i`, 325/325 residuos)
+produce una unica region `intracellular` 1-324 que descarta las 3 filas
+candidatas de `union_epitopes.csv` (kept=0) -- exclusion completa
+confirmada; THBS2 (senal 1-18 + 'o' en el resto) produce solo
+`signal_peptide` 1-18, de 19 filas candidatas se descarta unicamente la que
+ya solapaba con el peptido senal (comportamiento preexistente, no nuevo),
+las 18 restantes pasan intactas -- sin exclusion indebida. 2 tests nuevos
+dedicados (`test_psmd7_intracelular_sin_tm_ni_senal_se_excluye_por_completo`,
+`test_thbs2_secretada_pasa_integra_sin_exclusion_indebida`) en
+`tests/test_tmbed_engine.py`, 221/221 tests de la suite completa pasan.
 
 **Suite de tests** (`pytest tests/`): incluye cobertura dedicada de
 `tmbed_engine.py`, sin depender de ningun venv/binario externo instalado

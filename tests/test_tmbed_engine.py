@@ -1,7 +1,10 @@
 """Tests de la Fase 3b (src/engines/tmbed_engine.py): parseo del formato de 3 lineas
-por proteina de 'tmbed predict --out-format 1', colapsado de clases en regiones de
-enmascarado, filtro de solapamiento contra la union anotada, y propagacion de errores
-del subproceso.
+por proteina de 'tmbed predict --out-format 1', colapsado de clases (incluida 'i',
+intracelular) en regiones de enmascarado, filtro de solapamiento contra la union
+anotada -- incluyendo los casos de validacion PSMD7 (control negativo, proteina
+100% citoplasmatica que debe quedar excluida por completo) y THBS2 (control
+positivo, secretada, que debe pasar integra) --, y propagacion de errores del
+subproceso.
 """
 
 import subprocess
@@ -53,8 +56,8 @@ def test_sequences_vacio_no_invoca_subprocess(monkeypatch, tmp_path):
 
 
 def test_sin_ninguna_region_devuelve_dataframe_vacio(monkeypatch, tmp_path):
-    # Proteina toda 'i' (no-membrana, adentro): no hay nada que enmascarar.
-    monkeypatch.setattr(subprocess, "run", _mock_run_writing([("acc1", "MKTAY", "iiiii")]))
+    # Proteina toda 'o' (no-membrana, afuera): nada que enmascarar.
+    monkeypatch.setattr(subprocess, "run", _mock_run_writing([("acc1", "MKTAY", "ooooo")]))
 
     result = predict_tm_signal_regions({"acc1": "MKTAY"}, tmp_path)
 
@@ -62,7 +65,7 @@ def test_sin_ninguna_region_devuelve_dataframe_vacio(monkeypatch, tmp_path):
 
 
 def test_colapsa_residuos_consecutivos_de_la_misma_clase_en_una_region(monkeypatch, tmp_path):
-    # 'S' (senal) en 1-3, 'i' en 4-5, 'H' (helice TM) en 6-9.
+    # 'S' (senal) en 1-3, 'i' (intracelular) en 4-5, 'H' (helice TM) en 6-9.
     monkeypatch.setattr(subprocess, "run", _mock_run_writing([("acc1", "MKTAYIAKQ", "SSSiiHHHH")]))
 
     result = predict_tm_signal_regions({"acc1": "MKTAYIAKQ"}, tmp_path)
@@ -70,6 +73,7 @@ def test_colapsa_residuos_consecutivos_de_la_misma_clase_en_una_region(monkeypat
     rows = {(r.accession, r.start, r.end, r.type) for r in result.itertuples(index=False)}
     assert rows == {
         ("acc1", 1, 3, "signal_peptide"),
+        ("acc1", 4, 5, "intracellular"),
         ("acc1", 6, 9, "TM_alpha_helix"),
     }
 
@@ -95,6 +99,56 @@ def test_region_minima_descarta_regiones_cortas(monkeypatch, tmp_path):
     result = predict_tm_signal_regions({"acc1": "MKTAYIAKQ"}, tmp_path)
 
     assert result.empty
+
+
+def test_psmd7_intracelular_sin_tm_ni_senal_se_excluye_por_completo(monkeypatch, tmp_path):
+    # Control negativo (subunidad del proteasoma 26S, ver fasta_outputs/PSMD7_P51665_AF_tmbed_raw.pred):
+    # sin peptido senal, sin TM, clase 'i' de punta a punta -- 100% citoplasmatica.
+    sequence = "MPELAVQKVVVHPLVLLSVVDHFNRIGKVGN"
+    classes = "i" * len(sequence)
+    monkeypatch.setattr(subprocess, "run", _mock_run_writing([("PSMD7_P51665_AF", sequence, classes)]))
+
+    regions = predict_tm_signal_regions({"PSMD7_P51665_AF": sequence}, tmp_path)
+
+    assert list(regions.itertuples(index=False)) == [
+        ("PSMD7_P51665_AF", 1, len(sequence), "intracellular"),
+    ]
+
+    # Region candidata (ej. BepiPred+ScanNet) que cae dentro de esa proteina: debe descartarse entera.
+    union_df = pd.DataFrame({
+        "accession": ["PSMD7_P51665_AF"],
+        "start": [5],
+        "end": [20],
+        "sequence": [sequence[4:20]],
+    })
+    kept, discarded = filter_overlapping_regions(union_df, regions)
+
+    assert kept.empty
+    assert list(discarded["type"]) == ["intracellular"]
+
+
+def test_thbs2_secretada_pasa_integra_sin_exclusion_indebida(monkeypatch, tmp_path):
+    # Control positivo (trombospondina-2, secretada, ver fasta_outputs/THBS2_P35442_AF_tmbed_raw.pred):
+    # peptido senal N-terminal (1-18) seguido de clase 'o' (extracelular) en el resto -- sin TM.
+    sequence = "MVWRLVLLALWVWPSTQAGHQDKDTTFDLFSISNINRKTIGAKQFRGPDPGVPAYRFVRFDYIPPVNADD"
+    classes = "S" * 18 + "o" * (len(sequence) - 18)
+    monkeypatch.setattr(subprocess, "run", _mock_run_writing([("THBS2_P35442_AF", sequence, classes)]))
+
+    regions = predict_tm_signal_regions({"THBS2_P35442_AF": sequence}, tmp_path)
+
+    assert set(regions["type"]) == {"signal_peptide"}
+
+    # Region candidata en la proteina madura (fuera del peptido senal): no debe descartarse.
+    union_df = pd.DataFrame({
+        "accession": ["THBS2_P35442_AF"],
+        "start": [30],
+        "end": [50],
+        "sequence": [sequence[29:50]],
+    })
+    kept, discarded = filter_overlapping_regions(union_df, regions)
+
+    assert len(kept) == 1
+    assert discarded.empty
 
 
 def test_desfase_secuencia_prediccion_lanza_error(monkeypatch, tmp_path):

@@ -3,8 +3,8 @@
 Orquestador de terminal (`pipeline.py`) que procesa un FASTA de secuencia o
 una estructura (PDB/mmCIF) a través de 11 fases: desde antigenicidad (unión
 anotada de hasta 4 motores independientes: 2 de secuencia + 2
-estructurales), enmascarado de regiones transmembrana/péptido señal (no
-accesibles a anticuerpos), ausencia de homología con el proteoma humano
+estructurales), enmascarado de regiones transmembrana/péptido señal/
+intracelulares (no accesibles a anticuerpos), ausencia de homología con el proteoma humano
 (riesgo de autoinmunidad), alergenicidad, N-glicosilación, inmunogenicidad
 T-helper (MHC-II/HLA-DR/DQ/DP, CD4+) e inmunogenicidad T-citotóxica
 (MHC-I/HLA-A/B/C, CD8+, con evidencia de corte proteasomal) y cruce con
@@ -75,21 +75,28 @@ PDB.
    colapsarlos a regiones contiguas vía ventana deslizante es una
    simplificación deliberada para que Fase 4/5 sigan operando sobre péptidos
    lineales sintetizables.
-3b. **Enmascarado transmembrana/péptido señal** — TMbed ejecutado en local
-   (`src/engines/tmbed_engine.py`), sobre la secuencia COMPLETA de cada
-   accession (no por péptido candidato, a diferencia de Fase 4b/4c: TMbed
+3b. **Enmascarado transmembrana/péptido señal/intracelular** — TMbed ejecutado
+   en local (`src/engines/tmbed_engine.py`), sobre la secuencia COMPLETA de
+   cada accession (no por péptido candidato, a diferencia de Fase 4b/4c: TMbed
    necesita el contexto completo de la proteína para predecir topología de
    membrana). Descarta de la unión anotada de Fase 3 cualquier región que
-   caiga dentro de una hélice/tira transmembrana o del péptido señal
-   N-terminal — esos residuos no son accesibles a anticuerpos en la
-   proteína madura/anclada a membrana, así que proponerlos como epítopo
-   B-cell no tiene sentido biológico. Reusa el mismo venv/pesos ya
-   instalados para el plugin Scipion `scipion-chem-tmbed` (repo hermano,
-   mismo encoder ProtT5-XL-U50 que StackGlyEmbed), sin importar código de
-   ese plugin (depende de `pwchem`). Reporte propio:
-   `<nombre>_tmbed_regions.csv` (regiones detectadas) y
-   `<nombre>_union_epitopes_masked.csv` (unión post-enmascarado, insumo real
-   de la Fase 4).
+   caiga dentro de una hélice/tira transmembrana, del péptido señal
+   N-terminal o de un tramo intracelular (citoplasmático) — esos residuos no
+   son accesibles a anticuerpos en la proteína madura/anclada a membrana, así
+   que proponerlos como epítopo B-cell no tiene sentido biológico. Topología
+   completa por residuo sale directo de TMbed (`--out-format 1`, clases
+   `i`/`o` para dentro/fuera de la membrana además de `B`/`H`/`S`), sin sumar
+   ninguna herramienta de localización subcelular aparte: una accession sin
+   TM ni péptido señal pero enteramente citoplasmática (p. ej. PSMD7,
+   subunidad del proteasoma 26S) queda cubierta de punta a punta por una
+   única región `intracellular` y pierde todas sus candidatas — exclusión
+   completa por el mismo mecanismo de solapamiento, sin bandera aparte a
+   nivel de proteína. Reusa el mismo venv/pesos ya instalados para el plugin
+   Scipion `scipion-chem-tmbed` (repo hermano, mismo encoder ProtT5-XL-U50
+   que StackGlyEmbed), sin importar código de ese plugin (depende de
+   `pwchem`). Reporte propio: `<nombre>_tmbed_regions.csv` (regiones
+   detectadas) y `<nombre>_union_epitopes_masked.csv` (unión
+   post-enmascarado, insumo real de la Fase 4).
 4. **Filtro de tolerancia** — BLASTp local contra el proteoma humano, con
    E-value seleccionado dinámicamente por longitud del péptido (laxo para
    péptidos cortos, estricto para dominios/proteínas completas), descarta
@@ -769,7 +776,7 @@ python3 -m venv .venv-signalp   # Python 3.10, ver nota abajo
 Variables de entorno: `SIGNALP_PYTHON_BIN`, `SIGNALP_BINARY_NAME` (default
 `signalp6`), `SIGNALP_MODEL_DIR`, `SIGNALP_ORGANISM` (`other` por defecto).
 
-### 16. TMbed (obligatorio para la Fase 3b, enmascarado transmembrana/péptido señal)
+### 16. TMbed (obligatorio para la Fase 3b, enmascarado transmembrana/péptido señal/intracelular)
 
 Código abierto (Apache-2.0, Bernhofer & Rost 2022), pip-instalable — pero sus
 pesos del encoder ProtT5-XL-U50 (~2.4 GB) no vienen bundled y normalmente se
@@ -856,10 +863,10 @@ CSV). Cuando el FASTA de entrada tiene varias proteínas (varios
 ScanNet), Fase 3b y Fase 6 separan cada proteína con una línea divisoria,
 para no leerlas como una lista continua.
 
-La Fase 3b, además de la tabla de regiones transmembrana/péptido señal
-detectadas, imprime también qué regiones de la unión anotada se
-descartaron por solaparse con ellas (`accession`/`start`/`end`/`tipo`),
-cuando corresponde.
+La Fase 3b, además de la tabla de regiones transmembrana/péptido
+señal/intracelulares detectadas, imprime también qué regiones de la unión
+anotada se descartaron por solaparse con ellas
+(`accession`/`start`/`end`/`tipo`), cuando corresponde.
 
 La Fase 6 corta la columna `Secuencia` cada 40 caracteres en vez de
 estirar la tabla a lo ancho (un péptido HIV Env candidato puede medir 70+
@@ -892,8 +899,8 @@ la tabla de Fase 7).
 | `<nombre>_scannet_epitopes.csv` | 3 | Regiones de epítopo mapeadas localmente (ScanNet) |
 | `<nombre>_union_epitopes.csv` | 3 | Unión anotada de los motores activos (columna `origen`), entrada de la Fase 3b |
 | `<nombre>_tmbed_raw.pred` | 3b | Salida cruda de TMbed (formato de 3 líneas por proteína), para trazabilidad |
-| `<nombre>_tmbed_regions.csv` | 3b | Regiones transmembrana/péptido señal detectadas (`accession`/`start`/`end`/`type`) |
-| `<nombre>_union_epitopes_masked.csv` | 3b | Unión anotada tras descartar regiones solapadas con TM/péptido señal, entrada real de la Fase 4 |
+| `<nombre>_tmbed_regions.csv` | 3b | Regiones transmembrana/péptido señal/intracelulares detectadas (`accession`/`start`/`end`/`type`) |
+| `<nombre>_union_epitopes_masked.csv` | 3b | Unión anotada tras descartar regiones solapadas con TM/péptido señal/intracelular, entrada real de la Fase 4 |
 | `<nombre>_blast_report.csv` | 4 | Veredicto de tolerancia (Segura / Autoinmunidad) por región |
 | `<nombre>_algpred_raw.csv` | 4b | Salida cruda de AlgPred 2.0, para trazabilidad |
 | `<nombre>_alergenicidad_report.csv` | 4b | Veredicto de alergenicidad (Allergen / Non-Allergen) por péptido `'Segura'` |

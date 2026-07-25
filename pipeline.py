@@ -45,15 +45,23 @@ A partir de Fase 2, el resto del flujo es identico para los 3 caminos:
        ``origen`` con TODOS los motores contribuyentes. Filtro de longitud
        inquebrantable: se descarta cualquier region final menor a 9 aa antes
        de la Fase 4.
-    3b. Enmascarado transmembrana/peptido senal (TMbed LOCAL,
+    3b. Enmascarado transmembrana/peptido senal/intracelular (TMbed LOCAL,
        ``src.engines.tmbed_engine``): corre sobre la secuencia COMPLETA de
        cada accession (no por peptido candidato) y descarta de la union
        anotada de Fase 3 cualquier region que caiga dentro de una
-       helice/tira transmembrana o del peptido senal N-terminal, ANTES de
-       BLASTp -- esos residuos no son accesibles a anticuerpos en la
-       proteina madura/anclada a membrana. Reusa el venv/pesos ya instalados
-       para el plugin Scipion ``scipion-chem-tmbed`` (repo hermano), sin
-       importar codigo de ese plugin.
+       helice/tira transmembrana, del peptido senal N-terminal o de un tramo
+       citoplasmatico, ANTES de BLASTp -- esos residuos no son accesibles a
+       anticuerpos en la proteina madura/anclada a membrana. Topologia
+       completa por residuo ('i'/'o', dentro/fuera) sale directo de TMbed
+       (``--out-format 1``), sin herramienta de localizacion subcelular
+       aparte: una accession sin TM ni peptido senal pero 100% citoplasmatica
+       (ej. PSMD7) queda cubierta de punta a punta por una unica region
+       'intracellular' y pierde todas sus filas candidatas -- efecto
+       equivalente a excluirla por completo, via el mismo mecanismo de
+       solapamiento, sin bandera aparte a nivel de proteina. Reusa el
+       venv/pesos ya instalados para el plugin Scipion
+       ``scipion-chem-tmbed`` (repo hermano), sin importar codigo de ese
+       plugin.
     4. Filtro de tolerancia inmunologica: BLASTp local contra el proteoma
        humano, descarta homologos de alta identidad (``src.engines.blast_engine``).
        Los peptidos 'Segura' resultantes alimentan, en paralelo y sin
@@ -699,7 +707,7 @@ def fase_3b_tm_signal_masking(
     output_dir: Path,
     input_stem: str,
 ) -> pd.DataFrame:
-    """Fase 3b: descarta de la union anotada las regiones dentro de una TM helix/strand o peptido senal (TMbed local).
+    """Fase 3b: descarta de la union anotada las regiones dentro de una TM helix/strand, peptido senal o tramo intracelular (TMbed local).
 
     A diferencia de Fase 4b/4c (evaluan cada peptido candidato ya recortado),
     TMbed corre sobre la secuencia COMPLETA de cada accession (ver
@@ -722,11 +730,16 @@ def fase_3b_tm_signal_masking(
 
     Returns:
         ``union_df`` sin las filas cuyo rango se solapa con una region
-        TM/senal (mismo esquema de columnas, mismo orden relativo de filas
-        restantes). Si no hay ninguna secuencia completa disponible o
-        ``union_df`` esta vacio, se devuelve ``union_df`` sin cambios.
+        TM/senal/intracelular (mismo esquema de columnas, mismo orden
+        relativo de filas restantes). Una accession sin TM ni peptido senal
+        pero enteramente citoplasmatica (ej. PSMD7) queda cubierta de punta
+        a punta por una unica region 'intracellular', asi que pierde todas
+        sus filas aqui -- efecto equivalente a excluirla por completo, sin
+        necesitar una bandera aparte. Si no hay ninguna secuencia completa
+        disponible o ``union_df`` esta vacio, se devuelve ``union_df`` sin
+        cambios.
     """
-    print(f"\n{_SEPARATOR}\nFASE 3b | Enmascarado transmembrana/peptido senal (TMbed local)\n{_SEPARATOR}")
+    print(f"\n{_SEPARATOR}\nFASE 3b | Enmascarado transmembrana/peptido senal/intracelular (TMbed local)\n{_SEPARATOR}")
 
     sequence_lookup = _build_full_sequence_lookup(raw_dfs, structure_record)
     regions_path = output_dir / f"{input_stem}_tmbed_regions.csv"
@@ -756,8 +769,8 @@ def fase_3b_tm_signal_masking(
     if n_discarded:
         print(
             f"[AVISO] {n_discarded} region(es) de la union anotada descartada(s) por solaparse con una "
-            "helice/tira transmembrana o peptido senal (no accesibles a anticuerpos en la proteina "
-            "madura/anclada a membrana)."
+            "helice/tira transmembrana, peptido senal o tramo intracelular (no accesibles a anticuerpos "
+            "en la proteina madura/anclada a membrana)."
         )
         print_discarded_regions_report(discarded_df)
     else:
