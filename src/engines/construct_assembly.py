@@ -39,22 +39,29 @@ GP120 dio 18 candidatos validos solo en HTL/Fase 5, demasiados para un
 constructo manejable):
 
 * B-cell: de ``safe_df`` (Fase 4 'Segura'), se descartan los marcados
-  'Allergen' por AlgPred2 (Fase 4b) y los que tienen AL MENOS un sequon
-  marcado 'Glicosilado' por StackGlyEmbed (Fase 4c) -- un peptido SIN
-  ningun sequon nunca aparece en el reporte de Fase 4c y se trata como
-  "sin riesgo" (no es lo mismo que "evaluado y limpio", pero es la unica
-  lectura consistente: Fase 4c solo produce filas para sequones reales).
-  De los que sobreviven, top-N por el MAYOR de sus ``'{motor}_score'``
-  disponibles (BepiPred/EpiDope/DiscoTope/ScanNet, el que exista para esa fila).
+  'Allergen' por AlgPred2 (Fase 4b). La N-glicosilacion (StackGlyEmbed,
+  Fase 4c) YA NO excluye candidatos: existen anticuerpos descritos que
+  reconocen especificamente regiones glicosiladas (p. ej. epitopos de
+  envoltura de HIV), asi que descartar por glicosilacion perdia
+  candidatos biologicamente validos sin una razon mecanistica universal.
+  En su lugar, cada candidato se anota con su estado de glicosilacion
+  (columna ``glycosylated``, visible en ``source_score_note`` del
+  constructo final) para que la decision quede informada, no automatica
+  -- un peptido SIN ningun sequon en el reporte de Fase 4c se anota como
+  ``glycosylated=False`` (Fase 4c solo produce filas para sequones
+  reales). De los que sobreviven el filtro de alergenicidad, top-N por
+  el MAYOR de sus ``'{motor}_score'`` disponibles (BepiPred/EpiDope/
+  DiscoTope/ScanNet, el que exista para esa fila).
 * HTL/CTL: de los ``'Candidato Valido'`` de Fase 5/5b (``build_traceback_report``
-  ya filtra a esos), se descartan las ventanas cuyo rango ``start``/``end``
-  solapa la posicion ABSOLUTA de un sequon 'Glicosilado' de Fase 4c (ver
-  ``_glycosylated_regions``/``_overlaps_glyco_region`` -- mismo mecanismo de
-  solapamiento por posicion que usa ``tmbed_engine`` para enmascarar TM/senal
-  en Fase 3b). Las sobrevivientes se colapsan por ``core_9aa`` (mismo nucleo
-  de union evaluado en ventanas de posicion vecinas es la misma prediccion,
-  no epitopos distintos -- mismo criterio que
-  ``_deduplicate_protein_mode_windows`` de
+  ya filtra a esos), TODAS las ventanas se mantienen independientemente
+  de si solapan un sequon 'Glicosilado' de Fase 4c -- mismo razonamiento
+  que B-cell arriba. ``_glycosylated_regions``/``_overlaps_glyco_region``
+  (mismo mecanismo de solapamiento por posicion que usa ``tmbed_engine``
+  para enmascarar TM/senal en Fase 3b) ahora solo ANOTAN la columna
+  ``glycosylated`` por fila, no descartan. Las ventanas se colapsan por
+  ``core_9aa`` (mismo nucleo de union evaluado en ventanas de posicion
+  vecinas es la misma prediccion, no epitopos distintos -- mismo criterio
+  que ``_deduplicate_protein_mode_windows`` de
   ``netmhciipan_engine.py``/``netmhcpan_engine.py``, pero aqui colapsando
   TODA la promiscuidad, no solo por trio exacto), quedandose con la mejor
   fila (mas alelos promiscuos, luego menor %Rank; en CTL ademas prioriza
@@ -67,18 +74,20 @@ constructo manejable):
   en el surco del MHC nunca circula libre de esa forma, asi que el
   fundamento mecanicista para descartarlo por "alergenico" es mucho mas
   debil -- deliberadamente no se aplica ese filtro ahi, para no descartar
-  candidatos MHC validos sin una razon biologica solida. La exclusion por
-  glicosilacion SI aplica a las 3 clases
-  porque su mecanismo (bloqueo fisico por el glicano) no depende de la via
-  de reconocimiento.
+  candidatos MHC validos sin una razon biologica solida.
 
 Decision de diseno: el "epitopo" insertado en los bloques HTL/CTL es
-``core_9aa`` (el nucleo de union real evaluado por NetMHCIIpan/NetMHCpan),
-NO ``sequence_f5`` (la ventana completa de 15 aa o el peptido evaluado
-completo) -- practica estandar en literatura de diseno de vacunas
-multi-epitopo publicada (encadenar nucleos de union predichos, no las
-ventanas completas que los contienen), y mantiene el constructo mas
-compacto.
+``sequence_f5`` (la ventana completa evaluada -- 15-mero para HTL, el
+peptido evaluado completo para CTL), NO solo ``core_9aa`` (el nucleo de
+union real evaluado por NetMHCIIpan/NetMHCpan) -- los residuos
+flanqueantes alrededor del nucleo tambien contribuyen al reconocimiento
+(estabilidad de la interaccion peptido-MHC/TCR, procesamiento antigenico
+correcto), asi que reducir el bloque insertado al nucleo minimo
+descartaba esa contribucion sin necesidad. ``core_9aa`` se sigue usando
+para deduplicar candidatos solapados (mismo nucleo de union = misma
+prediccion, sea cual sea la ventana completa que lo contiene) y queda
+registrado en la trazabilidad, pero la secuencia que entra al constructo
+final es la ventana completa.
 
 Manejo de solapamientos entre epitopos candidatos: decision FINAL del
 usuario de NO fusionar epitopos de CLASES DISTINTAS aunque se solapen en
@@ -109,7 +118,7 @@ class _Block(NamedTuple):
 def _select_bcell_candidates(
     safe_df: pd.DataFrame, algpred_df: pd.DataFrame, stackgly_df: pd.DataFrame, top_n: int
 ) -> pd.DataFrame:
-    """Filtra ``safe_df`` por Non-Allergen + sin sequon glicosilado, rankea por mejor score, top-N."""
+    """Filtra ``safe_df`` por Non-Allergen, anota glicosilacion (sin excluir), rankea por mejor score, top-N."""
     if safe_df.empty:
         return safe_df
 
@@ -118,11 +127,10 @@ def _select_bcell_candidates(
     glyco_risky_seqs = set(stackgly_df[stackgly_df["stackglyembed_veredicto"] == "Glicosilado"]["sequence"]) \
         if not stackgly_df.empty else set()
 
-    candidates = safe_df[
-        safe_df["sequence"].isin(non_allergen_seqs) & ~safe_df["sequence"].isin(glyco_risky_seqs)
-    ].copy()
+    candidates = safe_df[safe_df["sequence"].isin(non_allergen_seqs)].copy()
     if candidates.empty:
         return candidates
+    candidates["glycosylated"] = candidates["sequence"].isin(glyco_risky_seqs)
 
     score_cols = [c for c in candidates.columns if c.endswith("_score")]
     candidates["_rank_score"] = candidates[score_cols].max(axis=1, skipna=True) if score_cols else 0.0
@@ -187,19 +195,18 @@ def _overlaps_glyco_region(row, glyco_regions: pd.DataFrame) -> bool:
 
 
 def _select_htl_candidates(htl_df: pd.DataFrame, glyco_regions: pd.DataFrame, top_n: int) -> pd.DataFrame:
-    """Colapsa por 'core_9aa' (mejor promiscuidad/%Rank), excluye ventanas glicosiladas, top-N.
+    """Colapsa por 'core_9aa' (mejor promiscuidad/%Rank), anota glicosilacion (sin excluir), top-N.
 
-    Un glicano real sentado sobre un residuo DENTRO del nucleo de 9 aa que se
-    mete en el surco del MHC-II puede bloquear fisicamente la union -- a
-    diferencia de la alergenicidad (ver docstring de modulo), esta exclusion
-    SI aplica a HTL/CTL igual que a B-cell, no es exclusiva de un mecanismo
-    de reconocimiento por anticuerpo/IgE.
+    Un glicano dentro del nucleo de 9 aa que se mete en el surco del MHC-II
+    podria en teoria interferir con la union, pero existen anticuerpos/celulas
+    T descritos que reconocen especificamente epitopos glicosilados (mismo
+    razonamiento que B-cell, ver docstring de modulo) -- ya no se descarta por
+    esto, solo se anota en la columna ``glycosylated`` para decision informada.
     """
     if htl_df.empty:
         return htl_df
-    candidates = htl_df[~htl_df.apply(lambda r: _overlaps_glyco_region(r, glyco_regions), axis=1)]
-    if candidates.empty:
-        return candidates
+    candidates = htl_df.copy()
+    candidates["glycosylated"] = candidates.apply(lambda r: _overlaps_glyco_region(r, glyco_regions), axis=1)
     sort_columns = [("n_alelos_promiscuos", False), ("min_rank_el", True)]
     deduped = _dedupe_by_core(candidates, sort_columns)
     deduped = deduped.sort_values(by=[c for c, _ in sort_columns], ascending=[a for _, a in sort_columns])
@@ -207,17 +214,15 @@ def _select_htl_candidates(htl_df: pd.DataFrame, glyco_regions: pd.DataFrame, to
 
 
 def _select_ctl_candidates(ctl_df: pd.DataFrame, glyco_regions: pd.DataFrame, top_n: int) -> pd.DataFrame:
-    """Colapsa por 'core_9aa', excluye ventanas glicosiladas, prioriza NetCleave/promiscuidad/%Rank, top-N.
+    """Colapsa por 'core_9aa', anota glicosilacion (sin excluir), prioriza NetCleave/promiscuidad/%Rank, top-N.
 
-    Mismo criterio de exclusion por glicosilacion que ``_select_htl_candidates``
-    (ver ese docstring): un glicano dentro del nucleo de union MHC-I tambien
-    puede bloquear el procesamiento/presentacion, sin importar la via.
+    Mismo criterio que ``_select_htl_candidates`` (ver ese docstring): ya no
+    se descarta por glicosilacion, solo se anota.
     """
     if ctl_df.empty:
         return ctl_df
-    candidates = ctl_df[~ctl_df.apply(lambda r: _overlaps_glyco_region(r, glyco_regions), axis=1)]
-    if candidates.empty:
-        return candidates
+    candidates = ctl_df.copy()
+    candidates["glycosylated"] = candidates.apply(lambda r: _overlaps_glyco_region(r, glyco_regions), axis=1)
     sort_columns = [("netcleave_c_term_match", False), ("n_alelos_promiscuos", False), ("min_rank_el", True)]
     deduped = _dedupe_by_core(candidates, sort_columns)
     deduped = deduped.sort_values(by=[c for c, _ in sort_columns], ascending=[a for _, a in sort_columns])
@@ -286,12 +291,12 @@ def assemble_construct(
     if not htl_selected.empty:
         blocks.append(_Block(
             "HTL", list(htl_selected.itertuples(index=False)),
-            Settings.CONSTRUCT_LINKER_HTL, lambda r: r.core_9aa,
+            Settings.CONSTRUCT_LINKER_HTL, lambda r: r.sequence_f5,
         ))
     if not ctl_selected.empty:
         blocks.append(_Block(
             "CTL", list(ctl_selected.itertuples(index=False)),
-            Settings.CONSTRUCT_LINKER_CTL, lambda r: r.core_9aa,
+            Settings.CONSTRUCT_LINKER_CTL, lambda r: r.sequence_f5,
         ))
 
     if not blocks and not adjuvant_sequence:
@@ -325,8 +330,8 @@ def assemble_construct(
         _add("Adjuvante", adjuvant_sequence)
         _add("Linker", Settings.CONSTRUCT_LINKER_ADJUVANTE)
 
-    bcell_score_fields = ["bepipred_score", "epidope_score", "discotope_score", "scannet_score"]
-    htl_ctl_score_fields = ["n_alelos_promiscuos", "n_alelos_evaluados", "min_rank_el"]
+    bcell_score_fields = ["bepipred_score", "epidope_score", "discotope_score", "scannet_score", "glycosylated"]
+    htl_ctl_score_fields = ["n_alelos_promiscuos", "n_alelos_evaluados", "min_rank_el", "glycosylated"]
 
     for block_idx, block in enumerate(blocks):
         score_fields = bcell_score_fields if block.label == "B-cell" else htl_ctl_score_fields

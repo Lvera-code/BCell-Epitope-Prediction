@@ -67,7 +67,9 @@ def test_bcell_excluye_allergen():
     assert list(meta["block"]) == ["B-cell"]
 
 
-def test_bcell_excluye_con_sequon_glicosilado():
+def test_bcell_no_excluye_con_sequon_glicosilado_pero_lo_anota():
+    # Existen anticuerpos descritos contra regiones glicosiladas (feedback de
+    # Carmen Elena Gomez, ver vault) -- ya no se descarta, solo se anota.
     safe = _safe_df([
         {"accession": "A", "start": 1, "end": 10, "sequence": "AAAAAAAAAA", "bepipred_score": 0.9},
         {"accession": "A", "start": 20, "end": 29, "sequence": "BBBBBBBBBB", "bepipred_score": 0.8},
@@ -80,7 +82,12 @@ def test_bcell_excluye_con_sequon_glicosilado():
 
     seq, meta = assemble_construct(safe, algpred, stackgly, pd.DataFrame(), pd.DataFrame())
 
-    assert seq == "BBBBBBBBBB"
+    bcell_rows = meta[meta["block"] == "B-cell"]
+    assert set(bcell_rows["sequence"]) == {"AAAAAAAAAA", "BBBBBBBBBB"}
+    glyco_row = bcell_rows[bcell_rows["sequence"] == "AAAAAAAAAA"].iloc[0]
+    non_glyco_row = bcell_rows[bcell_rows["sequence"] == "BBBBBBBBBB"].iloc[0]
+    assert "glycosylated=True" in glyco_row["source_score_note"]
+    assert "glycosylated=False" in non_glyco_row["source_score_note"]
 
 
 def test_bcell_sin_sequon_en_absoluto_no_se_excluye():
@@ -126,8 +133,10 @@ def test_htl_dedup_por_core_se_queda_con_mejor_fila():
 
     htl_rows = meta[meta["block"] == "HTL"]
     assert len(htl_rows) == 1
-    assert htl_rows.iloc[0]["sequence"] == "CORE9AAXX"
+    # sequence_f5 (ventana completa con flancos) de la fila ganadora, no el core.
+    assert htl_rows.iloc[0]["sequence"] == "WINDOW2XXXXXXX"
     assert "n_alelos_promiscuos=5" in htl_rows.iloc[0]["source_score_note"]
+    assert "glycosylated=False" in htl_rows.iloc[0]["source_score_note"]
 
 
 def test_ctl_prioriza_netcleave_match_sobre_promiscuidad():
@@ -142,8 +151,9 @@ def test_ctl_prioriza_netcleave_match_sobre_promiscuidad():
 
     ctl_rows = meta[meta["block"] == "CTL"]
     assert len(ctl_rows) == 1
-    # COREBBBBB tiene peor promiscuidad/%Rank pero SI tiene corte confirmado -> gana.
-    assert ctl_rows.iloc[0]["sequence"] == "COREBBBBB"
+    # W2/COREBBBBB tiene peor promiscuidad/%Rank pero SI tiene corte confirmado -> gana.
+    # La secuencia insertada es sequence_f5 (W2), no el core.
+    assert ctl_rows.iloc[0]["sequence"] == "W2"
 
 
 # --- Linkers y orden de bloques ---------------------------------------------------------
@@ -160,12 +170,14 @@ def test_linkers_intra_e_inter_bloque_correctos():
 
     seq, meta = assemble_construct(safe, algpred, _stackgly_df([]), htl, ctl)
 
+    # Los bloques HTL/CTL insertan sequence_f5 (ventana completa con flancos:
+    # "W1"/"W2"), no core_9aa.
     expected = (
         "BCL1" + Settings.CONSTRUCT_LINKER_BCELL + "BCL2"
         + Settings.CONSTRUCT_LINKER_INTERBLOQUE
-        + "HTLCORE"
+        + "W1"
         + Settings.CONSTRUCT_LINKER_INTERBLOQUE
-        + "CTLCORE"
+        + "W2"
     )
     assert seq == expected
 
@@ -179,7 +191,7 @@ def test_clase_vacia_se_omite_sin_linker_colgante():
 
     seq, meta = assemble_construct(safe, algpred, _stackgly_df([]), pd.DataFrame(), ctl)
 
-    assert seq == "BCL1" + Settings.CONSTRUCT_LINKER_INTERBLOQUE + "CTLCORE"
+    assert seq == "BCL1" + Settings.CONSTRUCT_LINKER_INTERBLOQUE + "W2"
     assert "HTL" not in set(meta["block"])
 
 
@@ -192,7 +204,7 @@ def test_solo_htl_y_ctl_sin_bcell():
 
     seq, meta = assemble_construct(pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), htl, ctl)
 
-    assert seq == "HTLCORE" + Settings.CONSTRUCT_LINKER_INTERBLOQUE + "CTLCORE"
+    assert seq == "W1" + Settings.CONSTRUCT_LINKER_INTERBLOQUE + "W2"
     assert meta.iloc[0]["block"] == "HTL"
     assert "B-cell" not in set(meta["block"])
 

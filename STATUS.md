@@ -62,13 +62,22 @@ Fase 4b/4c, insuficiente por si solo para este chequeo).
 
 - Selecciona **top-3 candidatos por clase** (`Settings.CONSTRUCT_TOP_N_PER_CLASS`,
   configurable por variable de entorno, no expuesto como flag de CLI):
-  - **B-cell**: de `safe_df` (Fase 4 'Segura'), excluye `Allergen` (Fase 4b)
-    y cualquier peptido con >=1 sequon `Glicosilado` (Fase 4c); rankea por
-    el mejor `{motor}_score` disponible.
+  - **B-cell**: de `safe_df` (Fase 4 'Segura'), excluye `Allergen` (Fase 4b);
+    rankea por el mejor `{motor}_score` disponible. Ya NO excluye por
+    N-glicosilación (Fase 4c) -- existen anticuerpos descritos contra
+    regiones glicosiladas (feedback de Carmen Elena Gómez, group leader
+    Poxvirus and Vaccines, 2026-07-30), así que cada candidato solo se
+    anota con `glycosylated=True/False` (visible en la metadata de
+    trazabilidad), sin descartarlo.
   - **HTL/CTL**: de los `'Candidato Valido'` de Fase 5/5b, colapsa por
     `core_9aa` (misma logica que la deduplicacion de ventanas de
     NetMHCIIpan/NetMHCpan) quedandose con la mejor fila; CTL ademas
     prioriza `netcleave_c_term_match == True` antes que promiscuidad/%Rank.
+    Mismo criterio de N-glicosilación que B-cell: se anota, no se excluye.
+    La secuencia insertada en el constructo es `sequence_f5` (la ventana
+    completa evaluada, con flancos), no solo `core_9aa` -- los residuos
+    flanqueantes también contribuyen a la unión/reconocimiento, no son
+    solo relleno (mismo feedback de Carmen Elena Gómez).
 - **Linkers** (convencion estandar del campo, no regla biologica fija):
   `AAY` intra-CTL (sitio de corte del proteasoma), `GPGPG` intra-HTL e
   inter-bloque (espaciador universal, Livingston et al. 2002), `KK`
