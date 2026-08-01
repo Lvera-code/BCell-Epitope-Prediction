@@ -58,6 +58,16 @@ Evalua alergenicidad/toxicidad/antigenicidad sobre el CONSTRUCTO
 MULTI-EPITOPO FINAL ensamblado, no por peptido individual (eso ya lo cubre
 Fase 4b/4c, insuficiente por si solo para este chequeo).
 
+**Fase 6b — conservacion (OPCIONAL, `conservation_engine.py`):** solo corre
+si se pasa `--panel-conservacion <fasta>`; si no, se omite por completo (ni
+`blastp` ni `makeblastdb` se invocan). Mide amplitud (secuencias DISTINTAS
+del panel matcheadas ≥90% identidad, no solo el mejor hit) contra un panel
+de otras cepas/variantes del mismo patogeno, indexado una vez y cacheado
+localmente por hash de contenido. Reutiliza la ejecucion de BLASTp de
+Fase 4 sin duplicarla. Corre sobre B-cell/HTL/CTL ANTES de Fase 7, para que
+Fase 7 siga siendo logica pura (recibe `conservation_df` ya calculado).
+Puramente informativo (anota `conservation_pct`, no descarta ni rankea).
+
 **Fase 7 — ensamblaje (`construct_assembly.py`, logica pura, sin subprocess):**
 
 - Selecciona **top-3 candidatos por clase** (`Settings.CONSTRUCT_TOP_N_PER_CLASS`,
@@ -135,7 +145,7 @@ mixtos (`Bp+Ed+Sn`, `Ed+Dt`, confirma que la union de 4 motores simultaneos
 funciona), y las Fases 4b-8 corrieron sin fallar sobre los candidatos
 resultantes. PIPELINE COMPLETADO sin errores en ambos caminos.
 
-**Checkpointing** (Fase 3b/4/4b/4c/5/5b/6/7/8, auto-cache por hash de contenido
+**Checkpointing** (Fase 3b/4/4b/4c/5/5b/6/6b/7/8, auto-cache por hash de contenido
 del input de cada fase): verificado con corridas de 2 pasadas — segunda
 pasada instantanea (38s -> 0.4s en un caso real), y cambiar un parametro
 invalida el checkpoint en cascada correctamente.
@@ -379,8 +389,8 @@ correspondiente en `src/config/settings.py`.
 
 ## Pendientes
 
-No queda ningun item de scope bloqueado o pendiente de decision del pipeline
-standalone. Lo unico fuera de alcance de este documento:
+Nada bloqueado por falta de informacion (ver items 3-4 abajo, ya investigados).
+Lo unico fuera de alcance de este documento:
 
 1. **Integracion a Scipion**: decision de secuenciacion — standalone-script-
    first, Scipion-integration despues (ver Tabla A/B para lo que YA esta
@@ -389,3 +399,14 @@ standalone. Lo unico fuera de alcance de este documento:
    pipeline actual de 11 fases, si no se hizo ya desde el ultimo borrado de
    cache de `fasta_outputs/` -- mismo camino de codigo ya confirmado con
    SLC8A1 (misma familia, proteina de membrana) y GP120.
+3. **Regiones de interes documentadas (feedback Carmen Elena Gomez, punto
+   pendiente 1 de 3, 2026-08-01)**: investigacion de IEDB completada y
+   viable (bulk CSV local, campo `Response measured` distingue
+   neutralizacion/proteccion real de "reconocido" generico, 2,964
+   organismos distintos solo en el subconjunto B-cell) -- NO implementado
+   todavia. Ver decision en el vault
+   (`01-Proyectos/BCell-Epitope-Prediction/Decisiones/`).
+4. **Conformacion del constructo vs. proteina nativa (punto pendiente 3 de
+   3)**: descartado deliberadamente como modificacion de este pipeline --
+   requiere prediccion estructural real (GPU), queda para el Proyecto 3
+   (puente/TFG), no para `BCell-Epitope-Prediction`.

@@ -25,6 +25,11 @@ def _stackgly_df(rows):
     return pd.DataFrame(rows, columns=["sequence", "sequon_position", "stackglyembed_veredicto", "stackglyembed_score"])
 
 
+def _conservation_df(rows):
+    """rows: lista de dicts con 'sequence'/'conservation_pct' (mismo formato que Fase 6b)."""
+    return pd.DataFrame(rows, columns=["sequence", "conservation_pct"])
+
+
 def _htl_ctl_row(accession, sequence_f5, core_9aa, start, end, n_prom, min_rank, netcleave_match=None, netcleave_score=None):
     row = {
         "accession": accession, "sequence_f5": sequence_f5, "core_9aa": core_9aa,
@@ -118,6 +123,47 @@ def test_bcell_rankea_por_mejor_score_disponible_y_respeta_top_n():
     assert len(bcell_rows) == 2
     # Los 2 de mayor bepipred_score (0.9 y 0.7) deben ser los elegidos, en ese orden.
     assert list(bcell_rows["sequence"]) == ["SEQUENCE0", "XXSEQUENCE2"]
+
+
+# --- Conservacion (Fase 6b, OPCIONAL): anota, no filtra ni rankea ----------------------
+
+
+def test_bcell_anota_conservacion_si_se_provee():
+    safe = _safe_df([{"accession": "A", "start": 1, "end": 10, "sequence": "AAAAAAAAAA", "bepipred_score": 0.9}])
+    algpred = _algpred_df([["AAAAAAAAAA", 0.1, "Non-Allergen"]])
+    conservation = _conservation_df([["AAAAAAAAAA", 66.67]])
+
+    seq, meta = assemble_construct(
+        safe, algpred, _stackgly_df([]), pd.DataFrame(), pd.DataFrame(), conservation_df=conservation
+    )
+
+    assert "conservation_pct=66.67" in meta.iloc[0]["source_score_note"]
+
+
+def test_htl_ctl_anota_conservacion_por_sequence_f5():
+    htl = pd.DataFrame([_htl_ctl_row("A", "W1", "HTLCORE", 20, 28, 5, 0.5)])
+    ctl = pd.DataFrame([_htl_ctl_row("A", "W2", "CTLCORE", 30, 38, 4, 0.3, netcleave_match=True, netcleave_score=0.9)])
+    conservation = _conservation_df([["W1", 100.0], ["W2", 33.33]])
+
+    seq, meta = assemble_construct(
+        pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), htl, ctl, conservation_df=conservation
+    )
+
+    htl_row = meta[meta["block"] == "HTL"].iloc[0]
+    ctl_row = meta[meta["block"] == "CTL"].iloc[0]
+    assert "conservation_pct=100.0" in htl_row["source_score_note"]
+    assert "conservation_pct=33.33" in ctl_row["source_score_note"]
+
+
+def test_sin_panel_conservacion_no_agrega_columna_ni_nota():
+    # conservation_df=None (default): comportamiento identico a antes de
+    # este parametro, sin ningun rastro de 'conservation_pct' en la nota.
+    safe = _safe_df([{"accession": "A", "start": 1, "end": 10, "sequence": "AAAAAAAAAA", "bepipred_score": 0.9}])
+    algpred = _algpred_df([["AAAAAAAAAA", 0.1, "Non-Allergen"]])
+
+    seq, meta = assemble_construct(safe, algpred, _stackgly_df([]), pd.DataFrame(), pd.DataFrame())
+
+    assert "conservation_pct" not in meta.iloc[0]["source_score_note"]
 
 
 # --- Seleccion HTL/CTL: dedup por core_9aa + top-N -------------------------------------

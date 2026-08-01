@@ -5,7 +5,12 @@ Fase 4/4b/4c, HTL de Fase 5, CTL de Fase 5b), selecciona los mejores
 ``Settings.CONSTRUCT_TOP_N_PER_CLASS`` por clase, y los concatena con los
 linkers estandar del campo de diseno de vacunas multi-epitopo en un unico
 FASTA, junto con una tabla de metadata 100% trazable (que peptido individual
-aporto cada tramo, en que orden, que linker se uso en cada union).
+aporto cada tramo, en que orden, que linker se uso en cada union). Logica
+100% pura (sin subprocess): la Fase 6b (``conservation_engine``, OPCIONAL,
+solo si el usuario paso ``--panel-conservacion``) corre BLASTp ANTES de
+llegar aqui y entrega ya calculado ``conservation_df``, exactamente igual
+que ``algpred_df``/``stackgly_df`` -- esta invariante de "sin subprocess"
+es lo que permite testear todo este modulo con DataFrames sinteticos.
 
 Reglas de ensamblaje (convencion estandar del campo, con multiples fuentes
 que coinciden):
@@ -100,7 +105,7 @@ motor, antes de que las clases se separen en Fase 4b/4c/5/5b) -- no hace
 falta resolverla de nuevo aqui.
 """
 
-from typing import List, NamedTuple, Optional, Tuple
+from typing import Dict, List, NamedTuple, Optional, Tuple
 
 import pandas as pd
 
@@ -116,9 +121,10 @@ class _Block(NamedTuple):
 
 
 def _select_bcell_candidates(
-    safe_df: pd.DataFrame, algpred_df: pd.DataFrame, stackgly_df: pd.DataFrame, top_n: int
+    safe_df: pd.DataFrame, algpred_df: pd.DataFrame, stackgly_df: pd.DataFrame, top_n: int,
+    conservation_map: Optional[Dict[str, float]] = None,
 ) -> pd.DataFrame:
-    """Filtra ``safe_df`` por Non-Allergen, anota glicosilacion (sin excluir), rankea por mejor score, top-N."""
+    """Filtra ``safe_df`` por Non-Allergen, anota glicosilacion/conservacion (sin excluir), rankea por mejor score, top-N."""
     if safe_df.empty:
         return safe_df
 
@@ -131,6 +137,8 @@ def _select_bcell_candidates(
     if candidates.empty:
         return candidates
     candidates["glycosylated"] = candidates["sequence"].isin(glyco_risky_seqs)
+    if conservation_map:
+        candidates["conservation_pct"] = candidates["sequence"].map(conservation_map)
 
     score_cols = [c for c in candidates.columns if c.endswith("_score")]
     candidates["_rank_score"] = candidates[score_cols].max(axis=1, skipna=True) if score_cols else 0.0
@@ -194,35 +202,48 @@ def _overlaps_glyco_region(row, glyco_regions: pd.DataFrame) -> bool:
     return bool(((acc_regions["start"] <= row["end"]) & (acc_regions["end"] >= row["start"])).any())
 
 
-def _select_htl_candidates(htl_df: pd.DataFrame, glyco_regions: pd.DataFrame, top_n: int) -> pd.DataFrame:
-    """Colapsa por 'core_9aa' (mejor promiscuidad/%Rank), anota glicosilacion (sin excluir), top-N.
+def _select_htl_candidates(
+    htl_df: pd.DataFrame, glyco_regions: pd.DataFrame, top_n: int,
+    conservation_map: Optional[Dict[str, float]] = None,
+) -> pd.DataFrame:
+    """Colapsa por 'core_9aa' (mejor promiscuidad/%Rank), anota glicosilacion/conservacion (sin excluir), top-N.
 
     Un glicano dentro del nucleo de 9 aa que se mete en el surco del MHC-II
     podria en teoria interferir con la union, pero existen anticuerpos/celulas
     T descritos que reconocen especificamente epitopos glicosilados (mismo
     razonamiento que B-cell, ver docstring de modulo) -- ya no se descarta por
     esto, solo se anota en la columna ``glycosylated`` para decision informada.
+    ``conservation_map`` (``sequence_f5`` -> ``conservation_pct``, de Fase 6b)
+    se mapea igual, ausente si no se paso ``--panel-conservacion``.
     """
     if htl_df.empty:
         return htl_df
     candidates = htl_df.copy()
     candidates["glycosylated"] = candidates.apply(lambda r: _overlaps_glyco_region(r, glyco_regions), axis=1)
+    if conservation_map:
+        candidates["conservation_pct"] = candidates["sequence_f5"].map(conservation_map)
     sort_columns = [("n_alelos_promiscuos", False), ("min_rank_el", True)]
     deduped = _dedupe_by_core(candidates, sort_columns)
     deduped = deduped.sort_values(by=[c for c, _ in sort_columns], ascending=[a for _, a in sort_columns])
     return deduped.head(top_n)
 
 
-def _select_ctl_candidates(ctl_df: pd.DataFrame, glyco_regions: pd.DataFrame, top_n: int) -> pd.DataFrame:
-    """Colapsa por 'core_9aa', anota glicosilacion (sin excluir), prioriza NetCleave/promiscuidad/%Rank, top-N.
+def _select_ctl_candidates(
+    ctl_df: pd.DataFrame, glyco_regions: pd.DataFrame, top_n: int,
+    conservation_map: Optional[Dict[str, float]] = None,
+) -> pd.DataFrame:
+    """Colapsa por 'core_9aa', anota glicosilacion/conservacion (sin excluir), prioriza NetCleave/promiscuidad/%Rank, top-N.
 
     Mismo criterio que ``_select_htl_candidates`` (ver ese docstring): ya no
-    se descarta por glicosilacion, solo se anota.
+    se descarta por glicosilacion, solo se anota; mismo mapeo opcional de
+    conservacion.
     """
     if ctl_df.empty:
         return ctl_df
     candidates = ctl_df.copy()
     candidates["glycosylated"] = candidates.apply(lambda r: _overlaps_glyco_region(r, glyco_regions), axis=1)
+    if conservation_map:
+        candidates["conservation_pct"] = candidates["sequence_f5"].map(conservation_map)
     sort_columns = [("netcleave_c_term_match", False), ("n_alelos_promiscuos", False), ("min_rank_el", True)]
     deduped = _dedupe_by_core(candidates, sort_columns)
     deduped = deduped.sort_values(by=[c for c, _ in sort_columns], ascending=[a for _, a in sort_columns])
@@ -246,6 +267,7 @@ def assemble_construct(
     ctl_df: pd.DataFrame,
     top_n_per_class: int = None,
     adjuvant_sequence: Optional[str] = None,
+    conservation_df: Optional[pd.DataFrame] = None,
 ) -> Tuple[str, pd.DataFrame]:
     """Selecciona candidatos top-N por clase y ensambla el constructo final.
 
@@ -259,6 +281,14 @@ def assemble_construct(
         adjuvant_sequence: Secuencia de adjuvante opcional a anteponer en el
             N-terminal (con linker rigido EAAAK). ``None`` por defecto -- ver
             docstring del modulo, ningun adjuvante se elige automaticamente.
+        conservation_df: Salida OPCIONAL de Fase 6b (``conservation_engine``),
+            con columnas ``sequence``/``conservation_pct``. ``None`` por
+            defecto (el usuario no paso ``--panel-conservacion``) -- en ese
+            caso no se anota nada, mismo comportamiento que antes de este
+            parametro. Igual que ``glycosylated``, es puramente informativo
+            (visible en ``source_score_note``), NO influye en la seleccion
+            top-N: la decision de usarlo como criterio de ranking queda
+            pendiente de una sesion futura (ver vault).
 
     Returns:
         Tupla ``(construct_sequence, metadata_df)``: la secuencia del
@@ -276,11 +306,15 @@ def assemble_construct(
         ``("", DataFrame vacio)`` -- no hay ningun candidato con el cual ensamblar nada.
     """
     top_n = top_n_per_class if top_n_per_class is not None else Settings.CONSTRUCT_TOP_N_PER_CLASS
+    conservation_map = (
+        dict(zip(conservation_df["sequence"], conservation_df["conservation_pct"]))
+        if conservation_df is not None and not conservation_df.empty else None
+    )
 
     glyco_regions = _glycosylated_regions(safe_df, stackgly_df)
-    bcell_selected = _select_bcell_candidates(safe_df, algpred_df, stackgly_df, top_n)
-    htl_selected = _select_htl_candidates(htl_df, glyco_regions, top_n)
-    ctl_selected = _select_ctl_candidates(ctl_df, glyco_regions, top_n)
+    bcell_selected = _select_bcell_candidates(safe_df, algpred_df, stackgly_df, top_n, conservation_map)
+    htl_selected = _select_htl_candidates(htl_df, glyco_regions, top_n, conservation_map)
+    ctl_selected = _select_ctl_candidates(ctl_df, glyco_regions, top_n, conservation_map)
 
     blocks: List[_Block] = []
     if not bcell_selected.empty:
@@ -330,8 +364,8 @@ def assemble_construct(
         _add("Adjuvante", adjuvant_sequence)
         _add("Linker", Settings.CONSTRUCT_LINKER_ADJUVANTE)
 
-    bcell_score_fields = ["bepipred_score", "epidope_score", "discotope_score", "scannet_score", "glycosylated"]
-    htl_ctl_score_fields = ["n_alelos_promiscuos", "n_alelos_evaluados", "min_rank_el", "glycosylated"]
+    bcell_score_fields = ["bepipred_score", "epidope_score", "discotope_score", "scannet_score", "glycosylated", "conservation_pct"]
+    htl_ctl_score_fields = ["n_alelos_promiscuos", "n_alelos_evaluados", "min_rank_el", "glycosylated", "conservation_pct"]
 
     for block_idx, block in enumerate(blocks):
         score_fields = bcell_score_fields if block.label == "B-cell" else htl_ctl_score_fields

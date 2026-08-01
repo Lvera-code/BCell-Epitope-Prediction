@@ -327,6 +327,29 @@ class Settings:
     BLAST_SHORT_PEPTIDE_MAX_LEN: int = _env_int("BLAST_SHORT_PEPTIDE_MAX_LEN", 30)
     BLAST_MEDIUM_PEPTIDE_MAX_LEN: int = _env_int("BLAST_MEDIUM_PEPTIDE_MAX_LEN", 100)
 
+    # --- Fase 4d (OPCIONAL): amplitud de conservacion contra un panel de referencia local ---
+    # A diferencia de BLAST_HUMAN_DB (Fase 4, un unico proteoma fijo para
+    # cualquier corrida), no existe un panel de conservacion universal: la
+    # conservacion es relativa a las cepas/variantes del PATOGENO especifico
+    # bajo analisis, distinto en cada corrida. Por eso esta fase no tiene una
+    # ruta de base de datos por defecto -- se activa solo si el usuario pasa
+    # `--panel-conservacion <fasta>` (ver `pipeline.py`), un multi-FASTA sin
+    # indexar con secuencias de referencia (otras cepas/clados/variantes) del
+    # mismo patogeno. Ausente el flag, la fase entera se omite (a diferencia
+    # de Fase 6/bnAb, que siempre corre y puede devolver vacio -- aca ni
+    # siquiera se invoca blastp/makeblastdb si no hay panel).
+    CONSERVATION_DB_CACHE_DIR: Path = Path(
+        _env_str("CONSERVATION_DB_CACHE_DIR", str(Path.home() / ".cache" / "bcell-epitope-pipeline" / "conservation-db"))
+    )
+    # Umbral de identidad (%) para que un hit cuente como "match" contra una
+    # secuencia del panel (ver `_panel_breadth_by_query` en
+    # conservation_engine.py) -- mas laxo que BLAST_IDENTITY_THRESHOLD (75%,
+    # pensado para detectar homologia real con el proteoma HUMANO): aqui se
+    # comparan variantes del MISMO patogeno entre si, donde se espera alta
+    # similitud de base y el objetivo es medir cuantas variantes conservan
+    # el epitopo casi intacto, no solo homologia detectable.
+    CONSERVATION_IDENTITY_THRESHOLD: float = _env_float("CONSERVATION_IDENTITY_THRESHOLD", 90.0)
+
     # --- Fase 5: Inmunogenicidad T-helper (MHC-II, NetMHCIIpan-4.3 LOCAL) ---
     # Pivote metodologico: toda prediccion de presentacion MHC-I (celulas T
     # CD8+, antes servida por MHCflurry/NetMHCpan) fue descartada. La Fase 5
@@ -577,4 +600,5 @@ class Settings:
         cls.FASTA_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
         cls.DISCOTOPE_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
         cls.DISCOTOPE_WEIGHTS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        cls.CONSERVATION_DB_CACHE_DIR.mkdir(parents=True, exist_ok=True)
         cls.SCANNET_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)

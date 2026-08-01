@@ -135,6 +135,7 @@ from src.engines.bepipred_engine import RESIDUE_COLUMN_CANDIDATES as BEPIPRED_RE
 from src.engines.blast_engine import print_blast_report, run_blastp_filter
 from src.engines.algpred_engine import predict_allergenicity, print_allergenicity_report
 from src.engines.consensus import build_annotated_union_table, print_union_table
+from src.engines.conservation_engine import print_conservation_report, run_conservation_filter
 from src.engines.construct_assembly import (
     assemble_construct,
     print_construct_breakdown,
@@ -286,6 +287,15 @@ def parse_args(argv: List[str] = None) -> argparse.Namespace:
     parser.add_argument(
         "--identity-threshold", type=float, default=Settings.BLAST_IDENTITY_THRESHOLD,
         help="Porcentaje de identidad (exclusivo) por encima del cual se descarta un peptido (Fase 4).",
+    )
+    parser.add_argument(
+        "--panel-conservacion", default=None,
+        help="Ruta a un multi-FASTA SIN indexar con secuencias de referencia (otras cepas/"
+        "clados/variantes) del propio patogeno bajo analisis, para anotar amplitud de "
+        "conservacion por candidato (Fase 6b, OPCIONAL -- ver src.engines.conservation_engine). "
+        "Se indexa una vez con 'makeblastdb' y se cachea localmente por hash de contenido. "
+        "Si no se especifica este flag, la Fase 6b se omite por completo (no se invoca "
+        "blastp/makeblastdb): no hay penalizacion ni columna nueva en el constructo final.",
     )
     return parser.parse_args(argv)
 
@@ -1113,6 +1123,92 @@ def fase_6_bnab_crossref(safe_df: pd.DataFrame, output_dir: Path, input_stem: st
     return report
 
 
+def fase_6b_conservacion(
+    safe_df: pd.DataFrame,
+    htl_df: pd.DataFrame,
+    ctl_df: pd.DataFrame,
+    panel_fasta_path: Optional[str],
+    output_dir: Path,
+    input_stem: str,
+) -> Optional[pd.DataFrame]:
+    """Fase 6b (OPCIONAL): amplitud de conservacion contra un panel de referencia local del patogeno.
+
+    Ver docstring completo de ``src.engines.conservation_engine`` para el
+    rationale (feedback de Carmen Elena Gomez) y la metrica de amplitud
+    (secuencias distintas del panel matcheadas, no solo el mejor hit).
+
+    A diferencia de Fase 6 (bnAb, que siempre corre y puede legitimamente
+    devolver vacio), esta fase se OMITE POR COMPLETO si ``panel_fasta_path``
+    es ``None`` -- no tiene sentido invocar blastp/makeblastdb sin saber
+    contra que comparar, y el usuario no siempre tiene un panel disponible.
+
+    Corre sobre los 3 grupos de candidatos SOBREVIVIENTES (B-cell de safe_df,
+    HTL/CTL de Fase 5/5b) ANTES de que Fase 7 seleccione el top-N -- mismo
+    momento que Fase 6, no solo sobre los finalistas -- para que Fase 7 siga
+    siendo logica 100% pura (sin subprocess): recibe ``conservation_df`` ya
+    calculado, igual que ``algpred_df``/``stackgly_df``.
+
+    Args:
+        safe_df: Peptidos B-cell 'Segura' de la Fase 4.
+        htl_df: Candidatos MHC-II validos de la Fase 5 (columna ``sequence_f5``).
+        ctl_df: Candidatos MHC-I validos de la Fase 5b (columna ``sequence_f5``).
+        panel_fasta_path: Ruta al FASTA del panel (``args.panel_conservacion``),
+            o ``None`` si el usuario no paso el flag.
+        output_dir: Carpeta donde persistir el reporte combinado.
+        input_stem: Nombre del archivo de entrada sin extension.
+
+    Returns:
+        DataFrame combinado (``block``/``sequence``/``n_panel_matches``/
+        ``n_panel_total``/``conservation_pct``, una fila por candidato UNICO
+        evaluado) para pasar a Fase 7, o ``None`` si la fase se omitio.
+    """
+    print(f"\n{_SEPARATOR}\nFASE 6b | Conservacion contra panel de referencia (OPCIONAL)\n{_SEPARATOR}")
+
+    if not panel_fasta_path:
+        print("Sin --panel-conservacion: fase omitida (no se invoca blastp/makeblastdb).")
+        return None
+
+    final_path = output_dir / f"{input_stem}_conservacion_report.csv"
+
+    input_hash = _phase_input_hash(
+        safe_df, htl_df, ctl_df, panel_fasta_path, Settings.CONSERVATION_IDENTITY_THRESHOLD
+    )
+    cached = _load_phase_checkpoint("Fase 6b", final_path, input_hash)
+    if cached is not None:
+        return cached
+
+    frames = []
+    if not safe_df.empty:
+        bcell_in = safe_df[["sequence"]].drop_duplicates().reset_index(drop=True)
+        bcell_out = run_conservation_filter(bcell_in, panel_fasta_path)
+        bcell_out.insert(0, "block", "B-cell")
+        frames.append(bcell_out)
+    if not htl_df.empty:
+        htl_in = htl_df[["sequence_f5"]].rename(columns={"sequence_f5": "sequence"}).drop_duplicates().reset_index(drop=True)
+        htl_out = run_conservation_filter(htl_in, panel_fasta_path)
+        htl_out.insert(0, "block", "HTL")
+        frames.append(htl_out)
+    if not ctl_df.empty:
+        ctl_in = ctl_df[["sequence_f5"]].rename(columns={"sequence_f5": "sequence"}).drop_duplicates().reset_index(drop=True)
+        ctl_out = run_conservation_filter(ctl_in, panel_fasta_path)
+        ctl_out.insert(0, "block", "CTL")
+        frames.append(ctl_out)
+
+    if not frames:
+        print("Ningun candidato B-cell/HTL/CTL disponible para evaluar conservacion.")
+        report = pd.DataFrame(columns=["block", "sequence", "n_panel_matches", "n_panel_total", "conservation_pct"])
+        report.to_csv(final_path, index=False)
+        return report
+
+    report = pd.concat(frames, ignore_index=True)
+    print_conservation_report(report)
+
+    report.to_csv(final_path, index=False)
+    _write_phase_checkpoint(final_path, input_hash)
+    print(f"-> Reporte de conservacion guardado en: {final_path}")
+    return report
+
+
 def fase_7_ensamblaje_constructo(
     safe_df: pd.DataFrame,
     algpred_df: pd.DataFrame,
@@ -1121,6 +1217,7 @@ def fase_7_ensamblaje_constructo(
     ctl_df: pd.DataFrame,
     output_dir: Path,
     input_stem: str,
+    conservation_df: Optional[pd.DataFrame] = None,
 ) -> Tuple[str, pd.DataFrame]:
     """Fase 7: ensambla automaticamente el constructo multi-epitopo a partir de los candidatos finales.
 
@@ -1137,6 +1234,9 @@ def fase_7_ensamblaje_constructo(
         ctl_df: Candidatos MHC-I validos de la Fase 5b (con traceback + anotacion NetCleave).
         output_dir: Carpeta donde persistir el FASTA del constructo y su metadata.
         input_stem: Nombre del archivo de entrada sin extension.
+        conservation_df: Reporte OPCIONAL de la Fase 6b (``None`` si el
+            usuario no paso ``--panel-conservacion``) -- solo anota
+            ``conservation_pct`` en la metadata, no cambia la seleccion.
 
     Returns:
         Tupla ``(construct_sequence, metadata_df)``. ``construct_sequence == ""``
@@ -1147,7 +1247,10 @@ def fase_7_ensamblaje_constructo(
     fasta_path = output_dir / f"{input_stem}_constructo.fasta"
     metadata_path = output_dir / f"{input_stem}_constructo_metadata.csv"
 
-    input_hash = _phase_input_hash(safe_df, algpred_df, stackgly_df, htl_df, ctl_df, Settings.CONSTRUCT_TOP_N_PER_CLASS)
+    input_hash = _phase_input_hash(
+        safe_df, algpred_df, stackgly_df, htl_df, ctl_df, Settings.CONSTRUCT_TOP_N_PER_CLASS,
+        conservation_df if conservation_df is not None else "sin-panel-conservacion",
+    )
     cached_metadata = _load_phase_checkpoint("Fase 7", metadata_path, input_hash)
     if cached_metadata is not None:
         cached_sequence = "".join(cached_metadata["sequence"]) if not cached_metadata.empty else ""
@@ -1161,7 +1264,9 @@ def fase_7_ensamblaje_constructo(
             print_multi_accession_warning(cached_metadata)
         return cached_sequence, cached_metadata
 
-    construct_sequence, metadata_df = assemble_construct(safe_df, algpred_df, stackgly_df, htl_df, ctl_df)
+    construct_sequence, metadata_df = assemble_construct(
+        safe_df, algpred_df, stackgly_df, htl_df, ctl_df, conservation_df=conservation_df
+    )
 
     if not construct_sequence:
         print("Ningun candidato B-cell/HTL/CTL disponible: no hay nada que ensamblar.")
@@ -1353,8 +1458,12 @@ def main(argv: List[str] = None) -> int:
         ctl_df = fase_5b_tc_promiscuidad(safe_df, output_dir, input_path.stem)
         _log_peak_memory("Fase 5b (MHC-I + NetCleave)")
         fase_6_bnab_crossref(safe_df, output_dir, input_path.stem)
+        conservation_df = fase_6b_conservacion(
+            safe_df, htl_df, ctl_df, args.panel_conservacion, output_dir, input_path.stem
+        )
         construct_sequence, _ = fase_7_ensamblaje_constructo(
-            safe_df, algpred_df, stackgly_df, htl_df, ctl_df, output_dir, input_path.stem
+            safe_df, algpred_df, stackgly_df, htl_df, ctl_df, output_dir, input_path.stem,
+            conservation_df=conservation_df,
         )
         fase_8_chequeo_constructo(construct_sequence, output_dir, input_path.stem)
         _log_peak_memory("Fase 8 (chequeo del constructo -- SignalP-6.0 es el mas pesado)")

@@ -14,7 +14,7 @@ candidatos y un **chequeo de alergenicidad/toxicidad/antigenicidad/péptido
 señal sobre ese constructo ya ensamblado** (no por péptido individual).
 Todas las fases corren **100% en local** (subprocess sobre binarios/paquetes
 instalados en tu máquina): el pipeline nunca hace una llamada de red durante
-la inferencia. Cada fase pesada (3b/4/4b/4c/5/5b/6/7/8) se auto-cachea por hash
+la inferencia. Cada fase pesada (3b/4/4b/4c/5/5b/6/6b/7/8) se auto-cachea por hash
 de contenido de su input — reiniciar una corrida interrumpida con el mismo
 input/parámetros salta directo a la fase que falló, ver "Checkpointing" más
 abajo.
@@ -188,18 +188,41 @@ PDB.
    proteína, no un fallo. No hace alineamiento a coordenadas HXB2 ni captura
    epítopos conformacionales (fuera de alcance de un cruce por secuencia).
    Reporte propio: `<nombre>_bnab_crossref.csv`.
-7. **Ensamblaje automático del constructo multi-epítopo** —
-   (`src/engines/construct_assembly.py`, lógica pura, sin subprocess).
+6b. **Conservación contra panel de referencia (OPCIONAL)** —
+   (`src/engines/conservation_engine.py`). Solo corre si se pasa
+   `--panel-conservacion <fasta>` (multi-FASTA sin indexar con otras
+   cepas/clados/variantes del mismo patógeno; se indexa una vez con
+   `makeblastdb` y se cachea localmente por hash de contenido). A
+   diferencia de Fase 6, si no se pasa el flag esta fase se **omite por
+   completo** (ni siquiera invoca `blastp`/`makeblastdb`). Mide
+   **amplitud**, no mejor-hit: cuántas secuencias DISTINTAS del panel
+   matchean cada candidato (`≥ CONSERVATION_IDENTITY_THRESHOLD`, 90% por
+   defecto — más laxo que el 75% de Fase 4 porque aquí se comparan
+   variantes del MISMO patógeno, no homología con el proteoma humano) —
+   un candidato idéntico a una única cepa rara no es "conservado" en el
+   sentido que interesa (proteger contra muchas variantes circulantes).
+   Reutiliza la ejecución de BLASTp de Fase 4 (misma selección dinámica de
+   `-task`/E-value por longitud) sin duplicarla. Puramente informativa,
+   como Fase 6: no descarta ningún candidato. Reporte propio:
+   `<nombre>_conservacion_report.csv`.
+7. **Ensamblaje automático del constructo multi-építopo** —
+   (`src/engines/construct_assembly.py`, lógica pura, sin subprocess —
+   Fase 6b ya corrió antes y entrega el resultado calculado).
    Selecciona los mejores `CONSTRUCT_TOP_N_PER_CLASS` candidatos (3 por
    defecto) de cada clase — **B-cell** (péptidos `'Segura'` que además son
-   `Non-Allergen` en Fase 4b y sin ningún sequon `Glicosilado` en Fase 4c,
-   rankeados por el mejor `{motor}_score` disponible), **HTL** (`'Candidato
-   Válido'` de Fase 5, colapsados por `core_9aa`) y **CTL** (`'Candidato
-   Válido'` de Fase 5b, colapsados por `core_9aa`, priorizando
-   `netcleave_c_term_match == True`) — y los concatena con los linkers
-   estándar del campo de diseño de vacunas multi-epítopo: `AAY` intra-CTL
-   (sitio de corte del proteasoma), `GPGPG` intra-HTL e inter-bloque
-   (espaciador universal, Livingston et al. 2002), `KK` intra-B-cell.
+   `Non-Allergen` en Fase 4b, rankeados por el mejor `{motor}_score`
+   disponible), **HTL** (`'Candidato Válido'` de Fase 5, colapsados por
+   `core_9aa`) y **CTL** (`'Candidato Válido'` de Fase 5b, colapsados por
+   `core_9aa`, priorizando `netcleave_c_term_match == True`) — y los
+   concatena con los linkers estándar del campo de diseño de vacunas
+   multi-epítopo: `AAY` intra-CTL (sitio de corte del proteasoma),
+   `GPGPG` intra-HTL e inter-bloque (espaciador universal, Livingston et
+   al. 2002), `KK` intra-B-cell. **Ya NO se excluye por N-glicosilación**
+   (Fase 4c) en ninguna clase: se anota `glycosylated` por candidato
+   (existen anticuerpos descritos contra regiones glicosiladas), sin
+   descartar. Si se pasó `--panel-conservacion`, también se anota
+   `conservation_pct` (Fase 6b) — ninguna de las dos anotaciones cambia
+   la selección top-N todavía.
    **Orden de bloques: B-cell → HTL → CTL** (sin consenso fuerte en la
    literatura sobre el orden óptimo — los linkers ya garantizan liberación
    correcta por procesamiento antigénico independiente de la posición — se
@@ -209,7 +232,9 @@ PDB.
    parámetro opcional `adjuvant_sequence` de `assemble_construct` permite
    agregarlo más adelante sin rediseñar nada (linker rígido `EAAAK`, Arai
    et al. 2001). El "epítopo" insertado en los bloques HTL/CTL es
-   `core_9aa` (el núcleo de unión real), no la ventana completa evaluada.
+   `sequence_f5` (la ventana completa evaluada, con flancos — los residuos
+   flanqueantes también contribuyen al reconocimiento), no solo `core_9aa`
+   (que se sigue usando para deduplicar candidatos solapados).
    Epítopos solapados de la MISMA clase ya se fusionan en Fase 3 (unión
    anotada); entre clases distintas deliberadamente NO se fusionan (rompería
    la semántica de los linkers). Genera `<nombre>_constructo.fasta` y
@@ -240,7 +265,7 @@ Todos los resultados intermedios y el reporte final se guardan en
 
 ### Checkpointing
 
-Fases 3b/4/4b/4c/5/5b/6/7/8 se auto-cachean por hash de contenido de su input
+Fases 3b/4/4b/4c/5/5b/6/6b/7/8 se auto-cachean por hash de contenido de su input
 (mismo mecanismo que ya usaba la Fase 2 para sus scores crudos): cada una
 guarda un sidecar `<archivo>.inputhash` junto a su CSV final. Si relanzás
 `pipeline.py` con el **mismo** `--input` y los **mismos** parámetros (umbral
@@ -848,6 +873,12 @@ variables de entorno de las Secciones 2-7).
 # umbral absoluto oficial, a diferencia de DiscoTope-3.0). Para forzar un
 # valor fijo en vez del adaptativo:
 ./run.sh --input fasta_inputs/estructura.pdb --scannet-threshold 0.15
+
+# Fase 6b (OPCIONAL): anota amplitud de conservación contra un panel local
+# de otras cepas/clados/variantes del mismo patógeno (sin este flag, la
+# fase se omite por completo, sin invocar blastp/makeblastdb):
+./run.sh --input fasta_inputs/secuencia.fasta \
+    --panel-conservacion reference_db/hiv_clade_panel.fasta
 ```
 
 Corre `python pipeline.py --help` (o `./run.sh --help`) para ver todos los flags disponibles
@@ -914,6 +945,7 @@ la tabla de Fase 7).
 | `<nombre>_netcleave_raw.csv` | 5b | Salida cruda de NetCleave (todas las ventanas de corte evaluadas, no solo las que matchean) |
 | `<nombre>_candidatos_finales_mhc1.csv` | 5b | **Reporte final MHC-I**, con anotación `netcleave_c_term_match`/`netcleave_c_term_score` |
 | `<nombre>_bnab_crossref.csv` | 6 | Cruce con epítopos de bnAb conocidos (vacío si la entrada no es HIV Env, es el resultado esperado) |
+| `<nombre>_conservacion_report.csv` | 6b | **Solo si se pasó `--panel-conservacion`**: amplitud de conservación (`block`/`sequence`/`n_panel_matches`/`n_panel_total`/`conservation_pct`) por candidato B-cell/HTL/CTL |
 | `<nombre>_constructo.fasta` | 7 | Secuencia del constructo multi-epítopo ensamblado |
 | `<nombre>_constructo_metadata.csv` | 7 | Trazabilidad 100%: una fila por segmento (epítopo o linker), posición en el constructo, accession/posición de origen, score que motivó la selección |
 | `<nombre>_constructo_algpred_raw.csv` | 8 | Salida cruda de AlgPred2 sobre el constructo |
@@ -921,7 +953,7 @@ la tabla de Fase 7).
 | `<nombre>_constructo_iapred_raw.csv` | 8 | Salida cruda de IApred sobre el constructo |
 | `<nombre>_constructo_signalp_raw.txt` | 8 | Salida cruda de SignalP-6.0 sobre el constructo |
 | `<nombre>_constructo_chequeo.csv` | 8 | **Reporte combinado del constructo**: alergenicidad + toxicidad + antigenicidad intrínseca + péptido señal |
-| `<archivo>.inputhash` | 3b/4/4b/4c/5/5b/6/7/8 | Sidecar de checkpointing (hash del input de esa fase), ver "Checkpointing" arriba |
+| `<archivo>.inputhash` | 3b/4/4b/4c/5/5b/6/6b/7/8 | Sidecar de checkpointing (hash del input de esa fase), ver "Checkpointing" arriba |
 
 ### Formato de `<nombre>_candidatos_finales.csv`
 
