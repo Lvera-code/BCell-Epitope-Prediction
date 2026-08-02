@@ -30,6 +30,11 @@ def _conservation_df(rows):
     return pd.DataFrame(rows, columns=["sequence", "conservation_pct"])
 
 
+def _iedb_df(sequences):
+    """rows: lista de secuencias con >=1 match IEDB (mismo formato minimo que Fase 6c)."""
+    return pd.DataFrame({"sequence": sequences, "source_organism": ["X"] * len(sequences)})
+
+
 def _htl_ctl_row(accession, sequence_f5, core_9aa, start, end, n_prom, min_rank, netcleave_match=None, netcleave_score=None):
     row = {
         "accession": accession, "sequence_f5": sequence_f5, "core_9aa": core_9aa,
@@ -164,6 +169,67 @@ def test_sin_panel_conservacion_no_agrega_columna_ni_nota():
     seq, meta = assemble_construct(safe, algpred, _stackgly_df([]), pd.DataFrame(), pd.DataFrame())
 
     assert "conservation_pct" not in meta.iloc[0]["source_score_note"]
+
+
+# --- Regiones documentadas (Fase 6c, IEDB): anota, no filtra ni rankea -- solo B-cell -----
+
+
+def test_bcell_anota_documented_region_si_hay_match():
+    safe = _safe_df([
+        {"accession": "A", "start": 1, "end": 10, "sequence": "AAAAAAAAAA", "bepipred_score": 0.9},
+        {"accession": "A", "start": 20, "end": 29, "sequence": "BBBBBBBBBB", "bepipred_score": 0.8},
+    ])
+    algpred = _algpred_df([
+        ["AAAAAAAAAA", 0.1, "Non-Allergen"],
+        ["BBBBBBBBBB", 0.1, "Non-Allergen"],
+    ])
+    iedb = _iedb_df(["AAAAAAAAAA"])  # solo AAAAAAAAAA tiene match documentado
+
+    seq, meta = assemble_construct(safe, algpred, _stackgly_df([]), pd.DataFrame(), pd.DataFrame(), iedb_df=iedb)
+
+    bcell_rows = meta[meta["block"] == "B-cell"]
+    matched_row = bcell_rows[bcell_rows["sequence"] == "AAAAAAAAAA"].iloc[0]
+    unmatched_row = bcell_rows[bcell_rows["sequence"] == "BBBBBBBBBB"].iloc[0]
+    assert "documented_region=True" in matched_row["source_score_note"]
+    assert "documented_region=False" in unmatched_row["source_score_note"]
+
+
+def test_sin_iedb_df_no_agrega_columna_ni_nota():
+    # iedb_df=None (default): comportamiento identico a antes de este
+    # parametro, sin ningun rastro de 'documented_region' en la nota.
+    safe = _safe_df([{"accession": "A", "start": 1, "end": 10, "sequence": "AAAAAAAAAA", "bepipred_score": 0.9}])
+    algpred = _algpred_df([["AAAAAAAAAA", 0.1, "Non-Allergen"]])
+
+    seq, meta = assemble_construct(safe, algpred, _stackgly_df([]), pd.DataFrame(), pd.DataFrame())
+
+    assert "documented_region" not in meta.iloc[0]["source_score_note"]
+
+
+def test_iedb_df_vacio_se_trata_igual_que_none():
+    safe = _safe_df([{"accession": "A", "start": 1, "end": 10, "sequence": "AAAAAAAAAA", "bepipred_score": 0.9}])
+    algpred = _algpred_df([["AAAAAAAAAA", 0.1, "Non-Allergen"]])
+    iedb_vacio = pd.DataFrame(columns=["sequence", "source_organism"])
+
+    seq, meta = assemble_construct(
+        safe, algpred, _stackgly_df([]), pd.DataFrame(), pd.DataFrame(), iedb_df=iedb_vacio
+    )
+
+    assert "documented_region" not in meta.iloc[0]["source_score_note"]
+
+
+def test_documented_region_no_se_anota_en_htl_ctl():
+    # IEDB (Fase 6c) es especificamente ensayos B-cell -- no aplica al
+    # mecanismo de reconocimiento MHC de HTL/CTL (ver docstring de
+    # iedb_engine), a diferencia de conservation_pct que si cubre las 3 clases.
+    htl = pd.DataFrame([_htl_ctl_row("A", "W1", "HTLCORE", 20, 28, 5, 0.5)])
+    iedb = _iedb_df(["W1"])  # aunque "matchee" por casualidad, no debe anotarse en HTL
+
+    seq, meta = assemble_construct(
+        pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), htl, pd.DataFrame(), iedb_df=iedb
+    )
+
+    htl_row = meta[meta["block"] == "HTL"].iloc[0]
+    assert "documented_region" not in htl_row["source_score_note"]
 
 
 # --- Seleccion HTL/CTL: dedup por core_9aa + top-N -------------------------------------

@@ -56,7 +56,12 @@ constructo manejable):
   ``glycosylated=False`` (Fase 4c solo produce filas para sequones
   reales). De los que sobreviven el filtro de alergenicidad, top-N por
   el MAYOR de sus ``'{motor}_score'`` disponibles (BepiPred/EpiDope/
-  DiscoTope/ScanNet, el que exista para esa fila).
+  DiscoTope/ScanNet, el que exista para esa fila). Tambien se anota
+  ``documented_region`` (Fase 6c, IEDB): ``True`` si el candidato solapa
+  con un epitopo de proteccion/neutralizacion YA DOCUMENTADO en algun
+  patogeno estudiado -- puramente informativo, igual que
+  ``conservation_pct``, NO influye en el ranking todavia. Solo aplica a
+  B-cell (no HTL/CTL, ver docstring de ``src.engines.iedb_engine``).
 * HTL/CTL: de los ``'Candidato Valido'`` de Fase 5/5b (``build_traceback_report``
   ya filtra a esos), TODAS las ventanas se mantienen independientemente
   de si solapan un sequon 'Glicosilado' de Fase 4c -- mismo razonamiento
@@ -123,8 +128,9 @@ class _Block(NamedTuple):
 def _select_bcell_candidates(
     safe_df: pd.DataFrame, algpred_df: pd.DataFrame, stackgly_df: pd.DataFrame, top_n: int,
     conservation_map: Optional[Dict[str, float]] = None,
+    iedb_matched_seqs: Optional[set] = None,
 ) -> pd.DataFrame:
-    """Filtra ``safe_df`` por Non-Allergen, anota glicosilacion/conservacion (sin excluir), rankea por mejor score, top-N."""
+    """Filtra ``safe_df`` por Non-Allergen, anota glicosilacion/conservacion/region-documentada (sin excluir), rankea por mejor score, top-N."""
     if safe_df.empty:
         return safe_df
 
@@ -139,6 +145,8 @@ def _select_bcell_candidates(
     candidates["glycosylated"] = candidates["sequence"].isin(glyco_risky_seqs)
     if conservation_map:
         candidates["conservation_pct"] = candidates["sequence"].map(conservation_map)
+    if iedb_matched_seqs:
+        candidates["documented_region"] = candidates["sequence"].isin(iedb_matched_seqs)
 
     score_cols = [c for c in candidates.columns if c.endswith("_score")]
     candidates["_rank_score"] = candidates[score_cols].max(axis=1, skipna=True) if score_cols else 0.0
@@ -268,6 +276,7 @@ def assemble_construct(
     top_n_per_class: int = None,
     adjuvant_sequence: Optional[str] = None,
     conservation_df: Optional[pd.DataFrame] = None,
+    iedb_df: Optional[pd.DataFrame] = None,
 ) -> Tuple[str, pd.DataFrame]:
     """Selecciona candidatos top-N por clase y ensambla el constructo final.
 
@@ -289,6 +298,12 @@ def assemble_construct(
             (visible en ``source_score_note``), NO influye en la seleccion
             top-N: la decision de usarlo como criterio de ranking queda
             pendiente de una sesion futura (ver vault).
+        iedb_df: Salida de Fase 6c (``iedb_engine``, siempre corre), con
+            columnas ``sequence``/``epitope_sequence``/... Anota
+            ``documented_region`` (bool) SOLO en candidatos B-cell -- IEDB
+            aca es especificamente ensayos de anticuerpo, no aplica al
+            mecanismo de HTL/CTL (ver docstring de ``iedb_engine``). Igual
+            que ``conservation_pct``, puramente informativo.
 
     Returns:
         Tupla ``(construct_sequence, metadata_df)``: la secuencia del
@@ -310,9 +325,14 @@ def assemble_construct(
         dict(zip(conservation_df["sequence"], conservation_df["conservation_pct"]))
         if conservation_df is not None and not conservation_df.empty else None
     )
+    iedb_matched_seqs = (
+        set(iedb_df["sequence"]) if iedb_df is not None and not iedb_df.empty else None
+    )
 
     glyco_regions = _glycosylated_regions(safe_df, stackgly_df)
-    bcell_selected = _select_bcell_candidates(safe_df, algpred_df, stackgly_df, top_n, conservation_map)
+    bcell_selected = _select_bcell_candidates(
+        safe_df, algpred_df, stackgly_df, top_n, conservation_map, iedb_matched_seqs
+    )
     htl_selected = _select_htl_candidates(htl_df, glyco_regions, top_n, conservation_map)
     ctl_selected = _select_ctl_candidates(ctl_df, glyco_regions, top_n, conservation_map)
 
@@ -364,7 +384,10 @@ def assemble_construct(
         _add("Adjuvante", adjuvant_sequence)
         _add("Linker", Settings.CONSTRUCT_LINKER_ADJUVANTE)
 
-    bcell_score_fields = ["bepipred_score", "epidope_score", "discotope_score", "scannet_score", "glycosylated", "conservation_pct"]
+    bcell_score_fields = [
+        "bepipred_score", "epidope_score", "discotope_score", "scannet_score",
+        "glycosylated", "conservation_pct", "documented_region",
+    ]
     htl_ctl_score_fields = ["n_alelos_promiscuos", "n_alelos_evaluados", "min_rank_el", "glycosylated", "conservation_pct"]
 
     for block_idx, block in enumerate(blocks):

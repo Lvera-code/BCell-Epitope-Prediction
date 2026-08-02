@@ -524,6 +524,21 @@ class Settings:
     )
     LANL_CATNAP_MIN_OVERLAP: int = _env_int("LANL_CATNAP_MIN_OVERLAP", 6)
 
+    # --- Fase 6c: Regiones con proteccion/neutralizacion documentada (IEDB LOCAL) ---
+    # Generalizacion de Fase 6 (LANL/CATNAP, especifica de HIV) a cualquier
+    # patogeno estudiado: subconjunto YA FILTRADO (3429 filas) del bulk export
+    # B-cell de IEDB (iedb.org), persistido localmente -- el CSV crudo
+    # (1,688,617 filas / 3.24 GB) NO se distribuye con el repo, se filtra una
+    # UNICA vez como paso de SETUP. Ver docstring completo de
+    # ``src.engines.iedb_engine`` para el criterio de filtrado exacto y el
+    # comando de regeneracion.
+    IEDB_BCELL_REFERENCE_PATH: str = _env_str(
+        "IEDB_BCELL_REFERENCE_PATH",
+        str(_REPO_ROOT / "reference_db" / "iedb" / "bcell_protective_epitopes.csv"),
+    )
+    # Mismo umbral y mismo rationale que LANL_CATNAP_MIN_OVERLAP.
+    IEDB_MIN_OVERLAP: int = _env_int("IEDB_MIN_OVERLAP", 6)
+
     # --- Fase 7: ensamblaje automatico del constructo multi-epitopo ---
     # Top-N fijo por clase, no expuesto como flag de CLI (a diferencia de
     # otros umbrales de este proyecto). Ver docstring de

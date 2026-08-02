@@ -47,6 +47,7 @@ ejecucion.
 | NetCleave (cleavage MHC-I) | venv en `scipion-chem-netcleave/.venv-netcleave`, modelo pre-entrenado bundled | `netcleave_engine.py` | Anotacion dentro del reporte de Fase 5b | Verifica si hay un corte proteasomal EXACTO en el residuo inmediatamente posterior al candidato aceptado por NetMHCpan (no solo "hay algun corte en la region"). Señal complementaria, no filtro. El .xlsx de salida se nombra `<stem>_<primer-token-del-header-fasta>_NetCleave.xlsx`; el wrapper usa glob, no el nombre exacto. |
 | StackGlyEmbed (N-glicosilacion) | Repo clonado en `StackGlyEmbed/` (venv `.venv-stackglyembed`), `protein_bert` instalado `--no-deps`, ProteinBERT/ESM-2 650M/ProtT5 cacheados localmente | `stackglyembed_engine.py` (scanner de secuones propio) + `src/engines/stackglyembed_predict_local.py` (extraccion+prediccion, reemplaza los scripts originales que llamaban a red) | 4c (per-peptido) | `StackGlyEmbed/` es un repo git anidado (su propio `.git`): git NO permite des-ignorar un archivo dentro de un repo anidado con ningun patron de `.gitignore` -- por eso `stackglyembed_predict_local.py` vive en `src/engines/` (arbol versionado normal), no dentro del clon. ESM-2 vía `transformers.EsmModel` (offline real) en vez de `torch.hub.load(...)` del script original (pega red siempre). ProtT5 REUSA los pesos de TMbed (`Rostlab/prot_t5_xl_half_uniref50-enc`, mismo encoder). |
 | LANL Immunology DB + CATNAP (bnAb cross-ref) | CSVs locales en `reference_db/` | `lanl_catnap_engine.py` (pandas puro, sin subprocess) | 6, informativa (solo relevante para HIV Env) | Reemplaza a bNAber (dominio muerto/parqueado). Cruce de subcadena (longest-common-substring) contra los 771 epitopos lineales de `ab_all.csv` con epitopo reportable (de 3799 registros totales; el resto son conformacionales, fuera de alcance). Umbral configurable `LANL_CATNAP_MIN_OVERLAP` (6 aa default). Validado con bnAbs reales (10E8, 2F5, Z13e1, m66) con IC50 real cruzado desde CATNAP. |
+| IEDB (regiones con proteccion/neutralizacion documentada) | CSV local en `reference_db/iedb/` | `iedb_engine.py` (pandas puro, sin subprocess) | 6c, informativa, SIEMPRE corre, solo B-cell | Generalizacion de Fase 6 a cualquier patogeno (punto 1 de 3 del feedback de Carmen Elena Gomez, 2026-07-30 -- ver vault). Mismo mecanismo de cruce por subcadena (`_longest_common_substring_len` REUSADA de `lanl_catnap_engine.py`, sin duplicar), sin filtro por organismo (el match ya filtra implicitamente). `reference_db/iedb/bcell_protective_epitopes.csv`: subconjunto YA FILTRADO (3429 filas / 561 organismos) del bulk export B-cell de IEDB (1,688,617 filas / 3.24 GB crudo, NUNCA distribuido -- filtrado una unica vez como paso de SETUP, ver README.md Seccion 17). Filtro: `Object Type == 'Linear peptide'` + `Response measured` en {neutralization, protection from *} + `Qualitative Measure` empieza con 'Positive'. NO aplica a HTL/CTL (el export es de ensayos B-cell/anticuerpo, mecanismo distinto a presentacion MHC). |
 | Ensamblaje de constructo | N/A (logica pura) | `construct_assembly.py` | 7 | Ver Tabla D. |
 | ToxinPred2 (toxicidad del constructo) | `pip install toxinpred2` en venv Python 3.10 dedicado (`.venv-toxinpred2/`) | `toxinpred_engine.py` | 8 | Modelo ONNX + blastp + base MERCI EMBEBIDOS en el wheel, cero descarga aparte. Venv Python 3.10 + `pandas==1.5.3` + `numpy<2` pineados (el script empaquetado usa `to_csv(sep="\n")`, que pandas>=2 rechaza; ABI de numpy>=2 rompe pandas 1.5.3). Mismo bug de batch=1 que AlgPred2. |
 | IApred (antigenicidad intrinseca del constructo) | `git clone github.com/sebamiles/IApred` + venv propio (`IApred/.venv-iapred/`) | `iapred_engine.py` | 8 | Reemplaza a VaxiJen (no open-source, sin standalone/API local). SVM puro sobre features fisicoquimicas. `requirements.txt` del repo esta incompleto (faltan `imbalanced-learn`/`matplotlib`/`seaborn`, instalados a mano). `models_folder` es ruta relativa al cwd: subprocess siempre con `cwd=IAPRED_HOME`. |
@@ -340,7 +341,8 @@ string mezclado en la columna) con una categoria informativa
 (`'No evaluado (secuencia < 20 aa)'`), y el formateador de tabla tolera
 `NaN`. 3 tests de regresion agregados (`test_iapred_engine.py`).
 
-Suite completa: **219 tests**, sin regresiones.
+Suite completa: **248 tests**, sin regresiones (incluye `test_iedb_engine.py`
+y la extension de `test_construct_assembly.py` para Fase 6c, 2026-08-02).
 
 ## Auditoria de Scipion-readiness
 
@@ -389,8 +391,7 @@ correspondiente en `src/config/settings.py`.
 
 ## Pendientes
 
-Nada bloqueado por falta de informacion (ver items 3-4 abajo, ya investigados).
-Lo unico fuera de alcance de este documento:
+Nada bloqueado por falta de informacion. Lo unico fuera de alcance de este documento:
 
 1. **Integracion a Scipion**: decision de secuenciacion — standalone-script-
    first, Scipion-integration despues (ver Tabla A/B para lo que YA esta
@@ -399,14 +400,12 @@ Lo unico fuera de alcance de este documento:
    pipeline actual de 11 fases, si no se hizo ya desde el ultimo borrado de
    cache de `fasta_outputs/` -- mismo camino de codigo ya confirmado con
    SLC8A1 (misma familia, proteina de membrana) y GP120.
-3. **Regiones de interes documentadas (feedback Carmen Elena Gomez, punto
-   pendiente 1 de 3, 2026-08-01)**: investigacion de IEDB completada y
-   viable (bulk CSV local, campo `Response measured` distingue
-   neutralizacion/proteccion real de "reconocido" generico, 2,964
-   organismos distintos solo en el subconjunto B-cell) -- NO implementado
-   todavia. Ver decision en el vault
-   (`01-Proyectos/BCell-Epitope-Prediction/Decisiones/`).
-4. **Conformacion del constructo vs. proteina nativa (punto pendiente 3 de
-   3)**: descartado deliberadamente como modificacion de este pipeline --
-   requiere prediccion estructural real (GPU), queda para el Proyecto 3
-   (puente/TFG), no para `BCell-Epitope-Prediction`.
+3. **Conformacion del constructo vs. proteina nativa (punto pendiente 3 de
+   3 del feedback de Carmen Elena Gomez)**: descartado deliberadamente como
+   modificacion de este pipeline -- requiere prediccion estructural real
+   (GPU), queda para el Proyecto 3 (puente/TFG), no para
+   `BCell-Epitope-Prediction`.
+
+**Regiones de interes documentadas (punto 1 de 3 del feedback de Carmen
+Elena Gomez): IMPLEMENTADO 2026-08-02** como Fase 6c (`iedb_engine.py`, ver
+Tabla C) -- ya no esta pendiente, se retira de la lista de arriba.

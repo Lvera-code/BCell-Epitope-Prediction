@@ -90,6 +90,12 @@ A partir de Fase 2, el resto del flujo es identico para los 3 caminos:
     6. Cruce con bnAb conocidos (LANL Immunology DB + CATNAP LOCAL,
        ``src.engines.lanl_catnap_engine``): puramente informativo, solo
        produce matches reales para entradas de la familia HIV Env.
+    6c. Regiones con proteccion/neutralizacion documentada (IEDB LOCAL,
+       ``src.engines.iedb_engine``): generalizacion de la Fase 6 a
+       CUALQUIER patogeno estudiado (561 organismos en el subconjunto
+       local), mismo mecanismo de solapamiento de subcadena sin filtro por
+       organismo. Puramente informativa, siempre corre. Solo aplica a
+       candidatos B-cell (no HTL/CTL, mecanismo de reconocimiento distinto).
     7. Ensamblaje automatico del constructo multi-epitopo
        (``src.engines.construct_assembly``): selecciona los mejores
        ``Settings.CONSTRUCT_TOP_N_PER_CLASS`` candidatos B-cell/HTL/CTL
@@ -152,6 +158,7 @@ from src.engines.epidope_engine import extract_epitopes as extract_epidope_epito
 from src.engines.epidope_engine import ACCESSION_COLUMN as EPIDOPE_ACCESSION_COLUMN
 from src.engines.epidope_engine import RESIDUE_COLUMN as EPIDOPE_RESIDUE_COLUMN
 from src.engines.epitope_mapping import build_sequence_lookup, print_epitope_table
+from src.engines.iedb_engine import query_iedb_crossref, print_iedb_crossref_report
 from src.engines.lanl_catnap_engine import query_bnab_crossref, print_bnab_crossref_report
 from src.engines.netcleave_engine import annotate_cterm_cleavage, predict_cleavage
 from src.engines.netmhciipan_engine import (
@@ -1209,6 +1216,60 @@ def fase_6b_conservacion(
     return report
 
 
+def fase_6c_iedb_regiones(safe_df: pd.DataFrame, output_dir: Path, input_stem: str) -> pd.DataFrame:
+    """Fase 6c: cruza los peptidos 'Seguros' de la Fase 4 contra regiones IEDB con proteccion/neutralizacion documentada.
+
+    Generalizacion de Fase 6 (LANL/CATNAP, especifica de HIV Env) a
+    CUALQUIER patogeno estudiado: mismo mecanismo (solapamiento de
+    subcadena, sin filtro por organismo -- el match ya funciona como filtro
+    implicito), pero contra el subconjunto local de IEDB (561 organismos
+    distintos). Ver docstring completo de ``src.engines.iedb_engine`` para el
+    criterio de filtrado de esa fuente.
+
+    Puramente informativa: no descarta ningun candidato ni condiciona
+    ninguna otra fase. SIEMPRE corre (a diferencia de Fase 6b/conservacion,
+    que requiere un panel provisto por el usuario) -- un reporte vacio es un
+    resultado valido, no un fallo, para cualquier patogeno sin epitopos
+    documentados que solapen.
+
+    Args:
+        safe_df: Mismos peptidos 'Segura' de la Fase 4 usados por Fase 4b/4c/5/5b/6.
+        output_dir: Carpeta donde persistir el reporte final.
+        input_stem: Nombre del archivo de entrada sin extension.
+    """
+    print(f"\n{_SEPARATOR}\nFASE 6c | Regiones con proteccion/neutralizacion documentada (IEDB, local)\n{_SEPARATOR}")
+
+    final_path = output_dir / f"{input_stem}_iedb_crossref.csv"
+
+    if safe_df.empty:
+        print("No hay peptidos 'Seguros' provenientes de la Fase 4 para evaluar.")
+        empty_df = pd.DataFrame(columns=[
+            "sequence", "epitope_sequence", "match_length", "source_organism",
+            "response_measured", "qualitative_measure", "method", "host", "pmid",
+        ])
+        empty_df.to_csv(final_path, index=False)
+        return empty_df
+
+    input_hash = _phase_input_hash(safe_df, Settings.IEDB_MIN_OVERLAP)
+    cached = _load_phase_checkpoint("Fase 6c", final_path, input_hash)
+    if cached is not None:
+        return cached
+
+    peptides = safe_df["sequence"].tolist()
+    print(f"Peptidos a evaluar: {len(peptides)}")
+
+    report = query_iedb_crossref(
+        peptides, Path(Settings.IEDB_BCELL_REFERENCE_PATH), min_overlap=Settings.IEDB_MIN_OVERLAP,
+    )
+
+    print_iedb_crossref_report(report, csv_path=final_path)
+
+    report.to_csv(final_path, index=False)
+    _write_phase_checkpoint(final_path, input_hash)
+    print(f"-> Reporte de regiones documentadas (IEDB) guardado en: {final_path}")
+    return report
+
+
 def fase_7_ensamblaje_constructo(
     safe_df: pd.DataFrame,
     algpred_df: pd.DataFrame,
@@ -1218,6 +1279,7 @@ def fase_7_ensamblaje_constructo(
     output_dir: Path,
     input_stem: str,
     conservation_df: Optional[pd.DataFrame] = None,
+    iedb_df: Optional[pd.DataFrame] = None,
 ) -> Tuple[str, pd.DataFrame]:
     """Fase 7: ensambla automaticamente el constructo multi-epitopo a partir de los candidatos finales.
 
@@ -1237,6 +1299,10 @@ def fase_7_ensamblaje_constructo(
         conservation_df: Reporte OPCIONAL de la Fase 6b (``None`` si el
             usuario no paso ``--panel-conservacion``) -- solo anota
             ``conservation_pct`` en la metadata, no cambia la seleccion.
+        iedb_df: Reporte de la Fase 6c (``src.engines.iedb_engine``, siempre
+            corre) -- solo anota ``documented_region`` en candidatos B-cell,
+            no cambia la seleccion. Ver Fase 6c para el porque no aplica a
+            HTL/CTL.
 
     Returns:
         Tupla ``(construct_sequence, metadata_df)``. ``construct_sequence == ""``
@@ -1250,6 +1316,7 @@ def fase_7_ensamblaje_constructo(
     input_hash = _phase_input_hash(
         safe_df, algpred_df, stackgly_df, htl_df, ctl_df, Settings.CONSTRUCT_TOP_N_PER_CLASS,
         conservation_df if conservation_df is not None else "sin-panel-conservacion",
+        iedb_df,
     )
     cached_metadata = _load_phase_checkpoint("Fase 7", metadata_path, input_hash)
     if cached_metadata is not None:
@@ -1265,7 +1332,7 @@ def fase_7_ensamblaje_constructo(
         return cached_sequence, cached_metadata
 
     construct_sequence, metadata_df = assemble_construct(
-        safe_df, algpred_df, stackgly_df, htl_df, ctl_df, conservation_df=conservation_df
+        safe_df, algpred_df, stackgly_df, htl_df, ctl_df, conservation_df=conservation_df, iedb_df=iedb_df
     )
 
     if not construct_sequence:
@@ -1461,9 +1528,10 @@ def main(argv: List[str] = None) -> int:
         conservation_df = fase_6b_conservacion(
             safe_df, htl_df, ctl_df, args.panel_conservacion, output_dir, input_path.stem
         )
+        iedb_df = fase_6c_iedb_regiones(safe_df, output_dir, input_path.stem)
         construct_sequence, _ = fase_7_ensamblaje_constructo(
             safe_df, algpred_df, stackgly_df, htl_df, ctl_df, output_dir, input_path.stem,
-            conservation_df=conservation_df,
+            conservation_df=conservation_df, iedb_df=iedb_df,
         )
         fase_8_chequeo_constructo(construct_sequence, output_dir, input_path.stem)
         _log_peak_memory("Fase 8 (chequeo del constructo -- SignalP-6.0 es el mas pesado)")

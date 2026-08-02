@@ -205,6 +205,20 @@ PDB.
    `-task`/E-value por longitud) sin duplicarla. Puramente informativa,
    como Fase 6: no descarta ningún candidato. Reporte propio:
    `<nombre>_conservacion_report.csv`.
+6c. **Regiones con protección/neutralización documentada (IEDB)** —
+   (`src/engines/iedb_engine.py`). Generalización de la Fase 6 (LANL/CATNAP,
+   específica de HIV Env) a **cualquier patógeno estudiado**: cruza cada
+   péptido `'Segura'` contra un subconjunto local de IEDB (bulk export
+   B-cell, 3429 registros / 561 organismos distintos, ya filtrado por
+   `Response measured` en {neutralización, protección} y `Qualitative
+   Measure` = Positive*) por el mismo mecanismo de solapamiento de subcadena
+   que Fase 6 (`IEDB_MIN_OVERLAP`, 6 aa por defecto), **sin filtrar por
+   organismo primero** — el match por secuencia ya funciona como filtro
+   implícito. A diferencia de Fase 6b, **siempre corre** (no requiere ningún
+   flag): el CSV filtrado ya vive en `reference_db/iedb/`. Solo aplica a
+   candidatos B-cell (no HTL/CTL — IEDB aquí es específicamente ensayos de
+   anticuerpo, mecanismo distinto al de presentación MHC). Puramente
+   informativa. Reporte propio: `<nombre>_iedb_crossref.csv`.
 7. **Ensamblaje automático del constructo multi-építopo** —
    (`src/engines/construct_assembly.py`, lógica pura, sin subprocess —
    Fase 6b ya corrió antes y entrega el resultado calculado).
@@ -221,8 +235,9 @@ PDB.
    (Fase 4c) en ninguna clase: se anota `glycosylated` por candidato
    (existen anticuerpos descritos contra regiones glicosiladas), sin
    descartar. Si se pasó `--panel-conservacion`, también se anota
-   `conservation_pct` (Fase 6b) — ninguna de las dos anotaciones cambia
-   la selección top-N todavía.
+   `conservation_pct` (Fase 6b). Candidatos B-cell además se anotan con
+   `documented_region` (Fase 6c, IEDB) — ninguna de las tres anotaciones
+   cambia la selección top-N todavía.
    **Orden de bloques: B-cell → HTL → CTL** (sin consenso fuerte en la
    literatura sobre el orden óptimo — los linkers ya garantizan liberación
    correcta por procesamiento antigénico independiente de la posición — se
@@ -265,7 +280,7 @@ Todos los resultados intermedios y el reporte final se guardan en
 
 ### Checkpointing
 
-Fases 3b/4/4b/4c/5/5b/6/6b/7/8 se auto-cachean por hash de contenido de su input
+Fases 3b/4/4b/4c/5/5b/6/6b/6c/7/8 se auto-cachean por hash de contenido de su input
 (mismo mecanismo que ya usaba la Fase 2 para sus scores crudos): cada una
 guarda un sidecar `<archivo>.inputhash` junto a su CSV final. Si relanzás
 `pipeline.py` con el **mismo** `--input` y los **mismos** parámetros (umbral
@@ -833,6 +848,39 @@ Variables de entorno: `TMBED_PYTHON_BIN`, `TMBED_BINARY_NAME` (default
 máquina CPU-only), `TMBED_THREADS` (`4` por defecto), `TMBED_MIN_REGION_LENGTH`
 (`1` por defecto, sin filtro de longitud mínima).
 
+### 17. Datos IEDB (obligatorio para la Fase 6c)
+
+Sin instalación de software: es un CSV plano ya filtrado, consultado con
+pandas puro, sin ningún subprocess ni llamada de red en runtime. **Ya viene
+incluido en el repo** (`reference_db/iedb/bcell_protective_epitopes.csv`,
+420 KB, 3429 registros) — este paso solo hace falta si querés regenerarlo
+(p. ej. IEDB publica una versión más reciente del bulk export).
+
+```bash
+mkdir -p reference_db/iedb
+curl -o /tmp/bcell_full_v3_single_file.zip \
+  "https://www.iedb.org/downloader.php?file_name=doc/bcell_full_v3_single_file.zip"
+python3 - <<'PY'
+import zipfile
+with zipfile.ZipFile("/tmp/bcell_full_v3_single_file.zip") as z:
+    z.extractall("/tmp")
+PY
+```
+
+Filtrar el CSV crudo (`/tmp/bcell_full_v3.csv`, ~3.24 GB descomprimido, header
+de 2 niveles `pd.read_csv(header=[0,1], encoding="latin-1")`) por
+`('Epitope','Object Type') == 'Linear peptide'`,
+`('Assay','Response measured')` en {`neutralization`, `protection from
+pathogen/tumor/other challenge`(+variantes `after adoptive transfer`),
+`protection from fertility`} y `('Assay','Qualitative Measure')` que empiece
+con `Positive` — ver el docstring completo de `src/engines/iedb_engine.py`
+para el criterio exacto y las columnas a conservar. El CSV crudo **nunca**
+se distribuye con el repo, solo el subconjunto filtrado.
+
+Variables de entorno: `IEDB_BCELL_REFERENCE_PATH`, `IEDB_MIN_OVERLAP` (umbral
+mínimo de solapamiento de subcadena, 6 aa por defecto — mismo criterio que
+`LANL_CATNAP_MIN_OVERLAP`).
+
 ## Uso
 
 `./run.sh` es un wrapper fino sobre `pipeline.py` (mismos argumentos) que
@@ -946,6 +994,7 @@ la tabla de Fase 7).
 | `<nombre>_candidatos_finales_mhc1.csv` | 5b | **Reporte final MHC-I**, con anotación `netcleave_c_term_match`/`netcleave_c_term_score` |
 | `<nombre>_bnab_crossref.csv` | 6 | Cruce con epítopos de bnAb conocidos (vacío si la entrada no es HIV Env, es el resultado esperado) |
 | `<nombre>_conservacion_report.csv` | 6b | **Solo si se pasó `--panel-conservacion`**: amplitud de conservación (`block`/`sequence`/`n_panel_matches`/`n_panel_total`/`conservation_pct`) por candidato B-cell/HTL/CTL |
+| `<nombre>_iedb_crossref.csv` | 6c | Cruce con regiones IEDB de protección/neutralización documentada, cualquier patógeno (vacío es un resultado válido, no un fallo) |
 | `<nombre>_constructo.fasta` | 7 | Secuencia del constructo multi-epítopo ensamblado |
 | `<nombre>_constructo_metadata.csv` | 7 | Trazabilidad 100%: una fila por segmento (epítopo o linker), posición en el constructo, accession/posición de origen, score que motivó la selección |
 | `<nombre>_constructo_algpred_raw.csv` | 8 | Salida cruda de AlgPred2 sobre el constructo |
