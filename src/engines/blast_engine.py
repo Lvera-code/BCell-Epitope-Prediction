@@ -32,6 +32,11 @@ Los peptidos se agrupan por tramo (misma tarea + mismo E-value) y cada grupo
 se ejecuta en su propia invocacion de ``subprocess.run`` (un unico comando no
 puede mezclar dos ``-task``/``-evalue`` distintos), y los resultados se
 combinan al final.
+
+``filter_self_tolerant`` (usada en Fase 5/5b/7, no solo Fase 4): re-chequea
+tolerancia inmunologica sobre secuencias FINALES mas cortas (``sequence_f5``
+de HTL/CTL, candidato B-cell ya recortado/extendido) -- ver su docstring
+para el porque Fase 4 sola no alcanza para esas secuencias.
 """
 
 import shutil
@@ -326,3 +331,68 @@ def print_blast_report(blast_df: pd.DataFrame) -> None:
     n_safe = int((blast_df["status"] == "Segura").sum())
     n_rejected = int((blast_df["status"] == "Autoinmunidad").sum())
     print(f"\nResumen Fase 4: {n_safe} segura(s) / {n_rejected} rechazada(s) por homologia con el proteoma humano.")
+
+
+def filter_self_tolerant(
+    df: pd.DataFrame,
+    sequence_col: str,
+    db_path: str = Settings.BLAST_HUMAN_DB,
+    identity_threshold: float = Settings.BLAST_IDENTITY_THRESHOLD,
+) -> pd.DataFrame:
+    """Re-chequea tolerancia inmunologica sobre la secuencia FINAL de largo real (no la region padre de Fase 4).
+
+    Fase 4 corre BLASTp sobre las regiones fusionadas de Fase 3 (union B-cell,
+    hasta ``Settings.CONSTRUCT_BCELL_MAX_LENGTH`` aa post-recorte, o mas larga
+    antes de eso). ``Settings.BLAST_MIN_QUERY_COVERAGE`` (0.9 por defecto)
+    exige que un hit cubra al menos esa fraccion de la longitud del QUERY
+    COMPLETO para contar -- disenado para no rechazar peptidos cortos por un
+    fragmento minusculo identico por puro azar (ver ADR en
+    ``Settings.BLAST_MIN_QUERY_COVERAGE`` y ``_max_identity_by_query``).
+
+    Efecto colateral no intencionado: un motivo corto (8-15 aa) casi identico
+    a una proteina humana, ENTERRADO dentro de una region B-cell fusionada
+    mas larga, tiene cobertura sobre el query completo muy por debajo de 0.9
+    (ej. 9 aa dentro de una region de 71 aa = 12.7% de cobertura) -- Fase 4
+    nunca lo detecta a esa escala. Pero exactamente esos motivos cortos son
+    las secuencias que TERMINAN en el constructo final: ``sequence_f5`` de
+    HTL (15-mero)/CTL (8-11 aa), o el candidato B-cell ya recortado/extendido
+    de Fase 7 (hasta 20 aa). Esta funcion vuelve a correr ``run_blastp_filter``
+    sobre esas secuencias FINALES, con la cobertura calculada sobre SU PROPIA
+    longitud (no la de la region padre) -- la misma logica de Fase 4, en la
+    escala en la que realmente importa.
+
+    Args:
+        df: Candidatos ya filtrados/seleccionados por su fase de origen
+            (Fase 5 'Candidato Valido', Fase 5b idem, o Fase 7 top-N B-cell
+            ya recortado/extendido). Vacio -> se devuelve tal cual.
+        sequence_col: Nombre de la columna con la secuencia FINAL a
+            re-chequear (``'sequence_f5'`` para HTL/CTL, ``'sequence'`` para
+            B-cell).
+        db_path/identity_threshold: Mismos parametros que ``run_blastp_filter``
+            (por defecto, la MISMA base de datos/umbral que Fase 4 -- un
+            candidato no deberia sobrevivir con un criterio mas laxo solo
+            porque llegue por un camino distinto del pipeline).
+
+    Returns:
+        Subconjunto de ``df`` cuyo ``sequence_col`` paso el chequeo
+        (``status == 'Segura'``), preservando todas sus columnas originales
+        y el orden de filas. Vacio si ``df`` esta vacio o ningun candidato
+        sobrevive.
+    """
+    if df.empty:
+        return df
+
+    probe = df[[sequence_col]].rename(columns={sequence_col: "sequence"})
+    checked = run_blastp_filter(probe, db_path=db_path, identity_threshold=identity_threshold)
+    survivors = df[checked["status"].values == "Segura"].reset_index(drop=True)
+
+    n_total = len(df)
+    n_survivors = len(survivors)
+    if n_survivors < n_total:
+        print(
+            f"[Fase 4-bis] Re-chequeo de autotolerancia a resolucion real: "
+            f"{n_survivors}/{n_total} candidato(s) sobreviven "
+            f"({n_total - n_survivors} descartado(s) por homologia humana no detectada "
+            f"a escala de la region padre de Fase 4)."
+        )
+    return survivors

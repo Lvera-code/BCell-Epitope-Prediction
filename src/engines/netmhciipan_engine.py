@@ -171,7 +171,7 @@ _MIN_PEPTIDE_LENGTH = 9
 _MAX_PEPTIDE_MODE_LENGTH = 40
 
 _OUTPUT_COLUMNS = [
-    "sequence", "core_9aa", "n_alelos_evaluados", "n_alelos_promiscuos", "min_rank_el", "veredicto",
+    "sequence", "core_9aa", "n_alelos_evaluados", "n_alelos_promiscuos", "promiscuous_alleles", "min_rank_el", "veredicto",
 ]
 
 # Columnas fijas del reporte final enriquecido (Fase 5 + traceback a Fase
@@ -186,7 +186,7 @@ _OUTPUT_COLUMNS = [
 # ``AttributeError`` en el Camino 2 (sin esas dos columnas en absoluto).
 _TRACEBACK_BASE_COLUMNS = [
     "accession", "sequence_f5", "core_9aa", "start", "end", "origen",
-    "n_alelos_promiscuos", "n_alelos_evaluados", "min_rank_el",
+    "n_alelos_promiscuos", "promiscuous_alleles", "n_alelos_evaluados", "min_rank_el",
 ]
 
 
@@ -225,7 +225,7 @@ def _resolve_binary() -> Path:
     return binary
 
 
-def _parse_xls(xls_path: Path, n_alleles: int) -> pd.DataFrame:
+def _parse_xls(xls_path: Path, n_alleles: int, allele_names: List[str]) -> pd.DataFrame:
     """Parsea el .xls de NetMHCIIpan y evalua la promiscuidad de cada peptido.
 
     El .xls multi-alelo de NetMHCIIpan-4.3 tiene un formato de 2 filas de
@@ -258,16 +258,27 @@ def _parse_xls(xls_path: Path, n_alleles: int) -> pd.DataFrame:
         n_alleles: Numero de alelos evaluados (debe coincidir con el numero
             de columnas 'Rank_EL*'/'Core*'/'Inverted*' encontradas, si no el
             .xls esta corrupto o el panel no se aplico como se esperaba).
+        allele_names: Alelos del panel EN EL MISMO ORDEN pasado a '-a'
+            (``allele_panel.split(",")``) -- ``rank_cols[i]``/``core_cols[i]``/
+            ``inverted_cols[i]`` corresponden a ``allele_names[i]`` (ver
+            docstring de arriba). Usado para nombrar ``promiscuous_alleles``.
 
     Returns:
         DataFrame con columnas ``sequence``, ``core_9aa``,
-        ``n_alelos_evaluados``, ``n_alelos_promiscuos``, ``min_rank_el`` y
-        ``veredicto`` (``'Candidato Valido'`` / ``'Rechazado'``). ``core_9aa``
-        es el nucleo de union de 9 aa (columna ``Core`` de NetMHCIIpan) del
-        alelo EN ORIENTACION NORMAL con el %Rank mas bajo para ese peptido
-        (los alelos invertidos quedan fuera de esta busqueda desde el
-        origen, ver arriba); ``n_alelos_promiscuos`` cuenta solo alelos
-        normales SB/WB, que es tambien el criterio del ``veredicto``.
+        ``n_alelos_evaluados``, ``n_alelos_promiscuos``, ``promiscuous_alleles``,
+        ``min_rank_el`` y ``veredicto`` (``'Candidato Valido'`` / ``'Rechazado'``).
+        ``core_9aa`` es el nucleo de union de 9 aa (columna ``Core`` de
+        NetMHCIIpan) del alelo EN ORIENTACION NORMAL con el %Rank mas bajo
+        para ese peptido (los alelos invertidos quedan fuera de esta
+        busqueda desde el origen, ver arriba); ``n_alelos_promiscuos``
+        cuenta solo alelos normales SB/WB, que es tambien el criterio del
+        ``veredicto``. ``promiscuous_alleles`` es la lista de esos mismos
+        alelos (separados por coma, ``allele_names[i]`` para cada ``i`` con
+        ``is_binder_normal[fila, i] == True``) -- necesaria para calcular
+        cobertura poblacional REAL por candidato mas adelante (ver
+        ``src.engines.population_coverage``): el conteo solo no distingue un
+        candidato que golpea 3 alelos rarisimos de uno que golpea 3 alelos
+        comunes globalmente.
 
     Raises:
         ImmunogenicityExecutionError: Si el .xls no se puede parsear o no
@@ -316,6 +327,10 @@ def _parse_xls(xls_path: Path, n_alleles: int) -> pd.DataFrame:
     # "Fiabilidad para sintesis/validacion experimental".
     is_binder_normal = (rank_matrix_normal <= Settings.NETMHCIIPAN_RANK_WEAK)
     n_alelos_promiscuos = is_binder_normal.sum(axis=1)
+    promiscuous_alleles = [
+        ",".join(allele_names[j] for j in range(n_alleles) if is_binder_normal[i, j])
+        for i in range(len(raw))
+    ]
 
     result = pd.DataFrame(
         {
@@ -323,6 +338,7 @@ def _parse_xls(xls_path: Path, n_alleles: int) -> pd.DataFrame:
             "core_9aa": best_core,
             "n_alelos_evaluados": n_alleles,
             "n_alelos_promiscuos": n_alelos_promiscuos,
+            "promiscuous_alleles": promiscuous_alleles,
             "min_rank_el": rank_matrix_normal.min(axis=1),
         }
     )
@@ -456,7 +472,8 @@ def predict_netmhciipan(
             len(long_peptides), _MAX_PEPTIDE_MODE_LENGTH,
         )
 
-    n_alleles = len([a for a in allele_panel.split(",") if a])
+    allele_names = [a for a in allele_panel.split(",") if a]
+    n_alleles = len(allele_names)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     result_frames = []
@@ -471,7 +488,7 @@ def predict_netmhciipan(
                 binary, ["-p", "-f", str(pep_path)], allele_panel, xls_path, Settings.NETMHCIIPAN_TIMEOUT_SECONDS
             )
             _require_xls_output(xls_path, proc, mode_desc="modo peptido exacto")
-            result_frames.append(_parse_xls(xls_path, n_alleles))
+            result_frames.append(_parse_xls(xls_path, n_alleles, allele_names))
             shutil.copyfile(xls_path, output_dir / f"{filename_prefix}netmhciipan_raw_peptide_mode.xls")
 
         if long_peptides:
@@ -482,7 +499,7 @@ def predict_netmhciipan(
             xls_path = tmp_dir / "protein_mode_output.xls"
             proc = _run_netmhciipan(binary, ["-f", str(fasta_path)], allele_panel, xls_path, Settings.NETMHCIIPAN_TIMEOUT_SECONDS)
             _require_xls_output(xls_path, proc, mode_desc="modo proteina (ventana deslizante)")
-            result_frames.append(_parse_xls(xls_path, n_alleles))
+            result_frames.append(_parse_xls(xls_path, n_alleles, allele_names))
             shutil.copyfile(xls_path, output_dir / f"{filename_prefix}netmhciipan_raw_protein_mode.xls")
 
     if not result_frames:
@@ -637,6 +654,7 @@ def build_traceback_report(report_df: pd.DataFrame, parent_df: pd.DataFrame) -> 
                 "end": end_real,
                 "origen": parent.origen,
                 "n_alelos_promiscuos": candidate.n_alelos_promiscuos,
+                "promiscuous_alleles": candidate.promiscuous_alleles,
                 "n_alelos_evaluados": candidate.n_alelos_evaluados,
                 "min_rank_el": candidate.min_rank_el,
             }
@@ -768,6 +786,13 @@ def print_traceback_table(traceback_df: pd.DataFrame, require_exact_core: bool =
     (la anota ``netcleave_engine.annotate_cterm_cleavage`` ANTES de llamar a
     esta funcion, ver ``pipeline.fase_5b_tc_promiscuidad``), asi que en Fase 5
     la tabla queda igual que antes.
+
+    Columna ``Cobertura pob.`` (tambien condicional, misma logica): aparece
+    si ``traceback_df`` trae ``population_coverage_pct`` (anotada por
+    ``src.engines.population_coverage.annotate_population_coverage`` en
+    ambas fases). ``'-'`` si el candidato no tiene ningun alelo promiscuo con
+    frecuencia conocida (ver docstring de ese modulo para los huecos de
+    datos conocidos), no si la columna en si esta ausente.
     """
     if traceback_df.empty:
         print("No hay candidatos validos con traceback a la Fase 3 para mostrar.")
@@ -780,6 +805,11 @@ def print_traceback_table(traceback_df: pd.DataFrame, require_exact_core: bool =
     has_netcleave = "netcleave_c_term_match" in display_df.columns
     if has_netcleave:
         display_df["NetCleave"] = display_df["netcleave_c_term_match"].map({True: "Si", False: "No"})
+    has_coverage = "population_coverage_pct" in display_df.columns
+    if has_coverage:
+        display_df["Cobertura pob."] = display_df["population_coverage_pct"].apply(
+            lambda v: f"{v:.1f}%" if pd.notna(v) else "-"
+        )
     display_df = display_df.rename(
         columns={
             "accession": "Accession",
@@ -799,6 +829,8 @@ def print_traceback_table(traceback_df: pd.DataFrame, require_exact_core: bool =
     ]
     if has_netcleave:
         columns_order.append("NetCleave")
+    if has_coverage:
+        columns_order.append("Cobertura pob.")
     display_df = display_df[columns_order].reset_index(drop=True)
 
     # max_colwidth=None desactiva el truncado con '...' de pandas: con el

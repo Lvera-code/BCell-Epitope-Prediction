@@ -881,6 +881,41 @@ Variables de entorno: `IEDB_BCELL_REFERENCE_PATH`, `IEDB_MIN_OVERLAP` (umbral
 mínimo de solapamiento de subcadena, 6 aa por defecto — mismo criterio que
 `LANL_CATNAP_MIN_OVERLAP`).
 
+### 18. Frecuencias alélicas para cobertura poblacional (opcional, anota Fase 5/5b)
+
+Sin instalación de software: es un CSV plano de 50 filas (una por alelo de
+`NETMHCPAN_REFERENCE_PANEL`/`IEDB_REFERENCE_PANEL`), consultado con pandas
+puro. `n_alelos_promiscuos` (Fase 5/5b) cuenta alelos por igual sin ponderar
+por qué tan frecuente es cada uno en población real — `population_coverage_pct`
+sí lo hace, vía la misma metodología base que la herramienta Population
+Coverage del IEDB (Bui et al. 2006, ver docstring completo de
+`src/engines/population_coverage.py`). Puramente informativo, nunca cambia
+el veredicto de `'Candidato Valido'`.
+
+```bash
+mkdir -p reference_db/allele_frequencies
+curl -sL -o /tmp/afnd.tsv \
+  https://raw.githubusercontent.com/slowkow/allelefrequencies/master/afnd.tsv
+python -m src.engines.build_allele_frequency_reference /tmp/afnd.tsv
+```
+
+Fuente: Allele Frequency Net Database (allelefrequencies.net), vía el mirror
+tab-delimited MIT-licenciado `github.com/slowkow/allelefrequencies` (sin
+scraping en vivo del sitio de AFND). Cada alelo del panel se resuelve a un
+promedio ponderado por tamaño de muestra entre TODAS las poblaciones/estudios
+disponibles — un promedio mundial agrupado, no estratificado por región/etnia
+(simplificación deliberada frente al cálculo completo de IEDB, documentada en
+el propio CSV vía su columna `method`). 4 alelos del panel MHC-II
+(`DRB3_0101`/`DRB3_0202`/`DRB4_0101`/`DRB5_0101`, genes DR secundarios sin
+datos consistentes en AFND) quedan sin frecuencia — se excluyen del cálculo
+por candidato en vez de asumir frecuencia 0. Volver a correr el script si
+`NETMHCPAN_REFERENCE_PANEL`/`IEDB_REFERENCE_PANEL` cambian.
+
+Variable de entorno: `ALLELE_FREQUENCY_PATH` (default:
+`reference_db/allele_frequencies/world_pooled_afnd.csv`). Vacío o archivo
+ausente desactiva la anotación sin romper nada — mismo patrón que
+`--panel-conservacion`.
+
 ## Uso
 
 `./run.sh` es un wrapper fino sobre `pipeline.py` (mismos argumentos) que

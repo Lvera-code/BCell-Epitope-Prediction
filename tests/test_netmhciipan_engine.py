@@ -55,7 +55,7 @@ def test_parse_xls_alelo_ganador_normal_no_se_modifica(tmp_path):
     rows = [("PEPTIDEONE9AA", [("PTIDEONE9", 0, 0.5), ("EONE9AAXX", 0, 3.0), ("XXX9AAYYY", 0, 8.0)])]
     xls_path = _write_xls(tmp_path, alleles, rows)
 
-    result = _parse_xls(xls_path, n_alleles=3)
+    result = _parse_xls(xls_path, n_alleles=3, allele_names=alleles)
 
     assert len(result) == 1
     row = result.iloc[0]
@@ -78,7 +78,7 @@ def test_parse_xls_excluye_alelo_invertido_aunque_tenga_mejor_rank(tmp_path):
     ]
     xls_path = _write_xls(tmp_path, alleles, rows)
 
-    result = _parse_xls(xls_path, n_alleles=3)
+    result = _parse_xls(xls_path, n_alleles=3, allele_names=alleles)
 
     row = result.iloc[0]
     assert row["core_9aa"] == "PTIDEONE9NORMAL"
@@ -105,7 +105,7 @@ def test_parse_xls_veredicto_usa_solo_promiscuidad_normal(tmp_path):
     ]
     xls_path = _write_xls(tmp_path, alleles, rows)
 
-    result = _parse_xls(xls_path, n_alleles=5)
+    result = _parse_xls(xls_path, n_alleles=5, allele_names=alleles)
 
     row = result.iloc[0]
     assert row["n_alelos_promiscuos"] == 2
@@ -124,7 +124,7 @@ def test_parse_xls_veredicto_valido_con_suficientes_alelos_normales(tmp_path):
     ]
     xls_path = _write_xls(tmp_path, alleles, rows)
 
-    result = _parse_xls(xls_path, n_alleles=3)
+    result = _parse_xls(xls_path, n_alleles=3, allele_names=alleles)
 
     assert result.iloc[0]["n_alelos_promiscuos"] == 3
     assert result.iloc[0]["veredicto"] == "Candidato Valido"
@@ -135,7 +135,7 @@ def test_parse_xls_todos_los_alelos_invertidos_no_inventa_core_normal(tmp_path):
     rows = [("PEPTIDEXXXXXXXXX", [("COREINV1", 1, 0.5), ("COREINV2", 1, 0.8)])]
     xls_path = _write_xls(tmp_path, alleles, rows)
 
-    result = _parse_xls(xls_path, n_alleles=2)
+    result = _parse_xls(xls_path, n_alleles=2, allele_names=alleles)
 
     row = result.iloc[0]
     assert row["n_alelos_promiscuos"] == 0
@@ -150,7 +150,7 @@ def test_parse_xls_formato_inesperado_lanza_error(tmp_path):
     bad_path.write_text("linea1\nlinea2\ncolumna_rara\tsin\tel\tformato\tesperado\n")
 
     with pytest.raises(ImmunogenicityExecutionError):
-        _parse_xls(bad_path, n_alleles=27)
+        _parse_xls(bad_path, n_alleles=27, allele_names=[f"A{i}" for i in range(27)])
 
 
 # --- build_traceback_report: traceback de coordenadas -----------------------------------
@@ -170,12 +170,13 @@ def _parent_df(accession, start, sequence, origen="Consenso", bp=0.5, ed=0.5):
     )
 
 
-def _report_row(sequence, core, n_prom, min_rank, veredicto="Candidato Valido", n_eval=27):
+def _report_row(sequence, core, n_prom, min_rank, veredicto="Candidato Valido", n_eval=27, promiscuous_alleles="A1,A2,A3"):
     return {
         "sequence": sequence,
         "core_9aa": core,
         "n_alelos_evaluados": n_eval,
         "n_alelos_promiscuos": n_prom,
+        "promiscuous_alleles": promiscuous_alleles,
         "min_rank_el": min_rank,
         "veredicto": veredicto,
     }

@@ -254,20 +254,40 @@ def run_conservation_filter(
 
 
 def print_conservation_report(conservation_df: pd.DataFrame) -> None:
-    """Imprime el informe de amplitud de conservacion: candidatos ordenados de mas a menos conservado."""
+    """Imprime el informe de amplitud de conservacion: candidatos ordenados de mas a menos conservado.
+
+    La tabla en consola omite candidatos con ``conservation_pct == 0`` (0%
+    de conservacion no es informacion accionable fila por fila -- son
+    ruido visual, no hallazgos) -- el CSV persistido (``final_path`` en
+    ``pipeline.py``) SIEMPRE tiene el 100% de los candidatos, 0% incluido,
+    mismo mecanismo que el truncado a ``_MAX_CONSOLE_ROWS`` de Fase 6/6c.
+    La media de conservacion se calcula sobre TODOS los candidatos (no solo
+    los mostrados), es una metrica real del set completo.
+    """
     if conservation_df.empty:
         print("No hay candidatos para evaluar conservacion.")
         return
 
-    seq_width = max(30, conservation_df["sequence"].str.len().max() + 2)
+    n_panel_total = int(conservation_df["n_panel_total"].iloc[0])
+    mean_pct = conservation_df["conservation_pct"].mean()
+
+    displayed = conservation_df[conservation_df["conservation_pct"] > 0]
+    n_omitted = len(conservation_df) - len(displayed)
+
+    if displayed.empty:
+        print(f"Ningun candidato conservado (0% en los {len(conservation_df)} evaluados). Detalle completo en el CSV.")
+        print(f"\nPanel de referencia: {n_panel_total} secuencia(s). Conservacion media: {mean_pct:.2f}%.")
+        return
+
+    seq_width = max(30, displayed["sequence"].str.len().max() + 2)
     columns = [
         Column("Secuencia", lambda r: r.sequence, seq_width, "<"),
         Column("Matches", lambda r: f"{r.n_panel_matches}/{r.n_panel_total}", 12, ">"),
         Column("Conservacion (%)", lambda r: f"{r.conservation_pct:.2f}", 18, ">"),
     ]
-    ordered = conservation_df.sort_values("conservation_pct", ascending=False)
+    ordered = displayed.sort_values("conservation_pct", ascending=False)
     print_fixed_width_table(ordered.itertuples(index=False), columns)
+    if n_omitted:
+        print(f"({n_omitted} candidato(s) con 0% de conservacion omitido(s) de la tabla -- ver CSV para el detalle completo.)")
 
-    n_panel_total = int(conservation_df["n_panel_total"].iloc[0]) if not conservation_df.empty else 0
-    mean_pct = conservation_df["conservation_pct"].mean()
     print(f"\nPanel de referencia: {n_panel_total} secuencia(s). Conservacion media: {mean_pct:.2f}%.")

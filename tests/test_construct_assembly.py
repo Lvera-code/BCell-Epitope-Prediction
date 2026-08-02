@@ -1,15 +1,38 @@
 """Tests de la Fase 7 (src/engines/construct_assembly.py): seleccion top-N por clase,
 deduplicacion por nucleo de union, y ensamblaje con linkers.
 
-Logica 100% pura (sin subprocess), se prueba de punta a punta con DataFrames sinteticos
-que replican el formato real de safe_df/algpred_df/stackgly_df/htl_df/ctl_df.
+Logica CASI 100% pura (sin subprocess), se prueba de punta a punta con DataFrames
+sinteticos que replican el formato real de safe_df/algpred_df/stackgly_df/htl_df/ctl_df.
+2 excepciones, ambas mockeadas por defecto via monkeypatch (autouse):
+``predict_allergenicity``/``predict_nglycosylation`` (invocadas por
+``_pad_short_bcell_candidates``) y ``filter_self_tolerant`` (invocada al final de
+``_select_bcell_candidates``, SI corre BLASTp real contra el proteoma humano en
+produccion -- sin mockear, secuencias sinteticas cortas como poly-A pueden matchear
+por azar y romper tests que no buscan probar ESTE mecanismo especificamente). Los
+tests dedicados a cada uno de esos 2 mecanismos anulan el mock por defecto.
 """
 
 import pandas as pd
 import pytest
 
+import src.engines.construct_assembly as construct_assembly_module
 from src.engines.construct_assembly import assemble_construct
 from src.config.settings import Settings
+
+
+@pytest.fixture(autouse=True)
+def _bypass_self_tolerance_reblast(monkeypatch):
+    """Por defecto, 'filter_self_tolerant' es un pass-through (nadie se descarta).
+
+    Evita que TODOS los tests que ejercitan `_select_bcell_candidates` con
+    output_dir/input_stem reales terminen invocando BLASTp de verdad -- lento y no
+    determinista (depende del proteoma humano real). Los tests que SI quieren
+    probar el re-chequeo de autotolerancia (ver seccion dedicada mas abajo)
+    sobreescriben este mock con uno que descarta secuencias especificas.
+    """
+    monkeypatch.setattr(
+        construct_assembly_module, "filter_self_tolerant", lambda df, sequence_col, **kwargs: df
+    )
 
 
 def _safe_df(rows):
@@ -368,3 +391,275 @@ def test_metadata_reconstruye_la_secuencia_exacta_siempre():
         assert row.end - row.start + 1 == len(row.sequence)
     for i in range(1, len(meta)):
         assert meta.iloc[i]["start"] == meta.iloc[i - 1]["end"] + 1
+
+
+# --- Ranking B-cell por consenso, no por escala de un solo motor -----------------------
+
+
+def test_bcell_rankea_por_consenso_no_por_escala_de_un_solo_motor():
+    """DiscoTope-3.0 es un score calibrado que puede superar 1 (a diferencia de
+    BepiPred/EpiDope/ScanNet, acotados a [0,1]). Antes del fix, max() de scores crudos
+    dejaba que esa escala mas grande dominara el ranking. El fix usa el percentil de cada
+    candidato DENTRO de su propia columna, promediado entre motores: el candidato fuerte en
+    AMBOS motores (SEQC) le gana al que domina en uno solo por pura escala (SEQB), pese a
+    que SEQB tiene el score crudo mas alto de toda la tabla.
+    """
+    rows = [
+        {"accession": "A", "start": 1, "end": 4, "sequence": "SEQA", "bepipred_score": 0.95, "discotope_score": 0.1},
+        {"accession": "A", "start": 10, "end": 13, "sequence": "SEQB", "bepipred_score": 0.30, "discotope_score": 45.0},
+        {"accession": "A", "start": 20, "end": 23, "sequence": "SEQC", "bepipred_score": 0.60, "discotope_score": 20.0},
+        {"accession": "A", "start": 30, "end": 33, "sequence": "SEQD", "bepipred_score": 0.50, "discotope_score": 10.0},
+    ]
+    safe = _safe_df(rows)
+    algpred = _algpred_df([[r["sequence"], 0.1, "Non-Allergen"] for r in rows])
+
+    seq, meta = assemble_construct(
+        safe, algpred, _stackgly_df([]), pd.DataFrame(), pd.DataFrame(), top_n_per_class=1
+    )
+
+    assert seq == "SEQC"
+
+
+# --- Recorte de candidatos B-cell largos a su mejor sub-ventana (Settings.CONSTRUCT_BCELL_MAX_LENGTH) ---
+
+
+def test_bcell_candidato_corto_no_se_recorta(tmp_path):
+    safe = _safe_df([{"accession": "A", "start": 1, "end": 10, "sequence": "SHORTSEQAA", "bepipred_score": 0.9}])
+    algpred = _algpred_df([["SHORTSEQAA", 0.1, "Non-Allergen"]])
+
+    seq, meta = assemble_construct(
+        safe, algpred, _stackgly_df([]), pd.DataFrame(), pd.DataFrame(),
+        output_dir=tmp_path, input_stem="X", bcell_max_length=20,
+    )
+
+    assert seq == "SHORTSEQAA"
+    note = meta.loc[meta["block"] == "B-cell", "source_score_note"].iloc[0]
+    assert "trimmed_from_length" not in note
+
+
+def test_bcell_candidato_largo_se_recorta_a_la_mejor_subventana(tmp_path):
+    # Region fusionada de 30 aa; el tramo de mayor score por-residuo (BepiPred) esta en
+    # posiciones 11-15 (1-indexado, absoluto) -- 5 residuos con score 0.9, el resto 0.1.
+    full_sequence = "A" * 30
+    per_residue_scores = [0.1] * 30
+    for pos in range(11, 16):
+        per_residue_scores[pos - 1] = 0.9
+
+    raw_df = pd.DataFrame({
+        "Accession": ["P1"] * 30,
+        "Residue": list(full_sequence),
+        "BepiPred-3.0 score": per_residue_scores,
+    })
+    raw_df.to_csv(tmp_path / "GP1_bepipred_raw.csv", index=False)
+
+    safe = _safe_df([{"accession": "P1", "start": 1, "end": 30, "sequence": full_sequence, "bepipred_score": 0.5}])
+    algpred = _algpred_df([[full_sequence, 0.1, "Non-Allergen"]])
+
+    seq, meta = assemble_construct(
+        safe, algpred, _stackgly_df([]), pd.DataFrame(), pd.DataFrame(),
+        output_dir=tmp_path, input_stem="GP1", bcell_max_length=5,
+    )
+
+    bcell_row = meta[meta["block"] == "B-cell"].iloc[0]
+    assert len(seq) == 5
+    assert bcell_row["source_start"] == 11
+    assert bcell_row["source_end"] == 15
+    assert "trimmed_from_length=30" in bcell_row["source_score_note"]
+
+
+def test_bcell_sin_raw_cacheado_recorta_centrado_como_fallback(tmp_path):
+    full_sequence = "A" * 10
+    safe = _safe_df([{"accession": "P1", "start": 1, "end": 10, "sequence": full_sequence, "bepipred_score": 0.5}])
+    algpred = _algpred_df([[full_sequence, 0.1, "Non-Allergen"]])
+
+    # output_dir existe pero sin ningun '{input_stem}_{motor}_raw.csv' cacheado.
+    seq, meta = assemble_construct(
+        safe, algpred, _stackgly_df([]), pd.DataFrame(), pd.DataFrame(),
+        output_dir=tmp_path, input_stem="NOCACHE", bcell_max_length=4,
+    )
+
+    assert len(seq) == 4
+    bcell_row = meta[meta["block"] == "B-cell"].iloc[0]
+    # recorte centrado como fallback: offset = (10-4)//2 = 3 -> posiciones 4-7 (1-indexado)
+    assert bcell_row["source_start"] == 4
+    assert bcell_row["source_end"] == 7
+
+
+# --- Padding de flancos nativos en candidatos B-cell cortos (Settings.CONSTRUCT_BCELL_FLANK_THRESHOLD) ---
+
+
+def _write_bepipred_raw(tmp_path, input_stem, accession, full_sequence):
+    """Escribe un raw CSV minimo (Accession/Residue/score) -- suficiente para
+    '_load_native_residues', el score en si no importa en estos tests de padding."""
+    raw_df = pd.DataFrame({
+        "Accession": [accession] * len(full_sequence),
+        "Residue": list(full_sequence),
+        "BepiPred-3.0 score": [0.5] * len(full_sequence),
+    })
+    raw_df.to_csv(tmp_path / f"{input_stem}_bepipred_raw.csv", index=False)
+
+
+def _mock_predict_allergenicity(allergen_seqs):
+    def _fake(sequences, output_dir, filename_prefix=""):
+        return pd.DataFrame({
+            "sequence": sequences,
+            "algpred_score": [0.9 if s in allergen_seqs else 0.1 for s in sequences],
+            "algpred_veredicto": ["Allergen" if s in allergen_seqs else "Non-Allergen" for s in sequences],
+        })
+    return _fake
+
+
+def _mock_predict_nglycosylation(glyco_seqs):
+    def _fake(sequences, output_dir, filename_prefix=""):
+        rows = [s for s in sequences if s in glyco_seqs]
+        return pd.DataFrame({
+            "sequence": rows,
+            "sequon_position": [1] * len(rows),
+            "stackglyembed_veredicto": ["Glicosilado"] * len(rows),
+            "stackglyembed_score": [0.9] * len(rows),
+        })
+    return _fake
+
+
+def test_bcell_candidato_corto_se_extiende_con_flancos_nativos(monkeypatch, tmp_path):
+    # Proteina de 20 aa; el candidato corto ocupa las posiciones 9-12 (1-indexado, "SHRT").
+    full_sequence = "AAAAAAAASHRTAAAAAAAA"
+    assert len(full_sequence) == 20
+    _write_bepipred_raw(tmp_path, "GP1", "P1", full_sequence)
+
+    monkeypatch.setattr(construct_assembly_module, "predict_allergenicity", _mock_predict_allergenicity(set()))
+    monkeypatch.setattr(construct_assembly_module, "predict_nglycosylation", _mock_predict_nglycosylation(set()))
+
+    safe = _safe_df([{"accession": "P1", "start": 9, "end": 12, "sequence": "SHRT", "bepipred_score": 0.5}])
+    algpred = _algpred_df([["SHRT", 0.1, "Non-Allergen"]])
+
+    seq, meta = assemble_construct(
+        safe, algpred, _stackgly_df([]), pd.DataFrame(), pd.DataFrame(),
+        output_dir=tmp_path, input_stem="GP1", bcell_flank_threshold=15, bcell_flank_padding=3,
+    )
+
+    bcell_row = meta[meta["block"] == "B-cell"].iloc[0]
+    assert seq == "AAASHRTAAA"  # 3 aa nativos de margen a cada lado
+    assert bcell_row["source_start"] == 6
+    assert bcell_row["source_end"] == 15
+    assert "flanked_from_length=4" in bcell_row["source_score_note"]
+
+
+def test_bcell_candidato_en_el_borde_de_la_proteina_solo_extiende_hacia_adentro(monkeypatch, tmp_path):
+    # El candidato ya arranca en la posicion 1 -- no hay hacia donde extender a la izquierda.
+    full_sequence = "SHRTAAAAAAAAAAAAAAAA"
+    assert len(full_sequence) == 20
+    _write_bepipred_raw(tmp_path, "GP1", "P1", full_sequence)
+
+    monkeypatch.setattr(construct_assembly_module, "predict_allergenicity", _mock_predict_allergenicity(set()))
+    monkeypatch.setattr(construct_assembly_module, "predict_nglycosylation", _mock_predict_nglycosylation(set()))
+
+    safe = _safe_df([{"accession": "P1", "start": 1, "end": 4, "sequence": "SHRT", "bepipred_score": 0.5}])
+    algpred = _algpred_df([["SHRT", 0.1, "Non-Allergen"]])
+
+    seq, meta = assemble_construct(
+        safe, algpred, _stackgly_df([]), pd.DataFrame(), pd.DataFrame(),
+        output_dir=tmp_path, input_stem="GP1", bcell_flank_threshold=15, bcell_flank_padding=3,
+    )
+
+    bcell_row = meta[meta["block"] == "B-cell"].iloc[0]
+    assert seq == "SHRTAAA"  # sin margen a la izquierda (ya en la posicion 1), 3 aa a la derecha
+    assert bcell_row["source_start"] == 1
+    assert bcell_row["source_end"] == 7
+
+
+def test_bcell_padding_descartado_si_la_version_extendida_es_alergeno(monkeypatch, tmp_path):
+    full_sequence = "AAAAAAAASHRTAAAAAAAA"
+    _write_bepipred_raw(tmp_path, "GP1", "P1", full_sequence)
+
+    # La version extendida "AAASHRTAAA" es alergena segun el motor (mockeado) -- el padding
+    # debe descartarse y el candidato debe quedarse con su secuencia original sin extender.
+    monkeypatch.setattr(
+        construct_assembly_module, "predict_allergenicity", _mock_predict_allergenicity({"AAASHRTAAA"})
+    )
+    monkeypatch.setattr(construct_assembly_module, "predict_nglycosylation", _mock_predict_nglycosylation(set()))
+
+    safe = _safe_df([{"accession": "P1", "start": 9, "end": 12, "sequence": "SHRT", "bepipred_score": 0.5}])
+    algpred = _algpred_df([["SHRT", 0.1, "Non-Allergen"]])
+
+    seq, meta = assemble_construct(
+        safe, algpred, _stackgly_df([]), pd.DataFrame(), pd.DataFrame(),
+        output_dir=tmp_path, input_stem="GP1", bcell_flank_threshold=15, bcell_flank_padding=3,
+    )
+
+    bcell_row = meta[meta["block"] == "B-cell"].iloc[0]
+    assert seq == "SHRT"  # padding descartado, candidato original sin tocar
+    assert bcell_row["source_start"] == 9
+    assert bcell_row["source_end"] == 12
+    assert "flanked_from_length" not in bcell_row["source_score_note"]
+
+
+def test_bcell_candidato_ya_largo_no_se_extiende(monkeypatch, tmp_path):
+    full_sequence = "A" * 30
+    _write_bepipred_raw(tmp_path, "GP1", "P1", full_sequence)
+
+    calls = []
+    monkeypatch.setattr(
+        construct_assembly_module, "predict_allergenicity",
+        lambda *a, **k: calls.append(1) or pd.DataFrame(columns=["sequence", "algpred_score", "algpred_veredicto"]),
+    )
+
+    long_sequence = "A" * 16  # >= threshold (15), no deberia disparar padding
+    safe = _safe_df([{"accession": "P1", "start": 1, "end": 16, "sequence": long_sequence, "bepipred_score": 0.5}])
+    algpred = _algpred_df([[long_sequence, 0.1, "Non-Allergen"]])
+
+    seq, meta = assemble_construct(
+        safe, algpred, _stackgly_df([]), pd.DataFrame(), pd.DataFrame(),
+        output_dir=tmp_path, input_stem="GP1", bcell_flank_threshold=15, bcell_flank_padding=3,
+    )
+
+    assert seq == long_sequence
+    assert not calls  # predict_allergenicity nunca deberia invocarse
+
+
+# --- Re-chequeo de autotolerancia sobre la secuencia FINAL (filter_self_tolerant) ------
+
+
+def test_bcell_candidato_final_con_homologia_humana_se_excluye(monkeypatch, tmp_path):
+    """Hallazgo de sesion: Fase 4 corre sobre la region padre (potencialmente mas larga
+    que 20 aa), asi que un motivo corto peligroso enterrado dentro puede pasar su filtro
+    de cobertura sin ser detectado. '_select_bcell_candidates' debe re-chequear la
+    secuencia FINAL (ya recortada/extendida) y descartar la que de verdad resulte
+    homologa al proteoma humano a esa escala."""
+    monkeypatch.setattr(
+        construct_assembly_module, "filter_self_tolerant",
+        lambda df, sequence_col, **kwargs: df[df[sequence_col] != "PELIGROSA"],
+    )
+
+    safe = _safe_df([
+        {"accession": "P1", "start": 1, "end": 9, "sequence": "PELIGROSA", "bepipred_score": 0.9},
+        {"accession": "P1", "start": 20, "end": 28, "sequence": "INOFENSIV", "bepipred_score": 0.5},
+    ])
+    algpred = _algpred_df([["PELIGROSA", 0.1, "Non-Allergen"], ["INOFENSIV", 0.1, "Non-Allergen"]])
+
+    seq, meta = assemble_construct(
+        safe, algpred, _stackgly_df([]), pd.DataFrame(), pd.DataFrame(),
+        output_dir=tmp_path, input_stem="GP1",
+    )
+
+    bcell_rows = meta[meta["block"] == "B-cell"]
+    assert list(bcell_rows["sequence"]) == ["INOFENSIV"]
+    assert "PELIGROSA" not in seq
+
+
+def test_bcell_todos_los_candidatos_con_homologia_humana_deja_bloque_vacio(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        construct_assembly_module, "filter_self_tolerant",
+        lambda df, sequence_col, **kwargs: df.iloc[0:0],
+    )
+
+    safe = _safe_df([{"accession": "P1", "start": 1, "end": 9, "sequence": "PELIGROSA", "bepipred_score": 0.9}])
+    algpred = _algpred_df([["PELIGROSA", 0.1, "Non-Allergen"]])
+
+    seq, meta = assemble_construct(
+        safe, algpred, _stackgly_df([]), pd.DataFrame(), pd.DataFrame(),
+        output_dir=tmp_path, input_stem="GP1",
+    )
+
+    assert seq == ""
+    assert meta.empty

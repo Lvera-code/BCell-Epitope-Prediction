@@ -393,6 +393,23 @@ class Settings:
     # ligandos eluidos (IEDB/CEDAR, ver docstring del binario).
     NETMHCPAN_PEPTIDE_LENGTHS: str = _env_str("NETMHCPAN_PEPTIDE_LENGTHS", "8,9,10,11")
 
+    # --- Cobertura poblacional real de HTL/CTL (opcional, anota Fase 5/5b) ---
+    # 'n_alelos_promiscuos' (arriba) cuenta alelos por igual, sin ponderar por
+    # que tan frecuente es cada uno en poblacion real -- ver docstring completo
+    # de 'src.engines.population_coverage' para el porque y la formula (Bui et
+    # al. 2006, misma metodologia base que la herramienta Population Coverage
+    # del IEDB). Default: dataset REAL bundleado (AFND via
+    # github.com/slowkow/allelefrequencies, fetched 2026-08-02), promedio
+    # mundial ponderado por tamano de muestra, no estratificado por region/
+    # etnia -- simplificacion deliberada y documentada, no el calculo completo
+    # de IEDB. Vacio ("") desactiva la anotacion sin romper nada (mismo patron
+    # que CONSERVATION_DB_CACHE_DIR/IEDB_BCELL_REFERENCE_PATH: ausencia de
+    # datos no es un error, solo omite la columna informativa).
+    ALLELE_FREQUENCY_PATH: str = _env_str(
+        "ALLELE_FREQUENCY_PATH",
+        str(_REPO_ROOT / "reference_db" / "allele_frequencies" / "world_pooled_afnd.csv"),
+    )
+
     # --- Alergenicidad (AlgPred 2.0 LOCAL) ---
     # Instalacion propia (venv dedicado + BLAST DB + MERCI.pl bundled), open
     # source (GPSR group), 100% local por subprocess. AlgPred2 vive en
@@ -545,6 +562,18 @@ class Settings:
     # 'construct_assembly.py' para el criterio de ranking exacto por clase y
     # las fuentes de literatura de cada linker.
     CONSTRUCT_TOP_N_PER_CLASS: int = _env_int("CONSTRUCT_TOP_N_PER_CLASS", 3)
+    # A diferencia de HTL/CTL (ventana fija impuesta por NetMHCIIpan/NetMHCpan,
+    # ver 'sequence_f5' en 'construct_assembly.py'), un candidato B-cell viene
+    # de la union de Fase 3 y puede llegar fusionado a decenas de aa. Si supera
+    # este largo, se recorta a la sub-ventana de mayor score por-residuo (ver
+    # '_trim_long_bcell_candidates' en 'construct_assembly.py').
+    CONSTRUCT_BCELL_MAX_LENGTH: int = _env_int("CONSTRUCT_BCELL_MAX_LENGTH", 20)
+    # A diferencia de MAX_LENGTH (recorte respaldado por score real de motor), esto es
+    # una asuncion de DISEÑO, no un hallazgo de herramienta: ningun motor B-cell certifica
+    # que los residuos flanqueantes agregados sean antigenicos -- ver docstring de
+    # '_pad_short_bcell_candidates' en 'construct_assembly.py' para el porque.
+    CONSTRUCT_BCELL_FLANK_THRESHOLD: int = _env_int("CONSTRUCT_BCELL_FLANK_THRESHOLD", 15)
+    CONSTRUCT_BCELL_FLANK_PADDING: int = _env_int("CONSTRUCT_BCELL_FLANK_PADDING", 3)
     CONSTRUCT_LINKER_BCELL: str = _env_str("CONSTRUCT_LINKER_BCELL", "KK")
     CONSTRUCT_LINKER_HTL: str = _env_str("CONSTRUCT_LINKER_HTL", "GPGPG")
     CONSTRUCT_LINKER_CTL: str = _env_str("CONSTRUCT_LINKER_CTL", "AAY")

@@ -181,6 +181,27 @@ def _truncate(text: str, max_len: int) -> str:
     return text if len(text) <= max_len else text[: max_len - 1] + "…"
 
 
+def _short_response(value, max_len: int) -> str:
+    """Bucketiza 'response_measured' a 'Neutralization'/'Protection' en vez de truncar.
+
+    El dataset local (``reference_db/iedb/bcell_protective_epitopes.csv``) solo
+    tiene 10 valores distintos para este campo: ``'neutralization'`` (exacto,
+    2964/3429 filas) y 9 variantes que arrancan con ``'protection'`` pero
+    difieren en un calificador largo (p. ej. ``'protection from pathogen
+    challenge after adoptive transfer'``, 60 caracteres) que no aporta nada a
+    un vistazo rapido en consola y forzaba truncado con "…" incluso a un ancho
+    generoso. El valor completo sigue integro en el CSV persistido.
+    """
+    if pd.isna(value) or value == "":
+        return "-"
+    text = str(value)
+    if text == "neutralization":
+        return "Neutralization"
+    if text.startswith("protection"):
+        return "Protection"
+    return _truncate(text, max_len)  # valor inesperado fuera del dataset local conocido
+
+
 def print_iedb_crossref_report(report_df: pd.DataFrame, csv_path: Optional[Path] = None) -> None:
     """Imprime el detalle del cruce con IEDB: analogo a ``lanl_catnap_engine.print_bnab_crossref_report``.
 
@@ -188,21 +209,31 @@ def print_iedb_crossref_report(report_df: pd.DataFrame, csv_path: Optional[Path]
     ``qualitative_measure`` con mas evidencia -- 'Positive-High' primero --
     luego por mayor ``match_length``), igual mecanismo que Fase 6: el CSV
     persistido siempre tiene el 100% de los matches.
+
+    ``Respuesta`` bucketiza a 'Neutralization'/'Protection' (``_short_response``)
+    en vez de truncar con "…" -- ver su docstring, cubre el 100% de los 10
+    valores distintos que trae el dataset local de IEDB. ``Organismo`` sigue
+    truncando (``_ORG_MAX``, ahora 50 en vez de 28): a diferencia de
+    ``response_measured``, source_organism tiene 561 valores distintos sin un
+    patron limpio para bucketizar (solo 67/561 tienen un parentesis del que
+    cortar; el resto es sufijo de cepa/aislado libre, ej. fechas/codigos de
+    secuenciacion) -- 50 cubre ~90% de esos 561 sin "…" (percentil 90 = 47
+    caracteres), el resto sigue disponible integro en el CSV.
     """
     if report_df.empty:
         print("Ningun peptido coincide con una region IEDB de proteccion/neutralizacion documentada.")
         return
 
-    _ORG_MAX = 28
+    _ORG_MAX = 50
     _RESP_MAX = 20
 
     org_width = max(10, report_df["source_organism"].apply(lambda v: len(_truncate(v, _ORG_MAX))).max() + 2)
-    resp_width = max(10, report_df["response_measured"].apply(lambda v: len(_truncate(v, _RESP_MAX))).max() + 2)
+    resp_width = max(10, report_df["response_measured"].apply(lambda v: len(_short_response(v, _RESP_MAX))).max() + 2)
 
     seq_col = Column("Secuencia", lambda r: r.sequence, _SEQ_WRAP, "<")
     rest_columns = [
         Column("Organismo", lambda r: _truncate(r.source_organism, _ORG_MAX), org_width, "<", prefix="  "),
-        Column("Respuesta", lambda r: _truncate(r.response_measured, _RESP_MAX), resp_width, "<"),
+        Column("Respuesta", lambda r: _short_response(r.response_measured, _RESP_MAX), resp_width, "<"),
         Column("Medida", lambda r: r.qualitative_measure if pd.notna(r.qualitative_measure) else "-", 20, "<"),
         Column("PMID", lambda r: str(int(float(r.pmid))) if pd.notna(r.pmid) else "-", 10, ">"),
     ]

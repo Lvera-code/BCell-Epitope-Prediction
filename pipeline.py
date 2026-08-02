@@ -138,7 +138,7 @@ from src.engines.bepipred_engine import BepiPredEngine
 from src.engines.bepipred_engine import extract_epitopes as extract_bepipred_epitopes
 from src.engines.bepipred_engine import ACCESSION_COLUMN as BEPIPRED_ACCESSION_COLUMN
 from src.engines.bepipred_engine import RESIDUE_COLUMN_CANDIDATES as BEPIPRED_RESIDUE_CANDIDATES
-from src.engines.blast_engine import print_blast_report, run_blastp_filter
+from src.engines.blast_engine import filter_self_tolerant, print_blast_report, run_blastp_filter
 from src.engines.algpred_engine import predict_allergenicity, print_allergenicity_report
 from src.engines.consensus import build_annotated_union_table, print_union_table
 from src.engines.conservation_engine import print_conservation_report, run_conservation_filter
@@ -175,6 +175,7 @@ from src.engines.netmhcpan_engine import (
     predict_netmhcpan,
     print_tc_report,
 )
+from src.engines.population_coverage import annotate_population_coverage
 from src.engines.scannet_engine import ScanNetEngine
 from src.engines.scannet_engine import extract_epitopes as extract_scannet_epitopes
 from src.engines.scannet_engine import print_epitope_table as print_scannet_epitope_table
@@ -931,7 +932,8 @@ def fase_4c_glicosilacion(safe_df: pd.DataFrame, output_dir: Path, input_stem: s
 
 
 def fase_5_th_promiscuidad(
-    safe_df: pd.DataFrame, output_dir: Path, input_stem: str, allele_extra: str = None
+    safe_df: pd.DataFrame, output_dir: Path, input_stem: str, allele_extra: str = None,
+    blast_db: str = Settings.BLAST_HUMAN_DB, identity_threshold: float = Settings.BLAST_IDENTITY_THRESHOLD,
 ) -> pd.DataFrame:
     """Fase 5: evalua promiscuidad T-helper (MHC-II) de los peptidos 'Seguros' de la Fase 4.
 
@@ -959,6 +961,13 @@ def fase_5_th_promiscuidad(
             separados por coma sin espacios) a anexar a
             ``IEDB_REFERENCE_PANEL``. Se admiten sin romper el panel por
             defecto.
+        blast_db/identity_threshold: Mismos parametros que Fase 4 (``--blast-db``/
+            ``--identity-threshold``), reusados aqui para el re-chequeo de
+            autotolerancia sobre ``sequence_f5`` (ver
+            ``blast_engine.filter_self_tolerant``): Fase 4 corre sobre la
+            region padre (potencialmente mucho mas larga que 15 aa), asi que
+            un motivo corto peligroso enterrado dentro puede pasar su filtro
+            de cobertura sin ser detectado a esa escala.
     """
     allele_panel = f"{IEDB_REFERENCE_PANEL},{allele_extra}" if allele_extra else IEDB_REFERENCE_PANEL
     n_alleles = len(allele_panel.split(","))
@@ -972,7 +981,7 @@ def fase_5_th_promiscuidad(
         traceback_df.to_csv(final_path, index=False)
         return traceback_df
 
-    input_hash = _phase_input_hash(safe_df, allele_panel)
+    input_hash = _phase_input_hash(safe_df, allele_panel, blast_db, identity_threshold)
     cached = _load_phase_checkpoint("Fase 5", final_path, input_hash)
     if cached is not None:
         return cached
@@ -988,6 +997,8 @@ def fase_5_th_promiscuidad(
         print_th_report(report, allele_panel=allele_panel)
 
     traceback_df = build_traceback_report(report, safe_df)
+    traceback_df = filter_self_tolerant(traceback_df, "sequence_f5", db_path=blast_db, identity_threshold=identity_threshold)
+    traceback_df = annotate_population_coverage(traceback_df)
     print_traceback_table(traceback_df)
 
     traceback_df.to_csv(final_path, index=False)
@@ -996,7 +1007,10 @@ def fase_5_th_promiscuidad(
     return traceback_df
 
 
-def fase_5b_tc_promiscuidad(safe_df: pd.DataFrame, output_dir: Path, input_stem: str) -> pd.DataFrame:
+def fase_5b_tc_promiscuidad(
+    safe_df: pd.DataFrame, output_dir: Path, input_stem: str,
+    blast_db: str = Settings.BLAST_HUMAN_DB, identity_threshold: float = Settings.BLAST_IDENTITY_THRESHOLD,
+) -> pd.DataFrame:
     """Fase 5b: evalua promiscuidad T-citotoxica (MHC-I) de los peptidos 'Seguros' de la Fase 4.
 
     Paso independiente en paralelo a ``fase_5_th_promiscuidad`` (MHC-II), NO
@@ -1021,6 +1035,9 @@ def fase_5b_tc_promiscuidad(safe_df: pd.DataFrame, output_dir: Path, input_stem:
         output_dir: Carpeta donde persistir el reporte final y el .xls crudo.
         input_stem: Nombre del archivo de entrada sin extension (mismo
             proposito que en Fase 5: evita que corridas sucesivas se pisen).
+        blast_db/identity_threshold: Ver docstring de ``fase_5_th_promiscuidad``
+            -- mismo re-chequeo de autotolerancia, aqui sobre ``sequence_f5``
+            de MHC-I (``blast_engine.filter_self_tolerant``).
     """
     n_alleles = len(NETMHCPAN_REFERENCE_PANEL.split(","))
     print(
@@ -1044,7 +1061,7 @@ def fase_5b_tc_promiscuidad(safe_df: pd.DataFrame, output_dir: Path, input_stem:
     # NETMHCPAN_REFERENCE_PANEL no es configurable por CLI (a diferencia del
     # panel de MHC-II, que admite '--alelo-extra'), asi que incluir el valor
     # actual de la constante alcanza para detectar cualquier cambio futuro.
-    input_hash = _phase_input_hash(safe_df, NETMHCPAN_REFERENCE_PANEL)
+    input_hash = _phase_input_hash(safe_df, NETMHCPAN_REFERENCE_PANEL, blast_db, identity_threshold)
     cached = _load_phase_checkpoint("Fase 5b", final_path, input_hash)
     if cached is not None:
         return cached
@@ -1060,8 +1077,13 @@ def fase_5b_tc_promiscuidad(safe_df: pd.DataFrame, output_dir: Path, input_stem:
         print_tc_report(report, allele_panel=NETMHCPAN_REFERENCE_PANEL)
 
     traceback_df = build_traceback_report_mhci(report, safe_df)
+    traceback_df = filter_self_tolerant(traceback_df, "sequence_f5", db_path=blast_db, identity_threshold=identity_threshold)
+    traceback_df = annotate_population_coverage(traceback_df)
 
     if not traceback_df.empty:
+        # NetCleave necesita el peptido ORIGINAL de safe_df (no 'sequence_f5' recortado), no
+        # solo el nucleo aceptado -- conserva el contexto de flanco C-terminal real que
+        # 'annotate_cterm_cleavage' usa para ubicar el sitio de corte (ver su docstring).
         cleavage_df = predict_cleavage(peptides, output_dir, filename_prefix=f"{input_stem}_")
         traceback_df = annotate_cterm_cleavage(traceback_df, cleavage_df)
         n_cterm_match = int(traceback_df["netcleave_c_term_match"].sum())
@@ -1280,13 +1302,15 @@ def fase_7_ensamblaje_constructo(
     input_stem: str,
     conservation_df: Optional[pd.DataFrame] = None,
     iedb_df: Optional[pd.DataFrame] = None,
+    blast_db: str = Settings.BLAST_HUMAN_DB,
+    identity_threshold: float = Settings.BLAST_IDENTITY_THRESHOLD,
 ) -> Tuple[str, pd.DataFrame]:
     """Fase 7: ensambla automaticamente el constructo multi-epitopo a partir de los candidatos finales.
 
     Ver docstring completo de ``src.engines.construct_assembly`` para las
-    reglas de seleccion top-N y los linkers usados. Puramente interno (sin
-    subprocess): selecciona, concatena y persiste el FASTA del constructo +
-    su metadata de trazabilidad, insumo de la Fase 8.
+    reglas de seleccion top-N y los linkers usados. CASI interno (ver
+    docstring del modulo): selecciona, concatena y persiste el FASTA del
+    constructo + su metadata de trazabilidad, insumo de la Fase 8.
 
     Args:
         safe_df: Peptidos B-cell 'Segura' de la Fase 4.
@@ -1303,6 +1327,10 @@ def fase_7_ensamblaje_constructo(
             corre) -- solo anota ``documented_region`` en candidatos B-cell,
             no cambia la seleccion. Ver Fase 6c para el porque no aplica a
             HTL/CTL.
+        blast_db/identity_threshold: Mismos parametros que Fase 4/5/5b, para
+            el re-chequeo de autotolerancia sobre el candidato B-cell YA
+            recortado/extendido (ver ``blast_engine.filter_self_tolerant`` y
+            ``construct_assembly._select_bcell_candidates``).
 
     Returns:
         Tupla ``(construct_sequence, metadata_df)``. ``construct_sequence == ""``
@@ -1314,7 +1342,10 @@ def fase_7_ensamblaje_constructo(
     metadata_path = output_dir / f"{input_stem}_constructo_metadata.csv"
 
     input_hash = _phase_input_hash(
-        safe_df, algpred_df, stackgly_df, htl_df, ctl_df, Settings.CONSTRUCT_TOP_N_PER_CLASS,
+        safe_df, algpred_df, stackgly_df, htl_df, ctl_df,
+        Settings.CONSTRUCT_TOP_N_PER_CLASS, Settings.CONSTRUCT_BCELL_MAX_LENGTH,
+        Settings.CONSTRUCT_BCELL_FLANK_THRESHOLD, Settings.CONSTRUCT_BCELL_FLANK_PADDING,
+        blast_db, identity_threshold,
         conservation_df if conservation_df is not None else "sin-panel-conservacion",
         iedb_df,
     )
@@ -1332,7 +1363,9 @@ def fase_7_ensamblaje_constructo(
         return cached_sequence, cached_metadata
 
     construct_sequence, metadata_df = assemble_construct(
-        safe_df, algpred_df, stackgly_df, htl_df, ctl_df, conservation_df=conservation_df, iedb_df=iedb_df
+        safe_df, algpred_df, stackgly_df, htl_df, ctl_df, output_dir=output_dir, input_stem=input_stem,
+        conservation_df=conservation_df, iedb_df=iedb_df,
+        blast_db=blast_db, identity_threshold=identity_threshold,
     )
 
     if not construct_sequence:
@@ -1521,8 +1554,14 @@ def main(argv: List[str] = None) -> int:
         _log_peak_memory("Fase 4b (alergenicidad)")
         stackgly_df = fase_4c_glicosilacion(safe_df, output_dir, input_path.stem)
         _log_peak_memory("Fase 4c (N-glicosilacion, StackGlyEmbed -- 3 modelos pesados)")
-        htl_df = fase_5_th_promiscuidad(safe_df, output_dir, input_path.stem, allele_extra=args.alelo_extra)
-        ctl_df = fase_5b_tc_promiscuidad(safe_df, output_dir, input_path.stem)
+        htl_df = fase_5_th_promiscuidad(
+            safe_df, output_dir, input_path.stem, allele_extra=args.alelo_extra,
+            blast_db=args.blast_db, identity_threshold=args.identity_threshold,
+        )
+        ctl_df = fase_5b_tc_promiscuidad(
+            safe_df, output_dir, input_path.stem,
+            blast_db=args.blast_db, identity_threshold=args.identity_threshold,
+        )
         _log_peak_memory("Fase 5b (MHC-I + NetCleave)")
         fase_6_bnab_crossref(safe_df, output_dir, input_path.stem)
         conservation_df = fase_6b_conservacion(
@@ -1532,6 +1571,7 @@ def main(argv: List[str] = None) -> int:
         construct_sequence, _ = fase_7_ensamblaje_constructo(
             safe_df, algpred_df, stackgly_df, htl_df, ctl_df, output_dir, input_path.stem,
             conservation_df=conservation_df, iedb_df=iedb_df,
+            blast_db=args.blast_db, identity_threshold=args.identity_threshold,
         )
         fase_8_chequeo_constructo(construct_sequence, output_dir, input_path.stem)
         _log_peak_memory("Fase 8 (chequeo del constructo -- SignalP-6.0 es el mas pesado)")

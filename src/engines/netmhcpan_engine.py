@@ -148,12 +148,12 @@ _MIN_PEPTIDE_LENGTH = 8
 _MAX_PEPTIDE_MODE_LENGTH = 40
 
 _OUTPUT_COLUMNS = [
-    "sequence", "core_9aa", "n_alelos_evaluados", "n_alelos_promiscuos", "min_rank_el", "veredicto",
+    "sequence", "core_9aa", "n_alelos_evaluados", "n_alelos_promiscuos", "promiscuous_alleles", "min_rank_el", "veredicto",
 ]
 
 _TRACEBACK_BASE_COLUMNS = [
     "accession", "sequence_f5", "core_9aa", "start", "end", "origen",
-    "n_alelos_promiscuos", "n_alelos_evaluados", "min_rank_el",
+    "n_alelos_promiscuos", "promiscuous_alleles", "n_alelos_evaluados", "min_rank_el",
 ]
 
 
@@ -192,7 +192,7 @@ def _resolve_binary() -> Path:
     return binary
 
 
-def _parse_xls(xls_path: Path, n_alleles: int) -> pd.DataFrame:
+def _parse_xls(xls_path: Path, n_alleles: int, allele_names: List[str]) -> pd.DataFrame:
     """Parsea el .xls de NetMHCpan-4.2 y evalua la promiscuidad de cada peptido.
 
     El .xls multi-alelo de NetMHCpan-4.2 tiene el mismo formato de 2 filas de
@@ -209,13 +209,18 @@ def _parse_xls(xls_path: Path, n_alleles: int) -> pd.DataFrame:
         xls_path: Ruta al .xls crudo devuelto por NetMHCpan.
         n_alleles: Numero de alelos evaluados (debe coincidir con el numero
             de columnas 'EL_rank*'/'core*' encontradas).
+        allele_names: Alelos del panel EN EL MISMO ORDEN pasado a '-a', usado
+            para nombrar ``promiscuous_alleles`` (ver docstring de
+            ``netmhciipan_engine._parse_xls``, misma logica).
 
     Returns:
         DataFrame con columnas ``sequence``, ``core_9aa``,
-        ``n_alelos_evaluados``, ``n_alelos_promiscuos``, ``min_rank_el`` y
-        ``veredicto`` (``'Candidato Valido'`` / ``'Rechazado'``). ``core_9aa``
-        es el nucleo de union (columna ``core`` de NetMHCpan) del alelo con
-        el %Rank mas bajo para ese peptido.
+        ``n_alelos_evaluados``, ``n_alelos_promiscuos``, ``promiscuous_alleles``,
+        ``min_rank_el`` y ``veredicto`` (``'Candidato Valido'`` / ``'Rechazado'``).
+        ``core_9aa`` es el nucleo de union (columna ``core`` de NetMHCpan) del
+        alelo con el %Rank mas bajo para ese peptido. ``promiscuous_alleles``:
+        ver docstring de ``netmhciipan_engine._parse_xls`` (misma logica,
+        necesaria para cobertura poblacional real, ``src.engines.population_coverage``).
 
     Raises:
         ImmunogenicityExecutionError: Si el .xls no se puede parsear o no
@@ -245,6 +250,10 @@ def _parse_xls(xls_path: Path, n_alleles: int) -> pd.DataFrame:
 
     is_binder = rank_matrix <= Settings.NETMHCPAN_RANK_WEAK
     n_alelos_promiscuos = is_binder.sum(axis=1)
+    promiscuous_alleles = [
+        ",".join(allele_names[j] for j in range(n_alleles) if is_binder[i, j])
+        for i in range(len(raw))
+    ]
 
     result = pd.DataFrame(
         {
@@ -252,6 +261,7 @@ def _parse_xls(xls_path: Path, n_alleles: int) -> pd.DataFrame:
             "core_9aa": best_core,
             "n_alelos_evaluados": n_alleles,
             "n_alelos_promiscuos": n_alelos_promiscuos,
+            "promiscuous_alleles": promiscuous_alleles,
             "min_rank_el": rank_matrix.min(axis=1),
         }
     )
@@ -358,7 +368,8 @@ def predict_netmhcpan(
             len(long_peptides), _MAX_PEPTIDE_MODE_LENGTH, Settings.NETMHCPAN_PEPTIDE_LENGTHS,
         )
 
-    n_alleles = len([a for a in allele_panel.split(",") if a])
+    allele_names = [a for a in allele_panel.split(",") if a]
+    n_alleles = len(allele_names)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     result_frames = []
@@ -373,7 +384,7 @@ def predict_netmhcpan(
                 binary, ["-p", "-f", str(pep_path)], allele_panel, xls_path, Settings.NETMHCPAN_TIMEOUT_SECONDS
             )
             _require_xls_output(xls_path, proc, mode_desc="modo peptido exacto")
-            result_frames.append(_parse_xls(xls_path, n_alleles))
+            result_frames.append(_parse_xls(xls_path, n_alleles, allele_names))
             shutil.copyfile(xls_path, output_dir / f"{filename_prefix}netmhcpan_raw_peptide_mode.xls")
 
         if long_peptides:
@@ -387,7 +398,7 @@ def predict_netmhcpan(
                 allele_panel, xls_path, Settings.NETMHCPAN_TIMEOUT_SECONDS,
             )
             _require_xls_output(xls_path, proc, mode_desc="modo proteina (ventana deslizante)")
-            result_frames.append(_parse_xls(xls_path, n_alleles))
+            result_frames.append(_parse_xls(xls_path, n_alleles, allele_names))
             shutil.copyfile(xls_path, output_dir / f"{filename_prefix}netmhcpan_raw_protein_mode.xls")
 
     if not result_frames:
@@ -485,6 +496,7 @@ def build_traceback_report(report_df: pd.DataFrame, parent_df: pd.DataFrame) -> 
                 "end": end_real,
                 "origen": parent.origen,
                 "n_alelos_promiscuos": candidate.n_alelos_promiscuos,
+                "promiscuous_alleles": candidate.promiscuous_alleles,
                 "n_alelos_evaluados": candidate.n_alelos_evaluados,
                 "min_rank_el": candidate.min_rank_el,
             }
