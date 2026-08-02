@@ -388,11 +388,15 @@ def filter_self_tolerant(
 
     n_total = len(df)
     n_survivors = len(survivors)
-    if n_survivors < n_total:
-        print(
-            f"[Fase 4-bis] Re-chequeo de autotolerancia a resolucion real: "
-            f"{n_survivors}/{n_total} candidato(s) sobreviven "
-            f"({n_total - n_survivors} descartado(s) por homologia humana no detectada "
-            f"a escala de la region padre de Fase 4)."
-        )
+    n_discarded = n_total - n_survivors
+    # SIEMPRE imprime, incluso con 0 descartados (mismo criterio que
+    # 'print_blast_report' de Fase 4): sin esto, "corrio y no encontro nada"
+    # y "no corrio" son indistinguibles en la consola -- confusion real
+    # confirmada corriendo GP120.fasta (Fase 5/MHC-II con 0 descartados no
+    # imprimia nada, parecia que la fase entera se hubiera saltado).
+    detail = (
+        f"{n_discarded} descartado(s) por homologia humana no detectada a escala de la region padre de Fase 4"
+        if n_discarded else "ninguno descartado"
+    )
+    print(f"[Fase 4-bis] Re-chequeo de autotolerancia a resolucion real: {n_survivors}/{n_total} candidato(s) sobreviven ({detail}).")
     return survivors
