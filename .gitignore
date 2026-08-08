@@ -26,11 +26,11 @@ reference_db/
 
 # Salida del pipeline (Fases 1-5): resultados regenerables de cada corrida
 # de pipeline.py. No es codigo fuente ni un artefacto versionable.
-Outputs/
+outputs/
 
 # Fallback historico del motor de BepiPred si se invoca sin output_dir
 # explicito (ver Settings.BEPIPRED_OUTPUT_DIR). En uso normal, pipeline.py
-# siempre redirige esto dentro de Outputs/, pero se deja por si acaso.
+# siempre redirige esto dentro de outputs/, pero se deja por si acaso.
 produccion_resultados/
 
 # Herramienta NetMHCIIpan-4.3 (Fase 5, ejecucion local): paquete propietario

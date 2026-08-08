@@ -24,8 +24,8 @@ LABEL="${2:-$ACC}_${ACC}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-PDB_FILE="Inputs/${LABEL}_AF.pdb"
-FASTA_FILE="Inputs/${LABEL}.fasta"
+PDB_FILE="inputs/${LABEL}_AF.pdb"
+FASTA_FILE="inputs/${LABEL}.fasta"
 
 echo "== Descargando FASTA canonico de UniProt (${ACC}) =="
 curl -s --max-time 15 "https://rest.uniprot.org/uniprotkb/${ACC}.fasta" -o "$FASTA_FILE"

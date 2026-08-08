@@ -44,7 +44,7 @@ PDB.
 ## Flujo de trabajo (11 fases)
 
 1. **Saneamiento FASTA / extracción de estructura** — Camino 1: valida y
-   limpia la(s) secuencia(s) de entrada (`Inputs/`, admite FASTA
+   limpia la(s) secuencia(s) de entrada (`inputs/`, admite FASTA
    multi-registro). Caminos 2/3: Fase 1.5, ver arriba.
 2. **Antigenicidad** — hasta 4 motores independientes ejecutados en local
    según el camino de entrada (ver tabla arriba), cada uno con su propio
@@ -276,7 +276,7 @@ PDB.
    combinado: `<nombre>_constructo_chequeo.csv`.
 
 Todos los resultados intermedios y el reporte final se guardan en
-`Outputs/`.
+`outputs/`.
 
 ### Checkpointing
 
@@ -927,13 +927,13 @@ salvo que necesites apuntar a instalaciones en otras rutas (ahí sí usá las
 variables de entorno de las Secciones 2-7).
 
 ```bash
-# Coloca tu(s) FASTA en Inputs/ (admite multi-registro), luego:
-./run.sh --input Inputs/secuencia.fasta
+# Coloca tu(s) FASTA en inputs/ (admite multi-registro), luego:
+./run.sh --input inputs/secuencia.fasta
 
 # Input de estructura (Caminos 2/3, requiere DiscoTope-3.0/ScanNet instalados,
 # ver Secciones 6 y 7). El tipo de archivo se detecta automáticamente:
-./run.sh --input Inputs/estructura.pdb --pdb-mode structure_only
-./run.sh --input Inputs/estructura.pdb
+./run.sh --input inputs/estructura.pdb --pdb-mode structure_only
+./run.sh --input inputs/estructura.pdb
 # Sin --pdb-mode, se usa Settings.PDB_PROCESSING_MODE (default 'structure_and_sequence'),
 # asi que la segunda linea de arriba ya corre los 4 motores sin necesitar el flag.
 
@@ -941,12 +941,12 @@ variables de entorno de las Secciones 2-7).
 # por defecto, sin necesidad de especificar nada. Para anexar alelo(s) extra
 # (formato NetMHCIIpan, separados por coma SIN espacios; se valida el formato
 # de inmediato, antes de correr cualquier fase):
-./run.sh --input Inputs/secuencia.fasta \
+./run.sh --input inputs/secuencia.fasta \
     --alelo-extra "DRB1_1602,HLA-DQA10501-DQB10201"
 
 # Los umbrales/longitud mínima de la Fase 3 son independientes por motor
 # (las escalas de score no son comparables entre sí):
-./run.sh --input Inputs/secuencia.fasta \
+./run.sh --input inputs/secuencia.fasta \
     --bepipred-threshold 0.1512 --bepipred-min-length 9 \
     --epidope-threshold 0.818 --epidope-min-length 9 \
     --discotope-threshold 0.90 --discotope-min-length 9 \
@@ -955,12 +955,12 @@ variables de entorno de las Secciones 2-7).
 # ADAPTATIVO por percentil, calculado por accession (ScanNet no publica un
 # umbral absoluto oficial, a diferencia de DiscoTope-3.0). Para forzar un
 # valor fijo en vez del adaptativo:
-./run.sh --input Inputs/estructura.pdb --scannet-threshold 0.15
+./run.sh --input inputs/estructura.pdb --scannet-threshold 0.15
 
 # Fase 6b (OPCIONAL): anota amplitud de conservación contra un panel local
 # de otras cepas/clados/variantes del mismo patógeno (sin este flag, la
 # fase se omite por completo, sin invocar blastp/makeblastdb):
-./run.sh --input Inputs/secuencia.fasta \
+./run.sh --input inputs/secuencia.fasta \
     --panel-conservacion reference_db/hiv_clade_panel.fasta
 ```
 
@@ -993,7 +993,7 @@ La Fase 8 (chequeo del constructo) solo muestra score/veredicto/resumen
 por motor, sin repetir la secuencia completa del constructo (ya visible en
 la tabla de Fase 7).
 
-### Archivos generados en `Outputs/`
+### Archivos generados en `outputs/`
 
 `<nombre>` es el nombre del archivo de entrada sin extensión (`--input`).
 
@@ -1115,4 +1115,4 @@ que el pipeline completo funcione de punta a punta con los binarios/venvs
 reales instalados — para eso, correr `pipeline.py` contra un input real (ver
 "Uso" arriba) sigue siendo necesario. `STATUS.md` documenta la última
 validación end-to-end real (corrida completa de las 11 fases contra
-`Inputs/GP120.fasta`, un HIV-1 Env real).
+`inputs/GP120.fasta`, un HIV-1 Env real).

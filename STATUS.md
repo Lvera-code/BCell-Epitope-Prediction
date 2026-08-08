@@ -121,7 +121,7 @@ instalacion nueva), ToxinPred2, IApred, SignalP-6.0. Los 4 son informativos
 
 ## Validacion realizada
 
-**End-to-end con datos reales** (`Inputs/GP120.fasta`, HIV-1 Env real,
+**End-to-end con datos reales** (`inputs/GP120.fasta`, HIV-1 Env real,
 861 aa — elegido porque contiene sequones N-glico reales y epitopos de bnAb
 conocidos, para forzar resultados biologicamente sensatos en vez de
 sinteticos):
@@ -140,7 +140,7 @@ sinteticos):
 | 7 (ensamblaje) | Constructo de 127 aa (3 B-cell + 3 HTL + 3 CTL) |
 | 8 (chequeo constructo) | Non-Allergen, Non-Toxin, antigenicidad intrinseca "Low" (IApred), sin peptido señal |
 
-**Camino de estructura** (`Inputs/7c4s.pdb`, modo `structure_and_sequence`,
+**Camino de estructura** (`inputs/7c4s.pdb`, modo `structure_and_sequence`,
 los 4 motores de Fase 2 a la vez): Fase 3 produjo regiones con origenes
 mixtos (`Bp+Ed+Sn`, `Ed+Dt`, confirma que la union de 4 motores simultaneos
 funciona), y las Fases 4b-8 corrieron sin fallar sobre los candidatos
@@ -210,10 +210,10 @@ forzaban `cwd=` del subprocess a la carpeta del script externo instalado
 (necesario para que ese script encuentre sus propios recursos relativos),
 pero le pasaban como argumento de salida `output_dir / archivo` SIN
 resolver a absoluto -- con el `output_dir` relativo por defecto
-(`Settings.FASTA_OUTPUT_DIR = 'Outputs'`), el proceso hijo
+(`Settings.FASTA_OUTPUT_DIR = 'outputs'`), el proceso hijo
 interpretaba esa ruta relativa contra SU PROPIO cwd (no el de
 `pipeline.py`), reventando con `OSError: Cannot save file into a
-non-existent directory: 'Outputs'`. Nunca se disparo antes porque (a)
+non-existent directory: 'outputs'`. Nunca se disparo antes porque (a)
 los tests unitarios de estos 3 motores siempre pasan `tmp_path` (ya
 absoluto) como `output_dir`, y (b) ninguna corrida real anterior con
 candidatos 'Segura' no vacios habia llegado a Fase 4b desde que existe el
@@ -398,7 +398,7 @@ Nada bloqueado por falta de informacion. Lo unico fuera de alcance de este docum
    portado, y "Auditoria de Scipion-readiness" arriba).
 2. Re-correr PSMD7/PODXL/THBS2 (estructuras AlphaFold, camino PDB) con el
    pipeline actual de 11 fases, si no se hizo ya desde el ultimo borrado de
-   cache de `Outputs/` -- mismo camino de codigo ya confirmado con
+   cache de `outputs/` -- mismo camino de codigo ya confirmado con
    SLC8A1 (misma familia, proteina de membrana) y GP120.
 3. **Conformacion del constructo vs. proteina nativa (punto pendiente 3 de
    3 del feedback de Carmen Elena Gomez)**: descartado deliberadamente como

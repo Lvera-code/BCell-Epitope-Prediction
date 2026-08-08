@@ -25,7 +25,7 @@ A partir de Fase 2, el resto del flujo es identico para los 3 caminos:
 
     2. Prediccion de antigenicidad por residuo via los motores activos para
        este camino, EJECUTADOS EN LOCAL (subprocess). Cada motor tiene
-       auto-cache propio en ``Outputs/``.
+       auto-cache propio en ``outputs/``.
 
     Checkpointing (Fases 4/4b/4c/5/5b/6): igual que el auto-cache de Fase 2,
     cada una de estas fases guarda un sidecar ``.inputhash`` junto a su CSV
@@ -111,7 +111,7 @@ A partir de Fase 2, el resto del flujo es identico para los 3 caminos:
        COMPLETA del constructo de Fase 7.
 
 Todos los artefactos intermedios y el reporte final se guardan en
-``Outputs/``. Requiere, segun los motores que active cada camino:
+``outputs/``. Requiere, segun los motores que active cada camino:
 instalacion local de BepiPred-3.0 en ``bepipred-3.0b.src/`` y de EpiDope en
 ``.conda-epidope/``, DiscoTope-3.0 en ``DiscoTope-3.0/`` (entorno
 ``.venv-discotope``) y ScanNet (``.venv-scannet`` o Docker), NCBI BLAST+ con
@@ -120,8 +120,8 @@ localmente en ``netMHCIIpan-4.3/`` (descarga manual bajo licencia academica
 DTU Health Tech). Ver README.md - Seccion de Instalacion.
 
 Ejemplo:
-    python pipeline.py --input Inputs/secuencia.fasta
-    python pipeline.py --input Inputs/estructura.pdb --pdb-mode structure_only
+    python pipeline.py --input inputs/secuencia.fasta
+    python pipeline.py --input inputs/estructura.pdb --pdb-mode structure_only
 """
 
 import argparse
@@ -226,7 +226,7 @@ def parse_args(argv: List[str] = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--input", required=True,
-        help="Ruta al archivo de entrada (dentro de Inputs/): FASTA, o PDB/mmCIF de "
+        help="Ruta al archivo de entrada (dentro de inputs/): FASTA, o PDB/mmCIF de "
         "estructura. El tipo se detecta automaticamente (ver src.utils.input_router).",
     )
     parser.add_argument(

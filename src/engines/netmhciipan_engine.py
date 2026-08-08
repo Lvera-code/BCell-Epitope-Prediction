@@ -434,7 +434,7 @@ def predict_netmhciipan(
             (``netmhciipan_raw_peptide_mode.xls``/``..._protein_mode.xls``,
             sin nombre de accession) -- confirmado como una fuente real de
             confusion probando multiples PDBs/FASTA seguidos en la misma
-            ``Outputs/``.
+            ``outputs/``.
 
     Returns:
         DataFrame con columnas ``sequence``, ``core_9aa``,
@@ -772,7 +772,7 @@ def print_traceback_table(traceback_df: pd.DataFrame, require_exact_core: bool =
               flanco" que resaltar, todo el peptido corto ES el nucleo.
 
     Cuando la corrida cubre varias proteinas de entrada (FASTA multi-registro,
-    p. ej. ``Inputs/MonkeyPox/mpxv_targets.fasta`` con 6 accessions),
+    p. ej. ``inputs/MonkeyPox/mpxv_targets.fasta`` con 6 accessions),
     las filas se ordenan por ``accession``/``start`` -en vez de dejarlas en
     el orden interno de ``predict_netmhciipan`` (peptidos cortos en modo
     exacto primero, largos despues, sin relacion con el orden de las
