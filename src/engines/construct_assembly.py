@@ -609,7 +609,7 @@ def assemble_construct(
         stackgly_df: Salida de Fase 4c (``predict_nglycosylation``).
         htl_df: Salida de Fase 5 (``candidatos_finales.csv`` / ``build_traceback_report``).
         ctl_df: Salida de Fase 5b (``candidatos_finales_mhc1.csv``, con anotacion NetCleave).
-        output_dir: Carpeta de ``fasta_outputs`` -- SOLO se usa para releer los
+        output_dir: Carpeta de ``Outputs`` -- SOLO se usa para releer los
             raw CSV por-residuo de Fase 2 y recortar candidatos B-cell que
             excedan ``Settings.CONSTRUCT_BCELL_MAX_LENGTH`` (ver
             ``_trim_long_bcell_candidates``). ``None`` desactiva el recorte

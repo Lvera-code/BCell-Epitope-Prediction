@@ -144,8 +144,8 @@ class Settings:
     EPIDOPE_OUTPUT_DIR: Path = Path(_env_str("EPIDOPE_OUTPUT_DIR", "produccion_resultados/epidope"))
 
     # --- Fase 1 / Orquestador: carpetas de entrada y salida del pipeline ---
-    FASTA_INPUT_DIR: Path = Path(_env_str("FASTA_INPUT_DIR", "fasta_inputs"))
-    FASTA_OUTPUT_DIR: Path = Path(_env_str("FASTA_OUTPUT_DIR", "fasta_outputs"))
+    FASTA_INPUT_DIR: Path = Path(_env_str("FASTA_INPUT_DIR", "Inputs"))
+    FASTA_OUTPUT_DIR: Path = Path(_env_str("FASTA_OUTPUT_DIR", "Outputs"))
 
     # --- Fase 1.5: Extraccion de estructura (PDB/mmCIF via gemmi, LOCAL) ---
     # Estrategia de seleccion de cadena cuando el archivo de entrada tiene mas

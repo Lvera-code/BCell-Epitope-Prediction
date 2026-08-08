@@ -176,7 +176,7 @@ def parse_structure(
             ``"structure"`` por ``src.utils.input_router``).
         output_dir: Carpeta donde se escriben el FASTA derivado y la tabla de
             mapeo de posiciones (mismo ``output_dir`` que usan las demas
-            fases, p. ej. ``fasta_outputs/``).
+            fases, p. ej. ``Outputs/``).
         chain_selection_strategy: ``'longest'`` (default) o ``'explicit'``.
         explicit_chain_id: ID de cadena a usar si la estrategia es
             ``'explicit'``.

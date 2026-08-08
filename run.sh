@@ -9,9 +9,9 @@
 # pipeline.py.
 #
 # Uso identico a pipeline.py, por ejemplo:
-#   ./run.sh --input fasta_inputs/secuencia.fasta
-#   ./run.sh --input fasta_inputs/estructura.pdb --pdb-mode structure_only
-#   ./run.sh --input fasta_inputs/secuencia.fasta --alelo-extra "DRB1_1602"
+#   ./run.sh --input Inputs/secuencia.fasta
+#   ./run.sh --input Inputs/estructura.pdb --pdb-mode structure_only
+#   ./run.sh --input Inputs/secuencia.fasta --alelo-extra "DRB1_1602"
 #
 # No modifica PATH: blastp, tcsh y el interprete de Python de este proyecto
 # deben estar disponibles en el entorno desde el que se invoca este script

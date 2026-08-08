@@ -114,7 +114,7 @@ def test_output_dir_relativo_se_resuelve_a_ruta_absoluta(monkeypatch, tmp_path):
     # Regresion real: el subprocess de AlgPred2 corre con
     # 'cwd' forzado a la carpeta del script instalado (algpred2.py necesita
     # rutas propias relativas a su instalacion). Si 'output_dir' llega
-    # relativo (default de Settings.FASTA_OUTPUT_DIR: 'fasta_outputs'), el
+    # relativo (default de Settings.FASTA_OUTPUT_DIR: 'Outputs'), el
     # hijo lo resuelve contra SU cwd, no el de pipeline.py -- confirmado con
     # 'OSError: Cannot save file into a non-existent directory'. La ruta '-o'
     # pasada al subprocess debe ser siempre absoluta, sin importar el cwd

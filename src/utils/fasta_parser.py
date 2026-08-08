@@ -138,7 +138,7 @@ def load_and_sanitize(path: Path) -> List[FastaRecord]:
     """Lee y sanea un FASTA completo, descartando registros vacios y rechazando residuos no canonicos.
 
     Args:
-        path: Ruta al archivo FASTA de entrada (dentro de ``fasta_inputs/``).
+        path: Ruta al archivo FASTA de entrada (dentro de ``Inputs/``).
 
     Returns:
         Lista de :class:`FastaRecord` saneados.

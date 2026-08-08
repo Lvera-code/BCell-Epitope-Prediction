@@ -102,7 +102,7 @@ def test_region_minima_descarta_regiones_cortas(monkeypatch, tmp_path):
 
 
 def test_psmd7_intracelular_sin_tm_ni_senal_se_excluye_por_completo(monkeypatch, tmp_path):
-    # Control negativo (subunidad del proteasoma 26S, ver fasta_outputs/PSMD7_P51665_AF_tmbed_raw.pred):
+    # Control negativo (subunidad del proteasoma 26S, ver Outputs/PSMD7_P51665_AF_tmbed_raw.pred):
     # sin peptido senal, sin TM, clase 'i' de punta a punta -- 100% citoplasmatica.
     sequence = "MPELAVQKVVVHPLVLLSVVDHFNRIGKVGN"
     classes = "i" * len(sequence)
@@ -128,7 +128,7 @@ def test_psmd7_intracelular_sin_tm_ni_senal_se_excluye_por_completo(monkeypatch,
 
 
 def test_thbs2_secretada_pasa_integra_sin_exclusion_indebida(monkeypatch, tmp_path):
-    # Control positivo (trombospondina-2, secretada, ver fasta_outputs/THBS2_P35442_AF_tmbed_raw.pred):
+    # Control positivo (trombospondina-2, secretada, ver Outputs/THBS2_P35442_AF_tmbed_raw.pred):
     # peptido senal N-terminal (1-18) seguido de clase 'o' (extracelular) en el resto -- sin TM.
     sequence = "MVWRLVLLALWVWPSTQAGHQDKDTTFDLFSISNINRKTIGAKQFRGPDPGVPAYRFVRFDYIPPVNADD"
     classes = "S" * 18 + "o" * (len(sequence) - 18)
