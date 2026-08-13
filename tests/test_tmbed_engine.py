@@ -1,9 +1,10 @@
 """Tests de la Fase 3b (src/engines/tmbed_engine.py): parseo del formato de 3 lineas
 por proteina de 'tmbed predict --out-format 1', colapsado de clases (incluida 'i',
-intracelular) en regiones de enmascarado, filtro de solapamiento contra la union
-anotada -- incluyendo los casos de validacion PSMD7 (control negativo, proteina
-100% citoplasmatica que debe quedar excluida por completo) y THBS2 (control
-positivo, secretada, que debe pasar integra) --, y propagacion de errores del
+intracelular) en regiones de riesgo topologico, anotacion de solapamiento contra
+la union anotada (desde 2026-08-13 ya NO excluye filas, ver docstring del modulo)
+-- incluyendo los casos de validacion PSMD7 (control negativo, proteina 100%
+citoplasmatica, que debe quedar marcada pero sigue presente) y THBS2 (control
+positivo, secretada, que debe quedar sin marcar) --, y propagacion de errores del
 subproceso.
 """
 
@@ -13,7 +14,7 @@ import pandas as pd
 import pytest
 
 from src.config.settings import Settings
-from src.engines.tmbed_engine import filter_overlapping_regions, predict_tm_signal_regions
+from src.engines.tmbed_engine import annotate_overlapping_regions, predict_tm_signal_regions
 from src.utils.exceptions import EngineExecutionError
 
 
@@ -101,7 +102,7 @@ def test_region_minima_descarta_regiones_cortas(monkeypatch, tmp_path):
     assert result.empty
 
 
-def test_psmd7_intracelular_sin_tm_ni_senal_se_excluye_por_completo(monkeypatch, tmp_path):
+def test_psmd7_intracelular_sin_tm_ni_senal_queda_marcada_pero_no_excluida(monkeypatch, tmp_path):
     # Control negativo (subunidad del proteasoma 26S, ver outputs/PSMD7_P51665_AF_tmbed_raw.pred):
     # sin peptido senal, sin TM, clase 'i' de punta a punta -- 100% citoplasmatica.
     sequence = "MPELAVQKVVVHPLVLLSVVDHFNRIGKVGN"
@@ -114,20 +115,22 @@ def test_psmd7_intracelular_sin_tm_ni_senal_se_excluye_por_completo(monkeypatch,
         ("PSMD7_P51665_AF", 1, len(sequence), "intracellular"),
     ]
 
-    # Region candidata (ej. BepiPred+ScanNet) que cae dentro de esa proteina: debe descartarse entera.
+    # Region candidata (ej. BepiPred+ScanNet) que cae dentro de esa proteina: se marca, no se descarta.
     union_df = pd.DataFrame({
         "accession": ["PSMD7_P51665_AF"],
         "start": [5],
         "end": [20],
         "sequence": [sequence[4:20]],
     })
-    kept, discarded = filter_overlapping_regions(union_df, regions)
+    annotated, overlap = annotate_overlapping_regions(union_df, regions)
 
-    assert kept.empty
-    assert list(discarded["type"]) == ["intracellular"]
+    assert len(annotated) == 1
+    assert list(annotated["tmbed_masked"]) == [True]
+    assert list(annotated["tmbed_mask_type"]) == ["intracellular"]
+    assert list(overlap["type"]) == ["intracellular"]
 
 
-def test_thbs2_secretada_pasa_integra_sin_exclusion_indebida(monkeypatch, tmp_path):
+def test_thbs2_secretada_pasa_sin_marcar(monkeypatch, tmp_path):
     # Control positivo (trombospondina-2, secretada, ver outputs/THBS2_P35442_AF_tmbed_raw.pred):
     # peptido senal N-terminal (1-18) seguido de clase 'o' (extracelular) en el resto -- sin TM.
     sequence = "MVWRLVLLALWVWPSTQAGHQDKDTTFDLFSISNINRKTIGAKQFRGPDPGVPAYRFVRFDYIPPVNADD"
@@ -138,17 +141,18 @@ def test_thbs2_secretada_pasa_integra_sin_exclusion_indebida(monkeypatch, tmp_pa
 
     assert set(regions["type"]) == {"signal_peptide"}
 
-    # Region candidata en la proteina madura (fuera del peptido senal): no debe descartarse.
+    # Region candidata en la proteina madura (fuera del peptido senal): no debe marcarse.
     union_df = pd.DataFrame({
         "accession": ["THBS2_P35442_AF"],
         "start": [30],
         "end": [50],
         "sequence": [sequence[29:50]],
     })
-    kept, discarded = filter_overlapping_regions(union_df, regions)
+    annotated, overlap = annotate_overlapping_regions(union_df, regions)
 
-    assert len(kept) == 1
-    assert discarded.empty
+    assert len(annotated) == 1
+    assert list(annotated["tmbed_masked"]) == [False]
+    assert overlap.empty
 
 
 def test_desfase_secuencia_prediccion_lanza_error(monkeypatch, tmp_path):
@@ -183,7 +187,7 @@ def test_pesos_ausentes_lanza_error_accionable(monkeypatch, tmp_path):
         predict_tm_signal_regions({"acc1": "MKTAY"}, tmp_path)
 
 
-def test_filter_overlapping_regions_descarta_solo_filas_solapadas():
+def test_annotate_overlapping_regions_marca_solo_filas_solapadas():
     union_df = pd.DataFrame({
         "accession": ["acc1", "acc1", "acc2"],
         "start": [1, 20, 5],
@@ -197,20 +201,25 @@ def test_filter_overlapping_regions_descarta_solo_filas_solapadas():
         "type": ["TM_alpha_helix"],
     })
 
-    kept, discarded = filter_overlapping_regions(union_df, regions_df)
+    annotated, overlap = annotate_overlapping_regions(union_df, regions_df)
 
-    assert len(discarded) == 1
-    assert list(discarded["accession"]) == ["acc1"]
-    assert list(discarded["start"]) == [1]
-    assert list(discarded["type"]) == ["TM_alpha_helix"]
-    assert list(kept["accession"]) == ["acc1", "acc2"]
-    assert list(kept["start"]) == [20, 5]
+    assert len(overlap) == 1
+    assert list(overlap["accession"]) == ["acc1"]
+    assert list(overlap["start"]) == [1]
+    assert list(overlap["type"]) == ["TM_alpha_helix"]
+    # ninguna fila se pierde: las 3 siguen presentes, en el mismo orden
+    assert list(annotated["accession"]) == ["acc1", "acc1", "acc2"]
+    assert list(annotated["start"]) == [1, 20, 5]
+    assert list(annotated["tmbed_masked"]) == [True, False, False]
+    assert annotated["tmbed_mask_type"].tolist()[0] == "TM_alpha_helix"
+    assert pd.isna(annotated["tmbed_mask_type"].tolist()[1])
 
 
-def test_filter_overlapping_regions_sin_regiones_no_descarta_nada():
+def test_annotate_overlapping_regions_sin_regiones_no_marca_nada():
     union_df = pd.DataFrame({"accession": ["acc1"], "start": [1], "end": [9], "sequence": ["AAAAAAAAA"]})
 
-    kept, discarded = filter_overlapping_regions(union_df, pd.DataFrame(columns=["accession", "start", "end", "type"]))
+    annotated, overlap = annotate_overlapping_regions(union_df, pd.DataFrame(columns=["accession", "start", "end", "type"]))
 
-    assert discarded.empty
-    assert kept.equals(union_df)
+    assert overlap.empty
+    assert list(annotated["tmbed_masked"]) == [False]
+    assert len(annotated) == 1

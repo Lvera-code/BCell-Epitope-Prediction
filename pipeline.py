@@ -45,30 +45,34 @@ A partir de Fase 2, el resto del flujo es identico para los 3 caminos:
        ``origen`` con TODOS los motores contribuyentes. Filtro de longitud
        inquebrantable: se descarta cualquier region final menor a 9 aa antes
        de la Fase 4.
-    3b. Enmascarado transmembrana/peptido senal/intracelular (TMbed LOCAL,
+    3b. Anotacion transmembrana/peptido senal/intracelular (TMbed LOCAL,
        ``src.engines.tmbed_engine``): corre sobre la secuencia COMPLETA de
-       cada accession (no por peptido candidato) y descarta de la union
-       anotada de Fase 3 cualquier region que caiga dentro de una
-       helice/tira transmembrana, del peptido senal N-terminal o de un tramo
-       citoplasmatico, ANTES de BLASTp -- esos residuos no son accesibles a
-       anticuerpos en la proteina madura/anclada a membrana. Topologia
-       completa por residuo ('i'/'o', dentro/fuera) sale directo de TMbed
-       (``--out-format 1``), sin herramienta de localizacion subcelular
-       aparte: una accession sin TM ni peptido senal pero 100% citoplasmatica
-       (ej. PSMD7) queda cubierta de punta a punta por una unica region
-       'intracellular' y pierde todas sus filas candidatas -- efecto
-       equivalente a excluirla por completo, via el mismo mecanismo de
-       solapamiento, sin bandera aparte a nivel de proteina. Reusa el
-       venv/pesos ya instalados para el plugin Scipion
-       ``scipion-chem-tmbed`` (repo hermano), sin importar codigo de ese
-       plugin.
+       cada accession (no por peptido candidato) y ANOTA en la union
+       anotada de Fase 3 (columnas ``tmbed_masked``/``tmbed_mask_type``)
+       que regiones caen dentro de una helice/tira transmembrana, del
+       peptido senal N-terminal o de un tramo citoplasmatico -- en
+       principio no accesibles a anticuerpos en la proteina madura/anclada
+       a membrana. Topologia completa por residuo ('i'/'o', dentro/fuera)
+       sale directo de TMbed (``--out-format 1``), sin herramienta de
+       localizacion subcelular aparte. DECISION 2026-08-13: esta fase ya NO
+       excluye candidatos (antes descartaba de punta a punta cualquier
+       accession 100% citoplasmatica como PSMD7) -- la validacion de
+       publicacion sobre 17 estructuras PDB reales encontro que TMbed, sin
+       contexto de proteina completa/membrana real, se equivoca con
+       frecuencia verificable en fragmentos aislados (marca "intracellular"
+       dominios genuinamente extracelulares con epitopo ya corroborado en
+       literatura). Reusa el venv/pesos ya instalados para el plugin
+       Scipion ``scipion-chem-tmbed`` (repo hermano), sin importar codigo
+       de ese plugin.
     4. Filtro de tolerancia inmunologica: BLASTp local contra el proteoma
        humano, descarta homologos de alta identidad (``src.engines.blast_engine``).
        Los peptidos 'Segura' resultantes alimentan, en paralelo y sin
        depender entre si, TODAS las fases siguientes (4b, 4c, 5, 5b, 6).
     4b. Alergenicidad (AlgPred 2.0 LOCAL, ``src.engines.algpred_engine``):
-       señal de seguridad de la secuencia en si, informativa, no filtra
-       ninguna fase posterior.
+       señal de seguridad de la secuencia en si. DECISION 2026-08-13: ya NO
+       filtra el constructo final (antes excluia del bloque B-cell de Fase 7
+       cualquier secuencia marcada 'Allergen') -- ahora es puramente
+       informativa, igual que 4c/6/6c, anotada en la columna ``allergen``.
     4c. N-glicosilacion (StackGlyEmbed LOCAL, ``src.engines.stackglyembed_engine``):
        escanea sequones N-X-[S/T] propios (X != Prolina) y evalua cada uno
        con un stack ProteinBERT+ESM-2+ProtT5 ya entrenado; informativa,
@@ -182,8 +186,8 @@ from src.engines.scannet_engine import print_epitope_table as print_scannet_epit
 from src.engines.signalp_engine import predict_signal_peptide, print_signalp_report
 from src.engines.stackglyembed_engine import predict_nglycosylation, print_glycosylation_report
 from src.engines.tmbed_engine import (
-    filter_overlapping_regions, predict_tm_signal_regions,
-    print_discarded_regions_report, print_tmbed_regions_report,
+    annotate_overlapping_regions, predict_tm_signal_regions,
+    print_masked_regions_report, print_tmbed_regions_report,
 )
 from src.engines.toxinpred_engine import predict_toxicity, print_toxicity_report
 from src.utils.exceptions import PipelineError
@@ -725,7 +729,7 @@ def fase_3b_tm_signal_masking(
     output_dir: Path,
     input_stem: str,
 ) -> pd.DataFrame:
-    """Fase 3b: descarta de la union anotada las regiones dentro de una TM helix/strand, peptido senal o tramo intracelular (TMbed local).
+    """Fase 3b: anota en la union anotada que regiones caen dentro de una TM helix/strand, peptido senal o tramo intracelular (TMbed local).
 
     A diferencia de Fase 4b/4c (evaluan cada peptido candidato ya recortado),
     TMbed corre sobre la secuencia COMPLETA de cada accession (ver
@@ -738,26 +742,28 @@ def fase_3b_tm_signal_masking(
     ``union_df`` pero no las secuencias completas en si) reusan el mismo
     cache de regiones TMbed.
 
+    DECISION 2026-08-13: esta fase ya NO excluye candidatos (ver docstring
+    de ``src.engines.tmbed_engine``) -- anota ``tmbed_masked``/
+    ``tmbed_mask_type`` por fila y devuelve la union COMPLETA, sin perder
+    ninguna region. La exclusion queda para una revision informada, no
+    automatica.
+
     Args:
         raw_dfs: Scores crudos de Fase 2 (mismo dict que recibe Fase 3),
             usado por ``_build_full_sequence_lookup``.
         structure_record: Resultado de Fase 1.5, o ``None`` para input FASTA puro.
         union_df: Union anotada de Fase 3.
-        output_dir: Carpeta donde persistir las regiones TMbed y la union post-enmascarado.
+        output_dir: Carpeta donde persistir las regiones TMbed y la union anotada.
         input_stem: Nombre del archivo de entrada sin extension.
 
     Returns:
-        ``union_df`` sin las filas cuyo rango se solapa con una region
-        TM/senal/intracelular (mismo esquema de columnas, mismo orden
-        relativo de filas restantes). Una accession sin TM ni peptido senal
-        pero enteramente citoplasmatica (ej. PSMD7) queda cubierta de punta
-        a punta por una unica region 'intracellular', asi que pierde todas
-        sus filas aqui -- efecto equivalente a excluirla por completo, sin
-        necesitar una bandera aparte. Si no hay ninguna secuencia completa
-        disponible o ``union_df`` esta vacio, se devuelve ``union_df`` sin
-        cambios.
+        ``union_df`` completo (mismo numero de filas, mismo orden), con las
+        columnas nuevas ``tmbed_masked``/``tmbed_mask_type``. Si no hay
+        ninguna secuencia completa disponible o ``union_df`` esta vacio, se
+        devuelve ``union_df`` anotado con ``tmbed_masked=False`` en todas
+        las filas (nada que marcar).
     """
-    print(f"\n{_SEPARATOR}\nFASE 3b | Enmascarado transmembrana/peptido senal/intracelular (TMbed local)\n{_SEPARATOR}")
+    print(f"\n{_SEPARATOR}\nFASE 3b | Anotacion transmembrana/peptido senal/intracelular (TMbed local)\n{_SEPARATOR}")
 
     sequence_lookup = _build_full_sequence_lookup(raw_dfs, structure_record)
     regions_path = output_dir / f"{input_stem}_tmbed_regions.csv"
@@ -765,8 +771,11 @@ def fase_3b_tm_signal_masking(
 
     if not sequence_lookup or union_df.empty:
         print("No hay secuencia completa disponible o la union anotada esta vacia: se omite Fase 3b.")
-        union_df.to_csv(masked_path, index=False)
-        return union_df
+        annotated_df = union_df.copy()
+        annotated_df["tmbed_masked"] = False
+        annotated_df["tmbed_mask_type"] = pd.NA
+        annotated_df.to_csv(masked_path, index=False)
+        return annotated_df
 
     input_hash = _phase_input_hash(
         *(f"{accession}:{sequence}" for accession, sequence in sorted(sequence_lookup.items())),
@@ -782,21 +791,22 @@ def fase_3b_tm_signal_masking(
 
     print_tmbed_regions_report(regions_df)
 
-    masked_df, discarded_df = filter_overlapping_regions(union_df, regions_df)
-    n_discarded = len(discarded_df.drop_duplicates(["accession", "start", "end"]))
-    if n_discarded:
+    annotated_df, overlap_df = annotate_overlapping_regions(union_df, regions_df)
+    n_masked = len(overlap_df.drop_duplicates(["accession", "start", "end"]))
+    if n_masked:
         print(
-            f"[AVISO] {n_discarded} region(es) de la union anotada descartada(s) por solaparse con una "
-            "helice/tira transmembrana, peptido senal o tramo intracelular (no accesibles a anticuerpos "
-            "en la proteina madura/anclada a membrana)."
+            f"[AVISO] {n_masked} region(es) de la union anotada marcada(s) por solaparse con una "
+            "helice/tira transmembrana, peptido senal o tramo intracelular (en principio no accesibles a "
+            "anticuerpos en la proteina madura/anclada a membrana) -- NO se excluyen, siguen a Fase 4 "
+            "anotadas para revision informada."
         )
-        print_discarded_regions_report(discarded_df)
+        print_masked_regions_report(overlap_df)
     else:
         print("Ninguna region de la union anotada se solapa con una region TM/peptido senal detectada.")
 
-    masked_df.to_csv(masked_path, index=False)
-    print(f"-> Union anotada (post-enmascarado TM/senal) guardada en: {masked_path}")
-    return masked_df
+    annotated_df.to_csv(masked_path, index=False)
+    print(f"-> Union anotada (con marcas TM/senal) guardada en: {masked_path}")
+    return annotated_df
 
 
 def fase_4_tolerancia(

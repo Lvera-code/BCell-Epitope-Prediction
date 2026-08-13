@@ -80,10 +80,13 @@ def test_todo_vacio_no_ensambla_nada():
     assert meta.empty
 
 
-# --- Seleccion B-cell: filtro Non-Allergen + sin glyco riesgoso ------------------------
+# --- Seleccion B-cell: ya no filtra por Allergen/glyco, solo anota ---------------------
 
 
-def test_bcell_excluye_allergen():
+def test_bcell_no_excluye_allergen_pero_lo_anota():
+    # DECISION 2026-08-13: la validacion de publicacion encontro que AlgPred2
+    # marcaba 'Allergen' 7 de 9 candidatos evaluados sin correlato clinico
+    # real -- se dejo de excluir, mismo tratamiento que la glicosilacion.
     safe = _safe_df([
         {"accession": "A", "start": 1, "end": 10, "sequence": "AAAAAAAAAA", "bepipred_score": 0.9},
         {"accession": "A", "start": 20, "end": 29, "sequence": "BBBBBBBBBB", "bepipred_score": 0.8},
@@ -96,8 +99,12 @@ def test_bcell_excluye_allergen():
 
     seq, meta = assemble_construct(safe, algpred, stackgly, pd.DataFrame(), pd.DataFrame())
 
-    assert seq == "BBBBBBBBBB"
-    assert list(meta["block"]) == ["B-cell"]
+    bcell_rows = meta[meta["block"] == "B-cell"]
+    assert set(bcell_rows["sequence"]) == {"AAAAAAAAAA", "BBBBBBBBBB"}
+    allergen_row = bcell_rows[bcell_rows["sequence"] == "AAAAAAAAAA"].iloc[0]
+    non_allergen_row = bcell_rows[bcell_rows["sequence"] == "BBBBBBBBBB"].iloc[0]
+    assert "allergen=True" in allergen_row["source_score_note"]
+    assert "allergen=False" in non_allergen_row["source_score_note"]
 
 
 def test_bcell_no_excluye_con_sequon_glicosilado_pero_lo_anota():
@@ -568,12 +575,14 @@ def test_bcell_candidato_en_el_borde_de_la_proteina_solo_extiende_hacia_adentro(
     assert bcell_row["source_end"] == 7
 
 
-def test_bcell_padding_descartado_si_la_version_extendida_es_alergeno(monkeypatch, tmp_path):
+def test_bcell_padding_se_aplica_igual_si_la_version_extendida_es_alergeno_pero_lo_anota(monkeypatch, tmp_path):
     full_sequence = "AAAAAAAASHRTAAAAAAAA"
     _write_bepipred_raw(tmp_path, "GP1", "P1", full_sequence)
 
-    # La version extendida "AAASHRTAAA" es alergena segun el motor (mockeado) -- el padding
-    # debe descartarse y el candidato debe quedarse con su secuencia original sin extender.
+    # DECISION 2026-08-13: la version extendida "AAASHRTAAA" es alergena
+    # segun el motor (mockeado) -- el padding ya NO se descarta por eso, se
+    # aplica igual y el veredicto de alergenicidad de la version YA extendida
+    # queda anotado en 'allergen' (mismo tratamiento que la glicosilacion).
     monkeypatch.setattr(
         construct_assembly_module, "predict_allergenicity", _mock_predict_allergenicity({"AAASHRTAAA"})
     )
@@ -588,10 +597,11 @@ def test_bcell_padding_descartado_si_la_version_extendida_es_alergeno(monkeypatc
     )
 
     bcell_row = meta[meta["block"] == "B-cell"].iloc[0]
-    assert seq == "SHRT"  # padding descartado, candidato original sin tocar
-    assert bcell_row["source_start"] == 9
-    assert bcell_row["source_end"] == 12
-    assert "flanked_from_length" not in bcell_row["source_score_note"]
+    assert seq == "AAASHRTAAA"  # padding aplicado igual
+    assert bcell_row["source_start"] == 9 - 3
+    assert bcell_row["source_end"] == 12 + 3
+    assert "allergen=True" in bcell_row["source_score_note"]
+    assert "flanked_from_length=4" in bcell_row["source_score_note"]
 
 
 def test_bcell_candidato_ya_largo_no_se_extiende(monkeypatch, tmp_path):

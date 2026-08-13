@@ -47,20 +47,35 @@ Seleccion top-N por clase (necesaria en la practica: una corrida real con
 GP120 dio 18 candidatos validos solo en HTL/Fase 5, demasiados para un
 constructo manejable):
 
-* B-cell: de ``safe_df`` (Fase 4 'Segura'), se descartan los marcados
-  'Allergen' por AlgPred2 (Fase 4b). La N-glicosilacion (StackGlyEmbed,
-  Fase 4c) YA NO excluye candidatos: existen anticuerpos descritos que
-  reconocen especificamente regiones glicosiladas (p. ej. epitopos de
-  envoltura de HIV), asi que descartar por glicosilacion perdia
-  candidatos biologicamente validos sin una razon mecanistica universal.
-  En su lugar, cada candidato se anota con su estado de glicosilacion
-  (columna ``glycosylated``, visible en ``source_score_note`` del
-  constructo final) para que la decision quede informada, no automatica
-  -- un peptido SIN ningun sequon en el reporte de Fase 4c se anota como
-  ``glycosylated=False`` (Fase 4c solo produce filas para sequones
-  reales). De los que sobreviven el filtro de alergenicidad, top-N por
-  el MAYOR de sus ``'{motor}_score'`` disponibles (BepiPred/EpiDope/
-  DiscoTope/ScanNet, el que exista para esa fila). Tambien se anota
+* B-cell: de ``safe_df`` (Fase 4 'Segura'), TODOS los candidatos entran al
+  ranking, incluidos los marcados 'Allergen' por AlgPred2 (Fase 4b).
+  DECISION 2026-08-13: hasta entonces se descartaban aqui -- se revirtio
+  porque el mismo veredicto de AlgPred2 resulto no corresponder con datos
+  clinicos/poblacionales reales en la mayoria de los 9 candidatos
+  evaluados de la validacion de publicacion (7 de 9 marcados 'Allergen'
+  sin correlato de alergenicidad documentado, correlacionando en cambio
+  con el ancho de la region que le llega desde Fase 3, no con la quimica
+  real del antigeno) -- excluir automaticamente en base a ese veredicto
+  perdia candidatos reales y seguros. Igual que con la glicosilacion
+  (parrafo siguiente): existen ademas anticuerpos descritos que
+  reconocen regiones con similitud de secuencia a alergenos conocidos
+  sin que eso implique riesgo real, asi que ya no hay una razon
+  mecanistica universal para excluir. En su lugar, cada candidato se
+  anota con su veredicto de alergenicidad (columna ``allergen``, visible
+  en ``source_score_note`` del constructo final) para que la decision
+  quede informada, no automatica. La N-glicosilacion (StackGlyEmbed,
+  Fase 4c) tampoco excluye candidatos, decision mas antigua (2026-08-01):
+  existen anticuerpos descritos que reconocen especificamente regiones
+  glicosiladas (p. ej. epitopos de envoltura de HIV), asi que descartar
+  por glicosilacion perdia candidatos biologicamente validos sin una
+  razon mecanistica universal. En su lugar, cada candidato se anota con
+  su estado de glicosilacion (columna ``glycosylated``, visible en
+  ``source_score_note`` del constructo final) -- un peptido SIN ningun
+  sequon en el reporte de Fase 4c se anota como ``glycosylated=False``
+  (Fase 4c solo produce filas para sequones reales). El top-N se elige
+  por el MAYOR de sus ``'{motor}_score'`` disponibles (BepiPred/EpiDope/
+  DiscoTope/ScanNet, el que exista para esa fila) -- sin filtro previo
+  por alergenicidad ni glicosilacion. Tambien se anota
   ``documented_region`` (Fase 6c, IEDB): ``True`` si el candidato solapa
   con un epitopo de proteccion/neutralizacion YA DOCUMENTADO en algun
   patogeno estudiado -- puramente informativo, igual que
@@ -146,15 +161,16 @@ el resto de este pipeline -- por eso queda anotada aparte
 (``flanked_from_length``) y NO se mezcla con el mismo nivel de certeza que
 ``bepipred_score``/etc. ``_pad_short_bcell_candidates`` re-chequea la
 secuencia YA extendida con AlgPred2/StackGlyEmbed de verdad (es contenido
-nuevo, Fase 4b/4c nunca lo vio): si el veredicto de alergenicidad de la
-version extendida es 'Allergen', se descarta el padding y se mantiene el
-candidato original sin extender (la exclusion de alergenos en B-cell es una
-invariante dura del proyecto desde el dia 1, no se relaja por este cambio) --
-la glicosilacion, en cambio, solo se re-anota (nunca excluyo en B-cell,
-ver decision de 2026-08-01). Aplica solo a candidatos <15 aa: los que ya
-miden 15-20 aa no se tocan (no hay evidencia de que les falte contexto), y
-los que superan 20 aa van al recorte de arriba, nunca a padding (rangos
-disjuntos por construccion).
+nuevo, Fase 4b/4c nunca lo vio) y anota el veredicto de alergenicidad de
+la version extendida en la columna ``allergen`` -- el padding SIEMPRE se
+aplica, ya no se descarta si la version extendida sale 'Allergen'
+(DECISION 2026-08-13, revierte la invariante previa: alergenicidad ya no
+excluye nada en B-cell, ver parrafo de mas arriba). La glicosilacion,
+igual que antes, solo se re-anota (nunca excluyo en B-cell, ver decision
+de 2026-08-01). Aplica solo a candidatos <15 aa: los que ya miden 15-20 aa
+no se tocan (no hay evidencia de que les falte contexto), y los que
+superan 20 aa van al recorte de arriba, nunca a padding (rangos disjuntos
+por construccion).
 """
 
 from pathlib import Path
@@ -311,11 +327,10 @@ def _pad_short_bcell_candidates(
        (``predict_allergenicity``) y StackGlyEmbed (``predict_nglycosylation``)
        -- unica excepcion de este modulo a "sin subprocess real", ver
        docstring del modulo.
-    3. Si la version extendida es 'Allergen', se descarta el padding para
-       ESE candidato (se mantiene la secuencia/posicion original sin
-       extender) -- la exclusion de alergenos en B-cell es una invariante
-       dura del proyecto, no se relaja por este cambio. La glicosilacion
-       solo se re-anota en ``glycosylated`` (nunca excluye en B-cell).
+    3. El padding SIEMPRE se aplica (DECISION 2026-08-13): el veredicto de
+       alergenicidad de la version extendida se anota en ``allergen``, igual
+       que la glicosilacion se anota en ``glycosylated`` -- ninguna de las
+       dos excluye nada en B-cell.
 
     Candidatos ya en el borde de la proteina (``new_start == start`` y
     ``new_end == end``, no hay hacia donde extender) se dejan sin tocar. Si
@@ -360,12 +375,11 @@ def _pad_short_bcell_candidates(
         if not glyco_check.empty else set()
 
     for idx, (new_seq, new_start, new_end) in proposals.items():
-        if new_seq in allergen_seqs:
-            continue
         original_length = len(padded.at[idx, "sequence"])
         padded.at[idx, "sequence"] = new_seq
         padded.at[idx, "start"] = new_start
         padded.at[idx, "end"] = new_end
+        padded.at[idx, "allergen"] = new_seq in allergen_seqs
         padded.at[idx, "glycosylated"] = new_seq in glyco_risky_seqs
         padded.at[idx, "flanked_from_length"] = original_length
 
@@ -412,7 +426,12 @@ def _select_bcell_candidates(
     blast_db: str = Settings.BLAST_HUMAN_DB,
     identity_threshold: float = Settings.BLAST_IDENTITY_THRESHOLD,
 ) -> pd.DataFrame:
-    """Filtra ``safe_df`` por Non-Allergen, anota glicosilacion/conservacion/region-documentada (sin excluir), rankea por consenso entre motores, top-N.
+    """Anota ``safe_df`` con alergenicidad/glicosilacion/conservacion/region-documentada (sin excluir), rankea por consenso entre motores, top-N.
+
+    DECISION 2026-08-13: ya no filtra por 'Non-Allergen' -- todos los
+    candidatos de ``safe_df`` entran al ranking, anotados con su veredicto
+    de AlgPred2 en la columna ``allergen`` (``True`` = 'Allergen'). Ver el
+    parrafo de alergenicidad en el docstring del modulo para el porque.
 
     El ranking usa el percentil de cada candidato DENTRO de la columna
     ``{motor}_score`` a la que pertenece (``rank(pct=True)``), no el score
@@ -427,14 +446,15 @@ def _select_bcell_candidates(
     if safe_df.empty:
         return safe_df
 
-    non_allergen_seqs = set(algpred_df[algpred_df["algpred_veredicto"] == "Non-Allergen"]["sequence"]) \
+    allergen_seqs = set(algpred_df[algpred_df["algpred_veredicto"] == "Allergen"]["sequence"]) \
         if not algpred_df.empty else set()
     glyco_risky_seqs = set(stackgly_df[stackgly_df["stackglyembed_veredicto"] == "Glicosilado"]["sequence"]) \
         if not stackgly_df.empty else set()
 
-    candidates = safe_df[safe_df["sequence"].isin(non_allergen_seqs)].copy()
+    candidates = safe_df.copy()
     if candidates.empty:
         return candidates
+    candidates["allergen"] = candidates["sequence"].isin(allergen_seqs)
     candidates["glycosylated"] = candidates["sequence"].isin(glyco_risky_seqs)
     if conservation_map:
         candidates["conservation_pct"] = candidates["sequence"].map(conservation_map)
@@ -741,7 +761,7 @@ def assemble_construct(
 
     bcell_score_fields = [
         "bepipred_score", "epidope_score", "discotope_score", "scannet_score",
-        "glycosylated", "conservation_pct", "documented_region",
+        "allergen", "glycosylated", "conservation_pct", "documented_region",
         "trimmed_from_length", "flanked_from_length",
     ]
     htl_ctl_score_fields = [

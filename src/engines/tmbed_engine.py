@@ -12,18 +12,31 @@ pura de pandas/stdlib, misma logica verificada por los tests de ese plugin.
 
 Proposito en Fase 3b (ver ``pipeline.py``): correr sobre la secuencia
 COMPLETA de cada accession (no por peptido candidato, a diferencia de
-Fase 4b/4c) y descartar de la union anotada de Fase 3 cualquier region que
-caiga dentro de una helice/tira transmembrana, del peptido senal N-terminal
-o de un tramo intracelular (citoplasmatico), ANTES de BLASTp (Fase 4) --
-ninguno de esos residuos es accesible a anticuerpos en la proteina
-madura/anclada a membrana (el peptido senal, ademas, se escinde y no forma
-parte de la proteina madura). TMbed con ``--out-format 1`` ya reporta
-topologia completa por residuo, no solo las 3 clases enmascaradas
-historicamente: junto a 'B'/'H'/'S' devuelve 'i'/'o' para distinguir el
-lado citoplasmatico (dentro) del extracelular (fuera) de cada residuo sin
-membrana -- suficiente para inferir topologia completa (incluida una
-proteina enteramente citoplasmatica, sin TM ni peptido senal, como
-PSMD7) sin sumar ninguna herramienta de localizacion subcelular aparte.
+Fase 4b/4c) y ANOTAR en la union anotada de Fase 3 que regiones caen
+dentro de una helice/tira transmembrana, del peptido senal N-terminal o
+de un tramo intracelular (citoplasmatico) -- residuos que, en principio,
+no serian accesibles a anticuerpos en la proteina madura/anclada a
+membrana. TMbed con ``--out-format 1`` ya reporta topologia completa por
+residuo, no solo las 3 clases enmascaradas historicamente: junto a
+'B'/'H'/'S' devuelve 'i'/'o' para distinguir el lado citoplasmatico
+(dentro) del extracelular (fuera) de cada residuo sin membrana --
+suficiente para inferir topologia completa (incluida una proteina
+enteramente citoplasmatica, sin TM ni peptido senal, como PSMD7) sin
+sumar ninguna herramienta de localizacion subcelular aparte.
+
+DECISION 2026-08-13: esta fase paso de EXCLUIR candidatos a solo
+ANOTARLOS (misma logica que Fase 4c/6/6c). Motivo: la validacion de
+publicacion sobre 17 estructuras PDB reales encontro que TMbed, corriendo
+sobre fragmentos/dominios aislados (sin la proteina completa ni contexto
+de membrana real), se equivoca con frecuencia real y verificable en
+ambas direcciones -- p. ej. marca "intracellular" dominios genuinamente
+extracelulares (toxina tetanica Fragment C, MPER de gp41, region
+juncional de CSP), vaciando por completo candidatos con epitopos ya
+corroborados de forma independiente en literatura. Excluir automatica-
+mente en base a ese veredicto descartaba senal real. La decision de
+excluir un candidato por su topologia queda ahora para una revision
+informada (o una etapa posterior), no automatica -- mismo principio ya
+aplicado a la glicosilacion en Fase 4c desde 2026-08-01.
 """
 
 import subprocess
@@ -42,16 +55,15 @@ logger = setup_logger(__name__)
 
 _REGIONS_COLUMNS = ["accession", "start", "end", "type"]
 
-# Letras de clase de 'tmbed predict --out-format 1' que se convierten en
-# region de enmascarado. 'i' (residuo no-membrana, lado citoplasmatico) se
-# enmascara igual que TM/senal -- no es accesible a anticuerpos. Solo 'o'
-# (no-membrana, lado extracelular) se deja sin tocar: es la unica clase que
-# se presume accesible al solvente en la proteina madura. Una accession sin
-# TM ni peptido senal cuya secuencia sea 100% 'i' (ej. PSMD7) termina asi
-# cubierta por una unica region 'intracellular' de punta a punta, lo que la
-# excluye por completo de la union anotada via el mismo mecanismo de
-# solapamiento (filter_overlapping_regions) sin necesitar una bandera aparte
-# a nivel de proteina.
+# Letras de clase de 'tmbed predict --out-format 1' que se marcan como
+# region de riesgo topologico. 'i' (residuo no-membrana, lado
+# citoplasmatico) se marca igual que TM/senal -- en principio no accesible
+# a anticuerpos. Solo 'o' (no-membrana, lado extracelular) se deja sin
+# marcar: es la unica clase que se presume accesible al solvente en la
+# proteina madura. Desde 2026-08-13 estas marcas ya NO excluyen candidatos
+# (ver docstring del modulo) -- una accession sin TM ni peptido senal cuya
+# secuencia sea 100% 'i' (ej. PSMD7) queda anotada de punta a punta como
+# 'intracellular', pero sus candidatos siguen llegando a Fase 4 en adelante.
 _MASKED_CLASS_TYPES = {
     "B": "TM_beta_strand",
     "H": "TM_alpha_helix",
@@ -208,47 +220,63 @@ def predict_tm_signal_regions(
     return pd.DataFrame(rows, columns=_REGIONS_COLUMNS)
 
 
-def filter_overlapping_regions(union_df: pd.DataFrame, regions_df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    """Descarta de ``union_df`` las filas cuyo rango ``[start, end]`` se solapa con una region TMbed de la misma accession.
+def annotate_overlapping_regions(union_df: pd.DataFrame, regions_df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """Anota en ``union_df`` las filas cuyo rango ``[start, end]`` se solapa con una region TMbed de la misma accession.
+
+    Hasta 2026-08-13 esta funcion se llamaba ``filter_overlapping_regions``
+    y DESCARTABA esas filas. Ya no: devuelve ``union_df`` completo (misma
+    cantidad de filas, mismo orden), con dos columnas nuevas para que la
+    exclusion (si se quiere) sea una decision informada posterior, no
+    automatica -- mismo principio que Fase 4c/6/6c.
 
     Args:
         union_df: Union anotada de Fase 3 (columnas ``accession``/``start``/``end``, 1-indexado inclusivo).
         regions_df: Salida de :func:`predict_tm_signal_regions` (mismo esquema de coordenadas).
 
     Returns:
-        Tupla ``(kept_df, discarded_df)``. ``kept_df`` conserva todas las
-        columnas originales de ``union_df``, con el mismo orden de filas
-        restantes. ``discarded_df`` tiene columnas ``accession``/``start``/
-        ``end``/``type`` -- una fila por cada region TMbed con la que se
-        solapo la fila descartada de ``union_df`` (una misma fila descartada
+        Tupla ``(annotated_df, overlap_df)``. ``annotated_df`` conserva
+        TODAS las filas y columnas originales de ``union_df``, mas
+        ``tmbed_masked`` (``bool``, ``True`` si solapa con alguna region
+        TMbed) y ``tmbed_mask_type`` (``type`` de la primera region con la
+        que solapa, o ``pd.NA`` si ninguna). ``overlap_df`` tiene columnas
+        ``accession``/``start``/``end``/``type`` -- una fila por cada
+        region TMbed con la que se solapo cada fila marcada (una misma fila
         puede solaparse con mas de una region TMbed, p. ej. un peptido que
         cubre tanto el final del signal_peptide como el inicio de la
-        siguiente TM_alpha_helix, y aparece entonces una vez por cada una).
+        siguiente TM_alpha_helix, y aparece entonces una vez por cada una) --
+        se conserva solo para el reporte de consola, no para excluir nada.
     """
     if union_df.empty or regions_df.empty:
-        return union_df, pd.DataFrame(columns=["accession", "start", "end", "type"])
+        annotated = union_df.copy()
+        annotated["tmbed_masked"] = False
+        annotated["tmbed_mask_type"] = pd.NA
+        return annotated, pd.DataFrame(columns=["accession", "start", "end", "type"])
 
     def _overlapping_regions(row) -> pd.DataFrame:
         acc_regions = regions_df[regions_df["accession"] == row["accession"]]
         return acc_regions[(acc_regions["start"] <= row["end"]) & (acc_regions["end"] >= row["start"])]
 
-    discarded_frames = []
-    keep_mask = []
+    overlap_frames = []
+    masked_flags = []
+    mask_types = []
     for _, row in union_df.iterrows():
         overlaps = _overlapping_regions(row)
-        keep_mask.append(overlaps.empty)
+        masked_flags.append(not overlaps.empty)
+        mask_types.append(overlaps["type"].iloc[0] if not overlaps.empty else pd.NA)
         if not overlaps.empty:
-            discarded_frames.append(pd.DataFrame({
+            overlap_frames.append(pd.DataFrame({
                 "accession": row["accession"], "start": row["start"], "end": row["end"],
                 "type": overlaps["type"].tolist(),
             }))
 
-    kept = union_df[keep_mask].reset_index(drop=True)
-    discarded_df = (
-        pd.concat(discarded_frames, ignore_index=True) if discarded_frames
+    annotated = union_df.copy()
+    annotated["tmbed_masked"] = masked_flags
+    annotated["tmbed_mask_type"] = mask_types
+    overlap_df = (
+        pd.concat(overlap_frames, ignore_index=True) if overlap_frames
         else pd.DataFrame(columns=["accession", "start", "end", "type"])
     )
-    return kept, discarded_df
+    return annotated, overlap_df
 
 
 def print_tmbed_regions_report(regions_df: pd.DataFrame) -> None:
@@ -270,14 +298,16 @@ def print_tmbed_regions_report(regions_df: pd.DataFrame) -> None:
     print(f"\nTotal: {len(regions_df)} region(es) transmembrana/peptido senal en {regions_df['accession'].nunique()} accession(es).")
 
 
-def print_discarded_regions_report(discarded_df: pd.DataFrame) -> None:
-    """Imprime las regiones de la union anotada descartadas en Fase 3b por solaparse con una region TM/senal.
+def print_masked_regions_report(overlap_df: pd.DataFrame) -> None:
+    """Imprime las regiones de la union anotada marcadas en Fase 3b por solaparse con una region TM/senal.
 
-    ``discarded_df`` es la salida de :func:`filter_overlapping_regions`: una
-    fila por cada (region descartada, region TMbed con la que se solapo) --
-    ``tipo`` explica el motivo puntual del descarte, no solo el conteo.
+    ``overlap_df`` es la salida de :func:`annotate_overlapping_regions`: una
+    fila por cada (region marcada, region TMbed con la que se solapo) --
+    ``tipo`` explica el motivo puntual de la marca. Estas regiones YA NO se
+    excluyen (ver docstring del modulo, decision 2026-08-13) -- este reporte
+    es solo informativo.
     """
-    if discarded_df.empty:
+    if overlap_df.empty:
         return
 
     columns = [
@@ -286,5 +316,5 @@ def print_discarded_regions_report(discarded_df: pd.DataFrame) -> None:
         Column("end", lambda r: str(r.end), 7, ">"),
         Column("tipo", lambda r: r.type, 18, "<", prefix="  "),
     ]
-    display_df = discarded_df.sort_values(["accession", "start"]).reset_index(drop=True)
+    display_df = overlap_df.sort_values(["accession", "start"]).reset_index(drop=True)
     print_fixed_width_table(display_df.itertuples(index=False), columns, group_by=lambda r: r.accession)
