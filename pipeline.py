@@ -868,11 +868,14 @@ def fase_4b_alergenicidad(safe_df: pd.DataFrame, output_dir: Path, input_stem: s
 
     if safe_df.empty:
         print("No hay peptidos 'Seguros' provenientes de la Fase 4 para evaluar.")
-        empty_df = pd.DataFrame(columns=["sequence", "algpred_score", "algpred_veredicto"])
+        empty_df = pd.DataFrame(columns=[
+            "sequence", "algpred_score", "algpred_veredicto",
+            "algpred_ml_score", "algpred_merci_score", "algpred_blast_score",
+        ])
         empty_df.to_csv(final_path, index=False)
         return empty_df
 
-    input_hash = _phase_input_hash(safe_df)
+    input_hash = _phase_input_hash(safe_df, Settings.ALGPRED_THRESHOLD, Settings.ALGPRED_MODEL)
     cached = _load_phase_checkpoint("Fase 4b", final_path, input_hash)
     if cached is not None:
         return cached
@@ -1441,6 +1444,7 @@ def fase_8_chequeo_constructo(construct_sequence: str, output_dir: Path, input_s
         print("No hay constructo ensamblado (Fase 7) para evaluar.")
         empty_df = pd.DataFrame(columns=[
             "sequence", "algpred_score", "algpred_veredicto",
+            "algpred_ml_score", "algpred_merci_score", "algpred_blast_score",
             "toxinpred_score", "toxinpred_veredicto",
             "iapred_score", "iapred_categoria",
             "signalp_prediction", "signalp_prob_other", "signalp_prob_sp", "signalp_cs_position",
@@ -1448,7 +1452,7 @@ def fase_8_chequeo_constructo(construct_sequence: str, output_dir: Path, input_s
         empty_df.to_csv(final_path, index=False)
         return empty_df
 
-    input_hash = _phase_input_hash(construct_sequence)
+    input_hash = _phase_input_hash(construct_sequence, Settings.ALGPRED_THRESHOLD, Settings.ALGPRED_MODEL)
     cached = _load_phase_checkpoint("Fase 8", final_path, input_hash)
     if cached is not None:
         return cached

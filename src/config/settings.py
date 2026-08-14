@@ -425,8 +425,17 @@ class Settings:
         "/home/enzo/DiffSBDD/scipion-chem-algpred/.venv-algpred/lib/python3.10/site-packages/algpred2/python_scripts/algpred2.py",
     )
     ALGPRED_TIMEOUT_SECONDS: int = _env_int("ALGPRED_TIMEOUT_SECONDS", 300)
-    # Umbral ML_Score por defecto del propio AlgPred2 (ver 'algpred2.py -h').
+    # Umbral ML_Score/Hybrid Score por defecto del propio AlgPred2 (ver 'algpred2.py -h').
     ALGPRED_THRESHOLD: float = _env_float("ALGPRED_THRESHOLD", 0.3)
+    # Modelo de AlgPred2: 1 = ML puro (Random Forest sobre composicion de
+    # aminoacidos, sin homologia real); 2 = hibrido RF+BLAST+MERCI (compara
+    # contra la base real de alergenos IgE y motivos IgE documentados, AUC
+    # 0.98/MCC 0.85 en el paper original, Sharma et al. 2021, PMID 33201237).
+    # Por defecto 2 desde el 2026-08-14: se verifico que el modo ML puro
+    # marca "Allergen" candidatos (ej. repeticiones NPNV de CSP) sin ninguna
+    # homologia ni motivo IgE real detras -- artefacto de composicion, no
+    # biologia (ver vault, Decisiones/2026-08-14-investigacion-6b5m-...).
+    ALGPRED_MODEL: int = _env_int("ALGPRED_MODEL", 2)
 
     # --- Cleavage MHC-I/II (NetCleave LOCAL, reentrenado con datos propios) ---
     # Instalacion propia (venv dedicado + IEDB/UniProt/UniParc descargados
