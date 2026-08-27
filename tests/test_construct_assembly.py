@@ -673,3 +673,92 @@ def test_bcell_todos_los_candidatos_con_homologia_humana_deja_bloque_vacio(monke
 
     assert seq == ""
     assert meta.empty
+
+
+# --- Cobertura del parche conformacional real (Dt/Sn) dentro de la ventana sintetizada -
+
+def test_bcell_anota_cobertura_conformacional_para_candidato_discotope(tmp_path):
+    """DiscoTope-3.0/ScanNet puntuan epitopos conformacionales potencialmente discontinuos
+    en secuencia lineal (Seccion 3.2 del paper); colapsarlos a una ventana contigua
+    sintetizable es una decision de diseno deliberada, no una propiedad biologica real.
+    Este test fija el contrato de la anotacion de transparencia: de los 10 residuos
+    reales de la proteina que DiscoTope-3.0 puntuo por encima de su umbral de produccion
+    (posiciones 1-10, score 0.95 >= Settings.DISCOTOPE_THRESHOLD=0.90), solo 6 (5-10)
+    caen dentro de la ventana finalmente sintetizada (5-14) -- cobertura = 6/10 = 60%."""
+    full_sequence = "A" * 20
+    per_residue_scores = [0.95] * 10 + [0.50] * 10  # solo 1-10 por encima del umbral 0.90
+
+    raw_df = pd.DataFrame({
+        "Accession": ["P1"] * 20,
+        "Residue": list(full_sequence),
+        "DiscoTope-3.0 calibrated score": per_residue_scores,
+    })
+    raw_df.to_csv(tmp_path / "GP1_discotope_raw.csv", index=False)
+
+    candidate_sequence = full_sequence[4:14]  # posiciones 5-14 (1-indexado)
+    safe = _safe_df([{
+        "accession": "P1", "start": 5, "end": 14, "sequence": candidate_sequence,
+        "discotope_score": 0.95, "origen": "Dt",
+    }])
+    algpred = _algpred_df([[candidate_sequence, 0.1, "Non-Allergen"]])
+
+    seq, meta = assemble_construct(
+        safe, algpred, _stackgly_df([]), pd.DataFrame(), pd.DataFrame(),
+        # flank_threshold=1 (no 0: '0 or Settings...' seria falsy y recaeria en el default 15)
+        # desactiva el padding de flancos para este candidato de 10aa, para aislar la
+        # anotacion bajo prueba.
+        output_dir=tmp_path, input_stem="GP1", bcell_flank_threshold=1,
+    )
+
+    bcell_row = meta[meta["block"] == "B-cell"].iloc[0]
+    assert seq == candidate_sequence
+    assert "conformational_coverage_pct=60.0" in bcell_row["source_score_note"]
+
+
+def test_bcell_candidato_sin_motor_estructural_no_anota_cobertura(tmp_path):
+    """Un candidato cuyo 'origen' es puramente de secuencia (Bp/Ed) no tiene parche
+    conformacional que perder -- no debe anotarse ninguna cobertura, ni con un raw
+    CSV de DiscoTope presente para OTRA region de la misma accession."""
+    full_sequence = "A" * 20
+    raw_df = pd.DataFrame({
+        "Accession": ["P1"] * 20,
+        "Residue": list(full_sequence),
+        "DiscoTope-3.0 calibrated score": [0.95] * 10 + [0.50] * 10,
+    })
+    raw_df.to_csv(tmp_path / "GP1_discotope_raw.csv", index=False)
+
+    candidate_sequence = full_sequence[4:14]
+    safe = _safe_df([{
+        "accession": "P1", "start": 5, "end": 14, "sequence": candidate_sequence,
+        "bepipred_score": 0.5, "origen": "Bp",
+    }])
+    algpred = _algpred_df([[candidate_sequence, 0.1, "Non-Allergen"]])
+
+    seq, meta = assemble_construct(
+        safe, algpred, _stackgly_df([]), pd.DataFrame(), pd.DataFrame(),
+        output_dir=tmp_path, input_stem="GP1",
+    )
+
+    bcell_row = meta[meta["block"] == "B-cell"].iloc[0]
+    assert "conformational_coverage_pct" not in bcell_row["source_score_note"]
+
+
+def test_bcell_sin_raw_estructural_cacheado_no_falla_ni_anota(tmp_path):
+    """Si el candidato viene de DiscoTope/ScanNet ('origen' con 'Dt'/'Sn') pero no hay
+    raw CSV cacheado para esa accession (no deberia pasar en produccion, Fase 2 siempre
+    corre antes de Fase 7), la anotacion se omite en vez de fallar -- mismo principio de
+    degradacion suave que '_best_subwindow' con recorte centrado."""
+    candidate_sequence = "A" * 10
+    safe = _safe_df([{
+        "accession": "P1", "start": 5, "end": 14, "sequence": candidate_sequence,
+        "discotope_score": 0.95, "origen": "Dt",
+    }])
+    algpred = _algpred_df([[candidate_sequence, 0.1, "Non-Allergen"]])
+
+    seq, meta = assemble_construct(
+        safe, algpred, _stackgly_df([]), pd.DataFrame(), pd.DataFrame(),
+        output_dir=tmp_path, input_stem="NOCACHE",
+    )
+
+    bcell_row = meta[meta["block"] == "B-cell"].iloc[0]
+    assert "conformational_coverage_pct" not in bcell_row["source_score_note"]

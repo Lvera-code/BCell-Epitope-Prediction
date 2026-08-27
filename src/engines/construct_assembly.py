@@ -176,6 +176,7 @@ por construccion).
 from pathlib import Path
 from typing import Dict, List, NamedTuple, Optional, Tuple
 
+import numpy as np
 import pandas as pd
 
 from src.config.settings import Settings
@@ -245,6 +246,70 @@ def _load_per_residue_scores(output_dir: Path, input_stem: str, accession: str) 
 
     combined = pd.concat(per_engine_percentiles, axis=1).mean(axis=1, skipna=True)
     return combined.rename("combined_score").rename_axis("position").reset_index()
+
+
+# Motores ESTRUCTURALES cuyo epitopo puede ser conformacional/discontinuo en
+# secuencia lineal (ver Seccion 3.2/discusion del paper): 'origen' contiene su
+# etiqueta corta cuando ese motor contribuyo a la region fusionada. threshold_fn
+# recibe la lista de scores crudos de la accession y devuelve el umbral de
+# produccion real usado en Fase 3 para ESA accession (fijo para DiscoTope-3.0;
+# adaptativo por percentil para ScanNet, igual que 'extract_epitopes').
+_STRUCTURAL_MOTORS = {
+    "discotope": ("Dt", lambda scores: Settings.DISCOTOPE_THRESHOLD),
+    "scannet": ("Sn", lambda scores: float(np.percentile(scores, Settings.SCANNET_THRESHOLD_PERCENTILE))),
+}
+
+
+def _annotate_conformational_coverage(
+    selected: pd.DataFrame, output_dir: Path, input_stem: str,
+) -> pd.DataFrame:
+    """Anota que fraccion del parche conformacional real quedo dentro de la ventana sintetizada.
+
+    DiscoTope-3.0 y ScanNet puntuan epitopos conformacionales que pueden ser
+    discontinuos en secuencia lineal (Seccion 3.2). Colapsar esa senal a una
+    ventana contigua para producir un peptido sintetizable es una decision de
+    diseno deliberada (no una propiedad biologica real) -- esta funcion NO
+    cambia que se sintetiza, solo hace explicito cuanto del parche real quedo
+    fuera: para cada candidato cuyo 'origen' incluya 'Dt' y/o 'Sn', calcula
+    que porcentaje de los residuos que ESE motor puntuo por encima de su
+    propio umbral de produccion, EN TODA LA PROTEINA, cae dentro del rango
+    [start, end] finalmente sintetizado (post pad/trim). Si el candidato
+    combina ambos motores estructurales, se promedia la cobertura de cada
+    uno. Requiere el raw CSV de Fase 2 ya cacheado (misma fuente que
+    ``_load_per_residue_scores``); si no esta disponible, no anota nada para
+    ese motor en vez de fallar.
+    """
+    if selected.empty or "origen" not in selected.columns:
+        return selected
+    annotated = selected.copy()
+    annotated["conformational_coverage_pct"] = pd.NA
+
+    for engine_key, (motor_label, threshold_fn) in _STRUCTURAL_MOTORS.items():
+        accession_col, score_col = _RAW_SCORE_ENGINES[engine_key]
+        raw_path = output_dir / f"{input_stem}_{engine_key}_raw.csv"
+        if not raw_path.is_file():
+            continue
+        raw_df = pd.read_csv(raw_path)
+        if accession_col not in raw_df.columns or score_col not in raw_df.columns:
+            continue
+
+        for idx, row in annotated.iterrows():
+            if motor_label not in str(row.get("origen", "")):
+                continue
+            acc_rows = raw_df[raw_df[accession_col] == row["accession"]].reset_index(drop=True)
+            if acc_rows.empty:
+                continue
+            scores = acc_rows[score_col].tolist()
+            threshold = threshold_fn(scores)
+            over_threshold_positions = [i + 1 for i, s in enumerate(scores) if s >= threshold]  # 1-indexado
+            if not over_threshold_positions:
+                continue
+            inside = sum(1 for p in over_threshold_positions if row["start"] <= p <= row["end"])
+            pct = 100.0 * inside / len(over_threshold_positions)
+            prev = annotated.at[idx, "conformational_coverage_pct"]
+            annotated.at[idx, "conformational_coverage_pct"] = pct if pd.isna(prev) else (prev + pct) / 2.0
+
+    return annotated
 
 
 def _best_subwindow(sequence: str, start: int, per_residue: pd.DataFrame, max_length: int) -> Tuple[str, int, int]:
@@ -479,6 +544,11 @@ def _select_bcell_candidates(
         selected = _trim_long_bcell_candidates(
             selected, output_dir, input_stem, max_length or Settings.CONSTRUCT_BCELL_MAX_LENGTH
         )
+        # Cobertura del parche conformacional real (Dt/Sn) dentro de la ventana YA
+        # recortada/extendida -- debe ir DESPUES de pad/trim, sobre el rango
+        # [start, end] que efectivamente se sintetiza, no sobre la region fusionada
+        # original de Fase 3 (ver docstring de '_annotate_conformational_coverage').
+        selected = _annotate_conformational_coverage(selected, output_dir, input_stem)
         # Re-chequeo de autotolerancia sobre la secuencia FINAL (ya recortada/extendida),
         # DESPUES de pad/trim: ni la Fase 4 original (corrio sobre la region padre, potencialmente
         # mas larga) ni el padding de flancos (solo re-chequea AlgPred2/StackGlyEmbed) cubren esto
@@ -762,7 +832,7 @@ def assemble_construct(
     bcell_score_fields = [
         "bepipred_score", "epidope_score", "discotope_score", "scannet_score",
         "allergen", "glycosylated", "conservation_pct", "documented_region",
-        "trimmed_from_length", "flanked_from_length",
+        "trimmed_from_length", "flanked_from_length", "conformational_coverage_pct",
     ]
     htl_ctl_score_fields = [
         "n_alelos_promiscuos", "n_alelos_evaluados", "population_coverage_pct",
