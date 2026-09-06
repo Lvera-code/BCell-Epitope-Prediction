@@ -1,7 +1,7 @@
 # Pipeline de Descubrimiento de Epítopos Vacunales
 
 Orquestador de terminal (`pipeline.py`) que procesa un FASTA de secuencia o
-una estructura (PDB/mmCIF) a través de 11 fases: desde antigenicidad (unión
+una estructura (PDB/mmCIF) a través de 15 fases: desde antigenicidad (unión
 anotada de hasta 4 motores independientes: 2 de secuencia + 2
 estructurales), enmascarado de regiones transmembrana/péptido señal/
 intracelulares (no accesibles a anticuerpos), ausencia de homología con el proteoma humano
@@ -41,7 +41,7 @@ solo a BepiPred-3.0/EpiDope de esa corrida (con aviso claro) porque BepiPred
 los rechaza en bloque, pero los motores estructurales corren igual sobre el
 PDB.
 
-## Flujo de trabajo (11 fases)
+## Flujo de trabajo (15 fases)
 
 1. **Saneamiento FASTA / extracción de estructura** — Camino 1: valida y
    limpia la(s) secuencia(s) de entrada (`inputs/`, admite FASTA
@@ -1114,5 +1114,5 @@ Estos tests unitarios validan la lógica de cada motor de forma aislada, no
 que el pipeline completo funcione de punta a punta con los binarios/venvs
 reales instalados — para eso, correr `pipeline.py` contra un input real (ver
 "Uso" arriba) sigue siendo necesario. `STATUS.md` documenta la última
-validación end-to-end real (corrida completa de las 11 fases contra
+validación end-to-end real (corrida completa de las 15 fases contra
 `inputs/GP120.fasta`, un HIV-1 Env real).
