@@ -54,7 +54,7 @@ A partir de Fase 2, el resto del flujo es identico para los 3 caminos:
        principio no accesibles a anticuerpos en la proteina madura/anclada
        a membrana. Topologia completa por residuo ('i'/'o', dentro/fuera)
        sale directo de TMbed (``--out-format 1``), sin herramienta de
-       localizacion subcelular aparte. DECISION 2026-08-13: esta fase ya NO
+       localizacion subcelular aparte. Esta fase ya NO
        excluye candidatos (antes descartaba de punta a punta cualquier
        accession 100% citoplasmatica como PSMD7) -- la validacion de
        publicacion sobre 17 estructuras PDB reales encontro que TMbed, sin
@@ -69,7 +69,7 @@ A partir de Fase 2, el resto del flujo es identico para los 3 caminos:
        Los peptidos 'Segura' resultantes alimentan, en paralelo y sin
        depender entre si, TODAS las fases siguientes (4b, 4c, 5, 5b, 6).
     4b. Alergenicidad (AlgPred 2.0 LOCAL, ``src.engines.algpred_engine``):
-       señal de seguridad de la secuencia en si. DECISION 2026-08-13: ya NO
+       señal de seguridad de la secuencia en si. Ya NO
        filtra el constructo final (antes excluia del bloque B-cell de Fase 7
        cualquier secuencia marcada 'Allergen') -- ahora es puramente
        informativa, igual que 4c/6/6c, anotada en la columna ``allergen``.
@@ -144,7 +144,7 @@ from src.engines.bepipred_engine import ACCESSION_COLUMN as BEPIPRED_ACCESSION_C
 from src.engines.bepipred_engine import RESIDUE_COLUMN_CANDIDATES as BEPIPRED_RESIDUE_CANDIDATES
 from src.engines.blast_engine import filter_self_tolerant, print_blast_report, run_blastp_filter
 from src.engines.algpred_engine import predict_allergenicity, print_allergenicity_report
-from src.engines.consensus import build_annotated_union_table, print_union_table
+from src.engines.score_fusion import fuse_and_extract_regions, print_fusion_table
 from src.engines.conservation_engine import print_conservation_report, run_conservation_filter
 from src.engines.construct_assembly import (
     assemble_construct,
@@ -619,9 +619,10 @@ def _build_full_sequence_lookup(
 
     Para input de estructura, la fuente es directamente
     ``StructureRecord.sequence`` (ATMSEQ); para motores de secuencia, se
-    reconstruye desde sus propios scores crudos de Fase 2. Usado tanto por
-    Fase 3 (union de regiones fusionadas) como por Fase 3b (TMbed necesita
-    la secuencia completa de cada accession, no solo el fragmento candidato).
+    reconstruye desde sus propios scores crudos de Fase 2. Usado por Fase 3
+    (union de regiones fusionadas), Fase 3b (TMbed necesita la secuencia
+    completa de cada accession) y Fase 5/5b (T-helper/T-citotoxica evaluadas
+    sobre la proteina completa, no sobre el candidato B-cell recortado).
     """
     sequence_lookup: Dict[str, str] = {}
     if structure_record is not None:
@@ -635,6 +636,27 @@ def _build_full_sequence_lookup(
             build_sequence_lookup(raw_dfs["bepipred"], accession_col=BEPIPRED_ACCESSION_COLUMN, residue_col_candidates=BEPIPRED_RESIDUE_CANDIDATES)
         )
     return sequence_lookup
+
+
+def _full_sequence_parent_df(sequence_lookup: Dict[str, str]) -> pd.DataFrame:
+    """Tabla padre para el traceback de Fase 5/5b: una fila por accession, secuencia completa.
+
+    Sustituye a ``safe_df`` como tabla padre de ``build_traceback_report``/
+    ``build_traceback_report_mhci`` (ver docstrings de
+    ``fase_5_th_promiscuidad``/``fase_5b_tc_promiscuidad``): al evaluar
+    T-cell sobre la proteina completa, no hay una region de Fase 3 de la que
+    heredar columnas ``'{motor}_score'`` -- ``origen`` se anota como
+    ``'proteina_completa'`` para distinguirlo de las combinaciones de
+    motores B-cell (``'Bp+Ed+Dt+Sn'``, etc.) en las tablas de trazabilidad.
+    """
+    return pd.DataFrame(
+        {
+            "accession": list(sequence_lookup.keys()),
+            "start": [1] * len(sequence_lookup),
+            "sequence": list(sequence_lookup.values()),
+            "origen": ["proteina_completa"] * len(sequence_lookup),
+        }
+    )
 
 
 def fase_3_mapeo_y_union(
@@ -651,74 +673,77 @@ def fase_3_mapeo_y_union(
     scannet_threshold: Optional[float] = None,
     scannet_min_length: int = Settings.SCANNET_MIN_EPITOPE_LENGTH,
 ) -> pd.DataFrame:
-    """Fase 3: mapea regiones de epitopo por motor activo y construye la union logica anotada.
+    """Fase 3: fusiona los scores continuos de los motores activos y extrae regiones candidatas.
 
-    ``discotope_threshold``/``scannet_threshold`` siguen el mismo patron que
-    ``bepipred_threshold``/``epidope_threshold`` (configurables por CLI, ver
-    ``parse_args``). Diferencia clave: ``scannet_threshold=None`` (default)
-    activa el umbral ADAPTATIVO por accession (percentil de los scores de
-    esa cadena especifica, ver ``scannet_engine.extract_epitopes``) en vez de
-    un numero fijo -- ScanNet no publica un umbral absoluto oficial, a
-    diferencia de DiscoTope-3.0 (``Settings.DISCOTOPE_THRESHOLD`` = 0.90 es
-    el nivel "moderate" oficial de los autores).
+    Reemplaza la union logica anotada (motores independientemente
+    umbralizados, despues unidos por solape -- ver
+    ``src.engines.consensus``) por una fusion de scores ANTES de umbralizar
+    (``src.engines.score_fusion.fuse_and_extract_regions``): reduce el
+    volumen de falsos positivos en ~89% frente al mecanismo anterior sobre
+    el panel de validacion (ver ADR completo en ``score_fusion.py`` y
+    Material Suplementario, Fase 2/3).
+
+    Los umbrales/longitudes minimas por motor (``bepipred_threshold``,
+    ``epidope_threshold``, etc.) YA NO determinan que regiones sobreviven a
+    esta fase -- esa decision depende ahora del umbral de la señal
+    fusionada, calibrado por combinacion de motores en
+    ``score_fusion.FUSION_THRESHOLDS``. Se mantienen como argumentos
+    puramente informativos: cada motor sigue reportando, para
+    transparencia, que regiones habria llamado de forma aislada con su
+    propio umbral de produccion (impresas en consola, no usadas para
+    construir la union). ``discotope_threshold``/``scannet_threshold``
+    siguen el mismo patron que ``bepipred_threshold``/``epidope_threshold``
+    con ese unico proposito informativo.
     """
     print(
-        f"\n{_SEPARATOR}\nFASE 3 | Mapeo logico de regiones de epitopo y union anotada "
+        f"\n{_SEPARATOR}\nFASE 3 | Fusion de scores y extraccion de regiones candidatas "
         f"({' + '.join(raw_dfs.keys())})\n{_SEPARATOR}"
     )
 
-    epitope_dfs: Dict[str, pd.DataFrame] = {}
-
     if "bepipred" in raw_dfs:
-        print(f"-- BepiPred-3.0 (umbral={bepipred_threshold}, min_len={bepipred_min_length}) --")
+        print(f"-- BepiPred-3.0, solo informativo (umbral aislado={bepipred_threshold}, min_len={bepipred_min_length}) --")
         df = extract_bepipred_epitopes(raw_dfs["bepipred"], threshold=bepipred_threshold, min_length=bepipred_min_length)
         print_epitope_table(
             df, empty_message=f"No se encontraron regiones >= {bepipred_min_length} aa con score medio >= {bepipred_threshold}."
         )
         df.to_csv(output_dir / f"{input_stem}_bepipred_epitopes.csv", index=False)
-        epitope_dfs["bepipred"] = df
 
     if "epidope" in raw_dfs:
-        print(f"\n-- EpiDope (umbral={epidope_threshold}, min_len={epidope_min_length}) --")
+        print(f"\n-- EpiDope, solo informativo (umbral aislado={epidope_threshold}, min_len={epidope_min_length}) --")
         df = extract_epidope_epitopes(raw_dfs["epidope"], threshold=epidope_threshold, min_length=epidope_min_length)
         print_epitope_table(
             df, empty_message=f"No se encontraron regiones >= {epidope_min_length} aa con score medio >= {epidope_threshold}."
         )
         df.to_csv(output_dir / f"{input_stem}_epidope_epitopes.csv", index=False)
-        epitope_dfs["epidope"] = df
 
     if "discotope" in raw_dfs:
-        print(f"\n-- DiscoTope-3.0 (umbral={discotope_threshold} 'calibrated_score', min_len={discotope_min_length}) --")
+        print(f"\n-- DiscoTope-3.0, solo informativo (umbral aislado={discotope_threshold} 'calibrated_score', min_len={discotope_min_length}) --")
         df = extract_discotope_epitopes(raw_dfs["discotope"], threshold=discotope_threshold, min_length=discotope_min_length)
         print_discotope_epitope_table(df)
         df.to_csv(output_dir / f"{input_stem}_discotope_epitopes.csv", index=False)
-        epitope_dfs["discotope"] = df
 
     if "scannet" in raw_dfs:
         scannet_mode_desc = f"umbral fijo={scannet_threshold}" if scannet_threshold is not None else (
             f"umbral adaptativo, percentil {Settings.SCANNET_THRESHOLD_PERCENTILE} por accession"
         )
-        print(f"\n-- ScanNet ({scannet_mode_desc}, min_len={scannet_min_length}) --")
+        print(f"\n-- ScanNet, solo informativo ({scannet_mode_desc}, min_len={scannet_min_length}) --")
         df = extract_scannet_epitopes(raw_dfs["scannet"], threshold=scannet_threshold, min_length=scannet_min_length)
         print_scannet_epitope_table(df)
         df.to_csv(output_dir / f"{input_stem}_scannet_epitopes.csv", index=False)
-        epitope_dfs["scannet"] = df
 
-    print("\n-- Union anotada (fusion de solapes entre motores activos) --")
-    # Lookup de secuencia completa por accession: una region fusionada puede
-    # exceder el span detectado por cualquiera de los motores por separado,
-    # asi que la subsecuencia final se reconstruye desde aqui en vez de
-    # recortar las subsecuencias individuales de cada motor. Reusado tal
-    # cual por Fase 3b (TMbed necesita la misma secuencia completa).
+    print("\n-- Fusion de scores (umbral calibrado por combinacion de motores activos) --")
+    # Lookup de secuencia completa por accession: una region puede exceder
+    # el span de cualquier motor por separado, asi que la subsecuencia
+    # final se reconstruye desde aqui. Reusado tal cual por Fase 3b (TMbed
+    # necesita la misma secuencia completa).
     sequence_lookup = _build_full_sequence_lookup(raw_dfs, structure_record)
 
-    position_mapping = structure_record.position_mapping if structure_record is not None else None
-    union_df = build_annotated_union_table(epitope_dfs, sequence_lookup, position_mapping=position_mapping)
-    print_union_table(union_df)
+    union_df = fuse_and_extract_regions(raw_dfs, sequence_lookup)
+    print_fusion_table(union_df)
 
     out_path = output_dir / f"{input_stem}_union_epitopes.csv"
     union_df.to_csv(out_path, index=False)
-    print(f"-> Tabla de union anotada guardada en: {out_path}")
+    print(f"-> Tabla de regiones fusionadas guardada en: {out_path}")
     return union_df
 
 
@@ -742,7 +767,7 @@ def fase_3b_tm_signal_masking(
     ``union_df`` pero no las secuencias completas en si) reusan el mismo
     cache de regiones TMbed.
 
-    DECISION 2026-08-13: esta fase ya NO excluye candidatos (ver docstring
+    Esta fase ya NO excluye candidatos (ver docstring
     de ``src.engines.tmbed_engine``) -- anota ``tmbed_masked``/
     ``tmbed_mask_type`` por fila y devuelve la union COMPLETA, sin perder
     ninguna region. La exclusion queda para una revision informada, no
@@ -945,26 +970,36 @@ def fase_4c_glicosilacion(safe_df: pd.DataFrame, output_dir: Path, input_stem: s
 
 
 def fase_5_th_promiscuidad(
-    safe_df: pd.DataFrame, output_dir: Path, input_stem: str, allele_extra: str = None,
+    sequence_lookup: Dict[str, str], output_dir: Path, input_stem: str, allele_extra: str = None,
     blast_db: str = Settings.BLAST_HUMAN_DB, identity_threshold: float = Settings.BLAST_IDENTITY_THRESHOLD,
 ) -> pd.DataFrame:
-    """Fase 5: evalua promiscuidad T-helper (MHC-II) de los peptidos 'Seguros' de la Fase 4.
+    """Fase 5: evalua promiscuidad T-helper (MHC-II) sobre la secuencia COMPLETA de cada accession.
+
+    Al igual que Fase 3b/TMbed (ver ``_build_full_sequence_lookup``), corre
+    sobre la proteina entera, no sobre los candidatos B-cell recortados de
+    Fase 3/4: los epitopos T-cell no tienen por que estar cerca de un
+    epitopo B-cell (mecanismos de reconocimiento distintos -- presentacion
+    MHC vs. accesibilidad de superficie para anticuerpos), asi que anclar la
+    busqueda T-cell a la vecindad de un candidato B-cell limita
+    artificialmente donde puede aparecer un nucleo de union real. Verificado
+    contra literatura T-cell documentada (epitopos CD8 con ensayo funcional
+    real): la busqueda sobre la proteina completa nunca pierde un epitopo ya
+    recuperado evaluando solo el candidato B-cell, y amplia el espacio de
+    busqueda al resto de la proteina bajo el mismo regimen de evidencia
+    (prediccion sin corroborar salvo cruce posterior con Fase 6/6c).
 
     El reporte final (consola y ``<input_stem>_candidatos_finales.csv``) no
     es la salida cruda de NetMHCIIpan: los 'Candidato Valido' se enriquecen
-    con su traceback a la region de origen de la Fase 3/4 (accession,
-    coordenadas reales, origen y las columnas ``'{motor}_score'`` de los
-    motores que contribuyeron a esa region, detectadas dinamicamente -- ver
-    ``build_traceback_report`` en ``netmhciipan_engine.py``) y su nucleo de
-    union de 9 aa, via ``build_traceback_report`` -necesario porque en modo
-    proteina (fragmentos largos) NetMHCIIpan devuelve nucleos mas cortos que
-    el fragmento evaluado, no el fragmento completo-.
+    con su traceback a la accession de origen (via ``build_traceback_report``
+    en ``netmhciipan_engine.py``, necesario porque en modo proteina
+    NetMHCIIpan devuelve nucleos mas cortos que la secuencia completa
+    evaluada) y su nucleo de union de 9 aa. Al no depender de una region de
+    Fase 3, no hay columnas ``'{motor}_score'`` de antigenicidad que
+    trazar -- el ``origen`` se anota como ``'proteina_completa'``.
 
     Args:
-        safe_df: Peptidos con ``status == 'Segura'`` provenientes de la Fase 4
-            (conserva ``accession``/``start``/``sequence``/``origen`` y las
-            columnas ``'{motor}_score'`` de la Fase 3, usadas como tabla
-            padre del traceback).
+        sequence_lookup: ``accession -> secuencia completa`` (misma tabla que
+            usa Fase 3b, ver ``_build_full_sequence_lookup``).
         output_dir: Carpeta donde persistir el reporte final y el .xls crudo.
         input_stem: Nombre del archivo de entrada sin extension, usado como
             prefijo de ``candidatos_finales.csv`` y de los .xls crudos de
@@ -977,30 +1012,33 @@ def fase_5_th_promiscuidad(
         blast_db/identity_threshold: Mismos parametros que Fase 4 (``--blast-db``/
             ``--identity-threshold``), reusados aqui para el re-chequeo de
             autotolerancia sobre ``sequence_f5`` (ver
-            ``blast_engine.filter_self_tolerant``): Fase 4 corre sobre la
-            region padre (potencialmente mucho mas larga que 15 aa), asi que
-            un motivo corto peligroso enterrado dentro puede pasar su filtro
-            de cobertura sin ser detectado a esa escala.
+            ``blast_engine.filter_self_tolerant``): un motivo corto peligroso
+            enterrado dentro de la proteina completa puede pasar el filtro de
+            cobertura de Fase 4 sin ser detectado a esa escala.
     """
     allele_panel = f"{IEDB_REFERENCE_PANEL},{allele_extra}" if allele_extra else IEDB_REFERENCE_PANEL
     n_alleles = len(allele_panel.split(","))
     print(f"\n{_SEPARATOR}\nFASE 5 | Promiscuidad T-helper (MHC-II, NetMHCIIpan-4.3 local, {n_alleles} alelo(s) HLA-DR/DQ/DP)\n{_SEPARATOR}")
 
     final_path = output_dir / f"{input_stem}_candidatos_finales.csv"
+    parent_df = _full_sequence_parent_df(sequence_lookup)
 
-    if safe_df.empty:
-        print("No hay peptidos 'Seguros' provenientes de la Fase 4 para evaluar.")
-        traceback_df = build_traceback_report(pd.DataFrame(), safe_df)
+    if not sequence_lookup:
+        print("No hay secuencia completa disponible para evaluar.")
+        traceback_df = build_traceback_report(pd.DataFrame(), parent_df)
         traceback_df.to_csv(final_path, index=False)
         return traceback_df
 
-    input_hash = _phase_input_hash(safe_df, allele_panel, blast_db, identity_threshold)
+    input_hash = _phase_input_hash(
+        *(f"{accession}:{sequence}" for accession, sequence in sorted(sequence_lookup.items())),
+        allele_panel, blast_db, identity_threshold,
+    )
     cached = _load_phase_checkpoint("Fase 5", final_path, input_hash)
     if cached is not None:
         return cached
 
-    peptides = safe_df["sequence"].tolist()
-    print(f"Panel HLA-DR: {allele_panel} | Peptidos a evaluar: {len(peptides)}")
+    peptides = list(sequence_lookup.values())
+    print(f"Panel HLA-DR: {allele_panel} | Accession(es) a evaluar (proteina completa): {len(peptides)}")
 
     report = predict_netmhciipan(peptides, output_dir, allele_panel=allele_panel, filename_prefix=f"{input_stem}_")
 
@@ -1009,7 +1047,7 @@ def fase_5_th_promiscuidad(
     else:
         print_th_report(report, allele_panel=allele_panel)
 
-    traceback_df = build_traceback_report(report, safe_df)
+    traceback_df = build_traceback_report(report, parent_df)
     traceback_df = filter_self_tolerant(traceback_df, "sequence_f5", db_path=blast_db, identity_threshold=identity_threshold)
     traceback_df = annotate_population_coverage(traceback_df)
     print_traceback_table(traceback_df)
@@ -1021,17 +1059,17 @@ def fase_5_th_promiscuidad(
 
 
 def fase_5b_tc_promiscuidad(
-    safe_df: pd.DataFrame, output_dir: Path, input_stem: str,
+    sequence_lookup: Dict[str, str], output_dir: Path, input_stem: str,
     blast_db: str = Settings.BLAST_HUMAN_DB, identity_threshold: float = Settings.BLAST_IDENTITY_THRESHOLD,
 ) -> pd.DataFrame:
-    """Fase 5b: evalua promiscuidad T-citotoxica (MHC-I) de los peptidos 'Seguros' de la Fase 4.
+    """Fase 5b: evalua promiscuidad T-citotoxica (MHC-I) sobre la secuencia COMPLETA de cada accession.
 
-    Paso independiente en paralelo a ``fase_5_th_promiscuidad`` (MHC-II), NO
-    fusionado con ella: son vias de presentacion antigenica distintas (ver
-    ADR en ``src/engines/netmhciipan_engine.py`` y el docstring completo de
-    ``src/engines/netmhcpan_engine.py``). El criterio de veredicto de Fase 5
-    (T-helper/CD4+) no se toca; esto es una senal adicional, con su propio
-    archivo de salida
+    Mismo criterio de independencia respecto a Fase 3/4 que
+    ``fase_5_th_promiscuidad`` (ver su docstring para el ADR completo);
+    paso independiente en paralelo a esa fase, NO fusionado con ella: son
+    vias de presentacion antigenica distintas (ver ADR en
+    ``src/engines/netmhciipan_engine.py`` y el docstring completo de
+    ``src/engines/netmhcpan_engine.py``). Con su propio archivo de salida
     (``<input_stem>_candidatos_finales_mhc1.csv``) para no mezclar ambas
     tablas.
 
@@ -1044,7 +1082,8 @@ def fase_5b_tc_promiscuidad(
     unico criterio de 'Candidato Valido'.
 
     Args:
-        safe_df: Mismos peptidos 'Segura' de la Fase 4 usados por Fase 5.
+        sequence_lookup: ``accession -> secuencia completa`` (misma tabla que
+            usa Fase 5/Fase 3b, ver ``_build_full_sequence_lookup``).
         output_dir: Carpeta donde persistir el reporte final y el .xls crudo.
         input_stem: Nombre del archivo de entrada sin extension (mismo
             proposito que en Fase 5: evita que corridas sucesivas se pisen).
@@ -1059,28 +1098,32 @@ def fase_5b_tc_promiscuidad(
     )
 
     final_path = output_dir / f"{input_stem}_candidatos_finales_mhc1.csv"
+    parent_df = _full_sequence_parent_df(sequence_lookup)
 
-    if safe_df.empty:
-        print("No hay peptidos 'Seguros' provenientes de la Fase 4 para evaluar.")
-        traceback_df = build_traceback_report_mhci(pd.DataFrame(), safe_df)
+    if not sequence_lookup:
+        print("No hay secuencia completa disponible para evaluar.")
+        traceback_df = build_traceback_report_mhci(pd.DataFrame(), parent_df)
         traceback_df.to_csv(final_path, index=False)
         return traceback_df
 
     # A diferencia de Fase 5 (MHC-II, que SI incluye 'allele_panel' en su
     # hash), este checkpoint tambien debe incluir el panel de alelos: un
     # cambio a NETMHCPAN_REFERENCE_PANEL en el CODIGO FUENTE (sin tocar el
-    # input) no invalidaria el cache si solo se hashea 'safe_df', sirviendo
-    # en silencio un reporte calculado contra un panel viejo.
+    # input) no invalidaria el cache si solo se hashea ``sequence_lookup``,
+    # sirviendo en silencio un reporte calculado contra un panel viejo.
     # NETMHCPAN_REFERENCE_PANEL no es configurable por CLI (a diferencia del
     # panel de MHC-II, que admite '--alelo-extra'), asi que incluir el valor
     # actual de la constante alcanza para detectar cualquier cambio futuro.
-    input_hash = _phase_input_hash(safe_df, NETMHCPAN_REFERENCE_PANEL, blast_db, identity_threshold)
+    input_hash = _phase_input_hash(
+        *(f"{accession}:{sequence}" for accession, sequence in sorted(sequence_lookup.items())),
+        NETMHCPAN_REFERENCE_PANEL, blast_db, identity_threshold,
+    )
     cached = _load_phase_checkpoint("Fase 5b", final_path, input_hash)
     if cached is not None:
         return cached
 
-    peptides = safe_df["sequence"].tolist()
-    print(f"Panel HLA-A/B/C: {NETMHCPAN_REFERENCE_PANEL} | Peptidos a evaluar: {len(peptides)}")
+    peptides = list(sequence_lookup.values())
+    print(f"Panel HLA-A/B/C: {NETMHCPAN_REFERENCE_PANEL} | Accession(es) a evaluar (proteina completa): {len(peptides)}")
 
     report = predict_netmhcpan(peptides, output_dir, allele_panel=NETMHCPAN_REFERENCE_PANEL, filename_prefix=f"{input_stem}_")
 
@@ -1089,12 +1132,12 @@ def fase_5b_tc_promiscuidad(
     else:
         print_tc_report(report, allele_panel=NETMHCPAN_REFERENCE_PANEL)
 
-    traceback_df = build_traceback_report_mhci(report, safe_df)
+    traceback_df = build_traceback_report_mhci(report, parent_df)
     traceback_df = filter_self_tolerant(traceback_df, "sequence_f5", db_path=blast_db, identity_threshold=identity_threshold)
     traceback_df = annotate_population_coverage(traceback_df)
 
     if not traceback_df.empty:
-        # NetCleave necesita el peptido ORIGINAL de safe_df (no 'sequence_f5' recortado), no
+        # NetCleave necesita la secuencia completa (no 'sequence_f5' recortado), no
         # solo el nucleo aceptado -- conserva el contexto de flanco C-terminal real que
         # 'annotate_cterm_cleavage' usa para ubicar el sitio de corte (ver su docstring).
         cleavage_df = predict_cleavage(peptides, output_dir, filename_prefix=f"{input_stem}_")
@@ -1176,7 +1219,7 @@ def fase_6b_conservacion(
     """Fase 6b (OPCIONAL): amplitud de conservacion contra un panel de referencia local del patogeno.
 
     Ver docstring completo de ``src.engines.conservation_engine`` para el
-    rationale (feedback de Carmen Elena Gomez) y la metrica de amplitud
+    rationale y la metrica de amplitud
     (secuencias distintas del panel matcheadas, no solo el mejor hit).
 
     A diferencia de Fase 6 (bnAb, que siempre corre y puede legitimamente
@@ -1222,7 +1265,10 @@ def fase_6b_conservacion(
     frames = []
     if not safe_df.empty:
         bcell_in = safe_df[["sequence"]].drop_duplicates().reset_index(drop=True)
-        bcell_out = run_conservation_filter(bcell_in, panel_fasta_path)
+        # detect_terminal_trim=True SOLO aqui: solo un candidato B-cell puede
+        # provenir de un constructo cristalizado con cola no nativa (ver ADR
+        # en conservation_engine.py) -- HTL/CTL abajo lo dejan en False.
+        bcell_out = run_conservation_filter(bcell_in, panel_fasta_path, detect_terminal_trim=True)
         bcell_out.insert(0, "block", "B-cell")
         frames.append(bcell_out)
     if not htl_df.empty:
@@ -1568,12 +1614,13 @@ def main(argv: List[str] = None) -> int:
         _log_peak_memory("Fase 4b (alergenicidad)")
         stackgly_df = fase_4c_glicosilacion(safe_df, output_dir, input_path.stem)
         _log_peak_memory("Fase 4c (N-glicosilacion, StackGlyEmbed -- 3 modelos pesados)")
+        sequence_lookup = _build_full_sequence_lookup(raw_dfs, structure_record)
         htl_df = fase_5_th_promiscuidad(
-            safe_df, output_dir, input_path.stem, allele_extra=args.alelo_extra,
+            sequence_lookup, output_dir, input_path.stem, allele_extra=args.alelo_extra,
             blast_db=args.blast_db, identity_threshold=args.identity_threshold,
         )
         ctl_df = fase_5b_tc_promiscuidad(
-            safe_df, output_dir, input_path.stem,
+            sequence_lookup, output_dir, input_path.stem,
             blast_db=args.blast_db, identity_threshold=args.identity_threshold,
         )
         _log_peak_memory("Fase 5b (MHC-I + NetCleave)")
