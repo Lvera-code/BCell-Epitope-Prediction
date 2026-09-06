@@ -139,6 +139,24 @@ sinteticos):
 | 7 (ensamblaje) | Constructo de 127 aa (3 B-cell + 3 HTL + 3 CTL) |
 | 8 (chequeo constructo) | Non-Allergen, Non-Toxin, antigenicidad intrinseca "Low" (IApred), sin peptido señal |
 
+**Panel de validacion de publicacion (17 estructuras PDB reales):** ademas
+de la validacion end-to-end de un unico caso (GP120.fasta) documentada
+arriba, el pipeline completo se corrio de punta a punta -- con las 14
+herramientas externas reales invocadas por subprocess, sin mocks -- sobre
+las 17 estructuras PDB del panel de validacion estructural citado en el
+paper (`run_validation_panel.sh`, salida en
+`outputs/validation_panel/<antigeno>/`, un directorio + un log por
+estructura). Cada corrida queda respaldada por evidencia verificable: el
+log de ejecucion real (`outputs/validation_panel/<antigeno>.log`), los CSV
+crudos de cada fase con su hash de contenido (`*.csv.inputhash`, confirma
+que el resultado corresponde exactamente a ese input) y el resultado final
+(`*_candidatos_finales.csv`, `*_constructo_metadata.csv`). El mecanismo de
+auto-cache por hash de contenido (ver "Checkpointing" mas abajo) hace que
+una re-ejecucion sobre el mismo input reutilice el resultado ya
+verificado en vez de recalcularlo -- una entrada de log "CACHE LOCAL" no
+es una corrida simulada, es la misma garantia de reproducibilidad que ya
+se valida en el bloque de Checkpointing de esta misma seccion.
+
 **Camino de estructura** (`inputs/7c4s.pdb`, modo `structure_and_sequence`,
 los 4 motores de Fase 2 a la vez): Fase 3 produjo regiones con origenes
 mixtos (`Bp+Ed+Sn`, `Ed+Dt`, confirma que la union de 4 motores simultaneos
