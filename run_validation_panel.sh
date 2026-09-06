@@ -12,18 +12,16 @@
 # 6B5M, 7STR, 7BEP, 5O1R -- donde 'longest' elegiria en silencio una cadena
 # de anticuerpo como si fuera el antigeno. La cadena de cada fila se
 # verifico por conteo de residuos + COMPND contra el mapeo de epitopos ya
-# cerrado del panel (ver vault: 01-Proyectos/B-Cell-Epitope-Prediction/
-# Decisiones/2026-08-13-extraccion-cadena-antigeno-y-peptidos-cortos.md).
+# cerrado del panel.
 #
-# DECISION 2026-08-13: 7RQQ (peptido CSP NPNV de 6 aa, Fab F10/L9) fue
+# 7RQQ (peptido CSP NPNV de 6 aa, Fab F10/L9) fue
 # sustituido por 8FDD (peptido CSP NPNV de 13 aa resueltos, Fab Ky15.3,
 # Thai et al. 2023 Cell Reports, PMID 38007690) -- 7RQQ quedaba por debajo
 # del minimo real de 9 aa que exigen los 4 motores de Fase 3
 # (Settings.*_WINDOW_SIZE), por lo que nunca generaba ninguna region
 # candidata (0/0), un piso estructural que ningun otro candidato del
 # linaje L9/F10 supera. 8FDD lo supera con margen y mantiene el mismo
-# motivo NPNV. Ver vault:
-# Decisiones/2026-08-13-sustitucion-candidatos-y-arquitectura-filtro-vs-etiqueta.md
+# motivo NPNV.
 #
 # Uso: ./run_validation_panel.sh [output_root]
 set -euo pipefail

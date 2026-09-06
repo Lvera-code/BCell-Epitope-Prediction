@@ -1,0 +1,60 @@
+B-Cell-Epitope-Prediction — License
+
+Copyright (c) 2026 Enzo Sierra
+
+This repository's own original code (everything under `src/`, `pipeline.py`,
+`tests/`, and this file's directory, EXCLUDING the vendored/cloned external
+tools listed below) is licensed under Creative Commons
+Attribution-NonCommercial 4.0 International (CC BY-NC 4.0):
+https://creativecommons.org/licenses/by-nc/4.0/
+
+This choice matches the most restrictive real dependency this project
+relies on at runtime (see below) rather than granting broader rights than
+the overall system can actually support. Non-commercial academic/research
+use is fully covered.
+
+## Why the whole system is non-commercial-only
+
+This project orchestrates fourteen external tools, each with its own
+license, invoked as separate processes (never statically/dynamically
+linked into this project's own code), never redistributed as part of this
+repository:
+
+- **BepiPred-3.0** (UberClifford/BepiPred-3.0): free for academic
+  non-commercial use only; for-profit use requires a separate license
+  (contact Morten Nielsen, morni@dtu.dk). Non-commercial only.
+- **EpiDope** (mcollatz/EpiDope): MIT.
+- **DiscoTope-3.0** (Magnushhoie/DiscoTope-3.0): CC BY-NC 4.0. Non-commercial
+  only.
+- **ScanNet** (jertubiana/ScanNet): Apache-2.0.
+- **TMbed** (BernhoferM/TMbed): Apache-2.0.
+- **BLAST+** (NCBI): public domain / U.S. Government work (NCBI-PD).
+- **AlgPred2** (Raghava group, IIIT-Delhi): free for scientific use.
+  Non-commercial only.
+- **StackGlyEmbed** (nafcoder/StackGlyEmbed): no LICENSE file in the code
+  repository; its associated paper (Nafi & Rahman, 2025, Bioinformatics
+  Advances) is published CC BY 4.0. No explicit code license grant found —
+  treated as unconfirmed, not folded into either bucket.
+- **NetMHCIIpan-4.3** (DTU Health Tech): academic users only, from publicly
+  funded academic/education/research institutions; commercial use requires
+  a separate license. Non-commercial only.
+- **NetMHCpan-4.2** (DTU Health Tech): same terms as NetMHCIIpan-4.3.
+  Non-commercial only.
+- **NetCleave** (BSC-CNS-EAPM/NetCleave, fork of pepamengual/NetCleave): no
+  LICENSE file in the code repository; its associated paper
+  (Amengual-Rigo & Guallar, 2021, Scientific Reports) is published CC BY
+  4.0. No explicit code license grant found — treated as unconfirmed, not
+  folded into either bucket.
+- **IApred** (sebamiles/IAPred): MIT.
+- **ToxinPred2** (Raghava group, IIIT-Delhi): free for scientific use.
+  Non-commercial only.
+- **SignalP-6.0** (DTU Health Tech): academic users only; commercial use is
+  a separately licensed, paid tier. Non-commercial only.
+
+None of the above are distributed as part of this repository -- each is
+installed independently by whoever sets up this pipeline, per `README.md`.
+This LICENSE file covers only the code actually committed here.
+
+**This is not formal legal advice.** If you intend to use this pipeline
+or its outputs beyond non-commercial research/academic purposes, verify
+the current license terms of each dependency above directly.
