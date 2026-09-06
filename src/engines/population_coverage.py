@@ -29,8 +29,7 @@ loci distintos):
 
 Fuente de frecuencias alelicas: ``reference_db/allele_frequencies/world_pooled_afnd.csv``,
 derivado de la Allele Frequency Net Database (allelefrequencies.net) via el
-mirror MIT-licenciado github.com/slowkow/allelefrequencies (fetched
-2026-08-02). Para cada alelo de ``NETMHCPAN_REFERENCE_PANEL``/
+mirror MIT-licenciado github.com/slowkow/allelefrequencies. Para cada alelo de ``NETMHCPAN_REFERENCE_PANEL``/
 ``IEDB_REFERENCE_PANEL``, la frecuencia es el promedio ponderado por tamano
 de muestra (``n``) entre TODOS los estudios/poblaciones disponibles en AFND
 para ese alelo -- un promedio mundial agrupado, NO estratificado por region/

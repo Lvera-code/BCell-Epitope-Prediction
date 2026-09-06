@@ -43,7 +43,7 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 import pandas as pd
 
@@ -131,7 +131,8 @@ def _select_evalue(
 
 
 def _run_blastp_batch(
-    records: List[Tuple[int, str]], task: str, db: Path, evalue: float
+    records: List[Tuple[int, str]], task: str, db: Path, evalue: float,
+    max_target_seqs: Optional[int] = None,
 ) -> pd.DataFrame:
     """Ejecuta, via ``subprocess.run``, un lote homogeneo de peptidos con un mismo '-task'.
 
@@ -141,6 +142,18 @@ def _run_blastp_batch(
             corresponder a la misma tarea; el llamador se encarga de agrupar).
         db: Prefijo de la base de datos BLAST local.
         evalue: E-value usado en la busqueda.
+        max_target_seqs: Tope de hits (distintos) que BLAST puede devolver
+            POR QUERY. ``None`` (default) deja el valor por defecto de BLAST+
+            (500) sin pasar el flag -- suficiente para Fase 4 (solo importa
+            la identidad MAXIMA, que BLAST siempre devuelve dentro de sus
+            primeros hits por score/e-value, nunca fuera de los 500,
+            independientemente del tamaño de la base). Un llamador que
+            necesite contar TODOS los hits que pasan un umbral (amplitud,
+            ver ``conservation_engine.run_conservation_filter``) debe pasar
+            explicitamente un valor >= al numero de secuencias del panel --
+            si no, el conteo de amplitud queda truncado en silencio en
+            candidatos muy conservados (BLAST no avisa, simplemente deja de
+            reportar mas alla del limite).
 
     Returns:
         DataFrame en formato ``-outfmt 6`` con los hits encontrados (vacio si
@@ -167,6 +180,8 @@ def _run_blastp_batch(
             "-outfmt", "6", "-evalue", str(evalue),
             "-out", str(out_path),
         ]
+        if max_target_seqs is not None:
+            cmd += ["-max_target_seqs", str(max_target_seqs)]
         logger.info("Ejecutando BLASTp (-task %s) sobre %d peptido(s): %s", task, len(records), " ".join(cmd))
         try:
             subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=300)
@@ -361,6 +376,24 @@ def filter_self_tolerant(
     longitud (no la de la region padre) -- la misma logica de Fase 4, en la
     escala en la que realmente importa.
 
+    BUG REAL corregido (hallado verificando el input de Proyecto 3/
+    BoltzGen, no por sintoma en Project 1: ``max_pident``/``blast_task``/
+    ``blast_evalue`` nunca se mostraban en ningun reporte de Project 1, asi
+    que nadie habia notado esto): si ``df`` ya trae columnas ``max_pident``/
+    ``blast_task``/``blast_evalue`` de una fase anterior (Fase 4, calculadas
+    sobre la region PADRE mas ancha), esta funcion las recalculaba
+    internamente para la decision ``status``/de-superviviente pero
+    DESCARTABA el resultado fresco, dejando en ``df`` los valores viejos de
+    la region padre. Verificado con BLAST real contra el proteoma humano
+    (region padre de 40aa vs. su sub-ventana final de 20aa real): el valor
+    que quedaba en el candidato final era ``max_pident=0.0`` mientras que el
+    valor real de esa secuencia de 20aa (calculado, descartado) era
+    ``57.9%`` -- ambos por debajo del umbral (por eso el candidato
+    sobrevivia correctamente), pero la cifra mostrada era enganosamente mas
+    optimista que la real. Ahora ``max_pident``/``blast_task``/
+    ``blast_evalue`` se SOBREESCRIBEN con los valores frescos calculados
+    sobre la secuencia final antes de filtrar.
+
     Args:
         df: Candidatos ya filtrados/seleccionados por su fase de origen
             (Fase 5 'Candidato Valido', Fase 5b idem, o Fase 7 top-N B-cell
@@ -376,7 +409,10 @@ def filter_self_tolerant(
     Returns:
         Subconjunto de ``df`` cuyo ``sequence_col`` paso el chequeo
         (``status == 'Segura'``), preservando todas sus columnas originales
-        y el orden de filas. Vacio si ``df`` esta vacio o ningun candidato
+        y el orden de filas -- excepto ``max_pident``/``blast_task``/
+        ``blast_evalue``, si ya existian en ``df``, que se SOBREESCRIBEN con
+        los valores frescos calculados sobre la secuencia final (ver "BUG
+        REAL" arriba). Vacio si ``df`` esta vacio o ningun candidato
         sobrevive.
     """
     if df.empty:
@@ -384,7 +420,15 @@ def filter_self_tolerant(
 
     probe = df[[sequence_col]].rename(columns={sequence_col: "sequence"})
     checked = run_blastp_filter(probe, db_path=db_path, identity_threshold=identity_threshold)
-    survivors = df[checked["status"].values == "Segura"].reset_index(drop=True)
+    # 'checked' esta garantizado en el mismo orden posicional que 'df' (misma
+    # construccion de 'probe', y 'run_blastp_filter' preserva el orden de
+    # entrada via 'reset_index(drop=True)' -- ver su docstring/implementacion).
+    # Asignacion por '.values' (posicional, no por indice) es por tanto segura.
+    refreshed = df.copy()
+    refreshed["blast_task"] = checked["blast_task"].values
+    refreshed["blast_evalue"] = checked["blast_evalue"].values
+    refreshed["max_pident"] = checked["max_pident"].values
+    survivors = refreshed[checked["status"].values == "Segura"].reset_index(drop=True)
 
     n_total = len(df)
     n_survivors = len(survivors)

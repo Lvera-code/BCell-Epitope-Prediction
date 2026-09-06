@@ -35,6 +35,24 @@ que desalinean el conteo de caracteres respecto al numero real de residuos
 del polimero -- inviable para construir un mapeo de posiciones 1:1. En su
 lugar se itera ``Chain.get_polymer()`` residuo por residuo, resolviendo cada
 uno individualmente y garantizando exactamente 1 caracter por residuo.
+
+``label_seq_id`` (columna ``label_seq_id`` de ``position_mapping``): indice
+mmCIF canonico (``gemmi.Residue.label_seq``, via ``Structure.assign_label_seq_id()``),
+NO igual a ``fasta_position`` en general. ``fasta_position`` es secuencial
+sobre ATMSEQ (solo residuos con coordenadas); ``label_seq_id`` es secuencial
+sobre la entidad completa declarada en SEQRES/``entity_poly_seq`` (incluye
+huecos de densidad no resuelta) -- verificado con estructuras reales del
+panel de validacion con huecos (p. ej. 7OH1: fasta_position salta 440->441
+mientras que auth_seqid/label_seq_id saltan 440->466 juntos). Si el archivo
+de entrada no trae SEQRES/``entity_poly_seq`` (p. ej. un modelo predicho sin
+cabecera), ``assign_label_seq_id()`` no tiene de donde derivar la
+numeracion y deja ``label_seq`` en ``None`` para todos los residuos; para
+evitarlo se rellena ``Entity.full_sequence`` con los residuos realmente
+observados (fallback seguro: declara la entidad completa como "exactamente
+lo que se ve", sin huecos) antes de asignar. Necesario para Proyecto 3
+(BoltzGen): su especificacion de diseño (``binding_types``) indexa
+residuos por ``label_asym_id``/``label_seq_id`` mmCIF, no por
+``auth_asym_id``/``auth_seq_id``.
 """
 
 from dataclasses import dataclass
@@ -52,6 +70,7 @@ logger = setup_logger(__name__)
 
 POSITION_MAPPING_COLUMNS = [
     "accession", "chain_id", "pdb_seqid", "insertion_code", "fasta_position", "residue_letter",
+    "label_seq_id",
 ]
 
 
@@ -163,6 +182,31 @@ def _select_chain(model: "gemmi.Model", strategy: str, explicit_chain_id: str) -
     return chosen_chain
 
 
+def _assign_label_seq_id(structure: "gemmi.Structure", chain: "gemmi.Chain") -> None:
+    """Asegura que los residuos de ``chain`` tengan ``label_seq`` (indice mmCIF canonico) asignado.
+
+    ``Structure.assign_label_seq_id()`` deriva ``label_seq`` de
+    ``Entity.full_sequence`` (poblado por ``setup_entities()`` desde
+    SEQRES/``entity_poly_seq`` cuando el archivo de entrada los trae). Si el
+    archivo no trae esa cabecera, ``full_sequence`` queda vacio y
+    ``label_seq`` se queda en ``None`` para todos los residuos -- se
+    verifico este fallo real con un PDB sin SEQRES. El fallback rellena
+    ``full_sequence`` con los residuos realmente observados (mismo orden que
+    ``chain.get_polymer()``) antes de asignar, lo que declara la entidad
+    como "exactamente lo que se ve" y hace que ``label_seq`` termine
+    coincidiendo con la posicion secuencial 1..N (igual que ``fasta_position``)
+    en ese caso -- comportamiento correcto quando no hay huecos que declarar.
+    """
+    poly = chain.get_polymer()
+    if len(poly) == 0:
+        return
+    subchain = poly[0].subchain
+    entity = next((e for e in structure.entities if subchain in e.subchains), None)
+    if entity is not None and not entity.full_sequence:
+        entity.full_sequence = [residue.name for residue in poly]
+    structure.assign_label_seq_id()
+
+
 def parse_structure(
     path: Path,
     output_dir: Path,
@@ -220,6 +264,7 @@ def parse_structure(
         )
 
     chain = _select_chain(model, chain_selection_strategy, explicit_chain_id)
+    _assign_label_seq_id(structure, chain)
 
     residues = list(chain.get_polymer())
     letters: List[str] = []
@@ -235,6 +280,7 @@ def parse_structure(
                 "insertion_code": residue.seqid.icode.strip() if residue.seqid.icode else "",
                 "fasta_position": fasta_position,
                 "residue_letter": letter,
+                "label_seq_id": residue.label_seq,
             }
         )
 

@@ -1,7 +1,6 @@
 """Cruce de candidatos B-cell contra epitopos con proteccion/neutralizacion documentada (IEDB), 100% local.
 
-Feedback de Carmen Elena Gomez (group leader Poxvirus and Vaccines, CNB-CSIC,
-2026-07-30): identificar que regiones de un patogeno tienen efecto
+Objetivo: identificar que regiones de un patogeno tienen efecto
 protector/neutralizante YA DOCUMENTADO (su ejemplo: V1/V2, CD4bs, MPER de
 HIV), para poder priorizarlas -- lo mismo que ``lanl_catnap_engine`` (Fase 6)
 ya hace, pero especifico de HIV Env. Este motor generaliza esa misma idea a
@@ -12,9 +11,7 @@ CUALQUIER patogeno estudiado, usando el bulk export B-cell de IEDB
 FILTRADO y persistido localmente del export completo de IEDB
 (``bcell_full_v3_single_file.zip``, 1,688,617 filas / 3.24 GB descomprimido
 -- ese archivo crudo NO se distribuye con el repo, solo el filtrado). El
-filtro (ver ADR completo en el vault,
-``01-Proyectos/BCell-Epitope-Prediction/Decisiones/2026-08-01-investigacion-iedb-regiones-interes.md``)
-se aplico UNA SOLA VEZ como paso de SETUP (descarga+filtrado, nunca en
+filtro se aplico UNA SOLA VEZ como paso de SETUP (descarga+filtrado, nunca en
 runtime, mismo principio que ``reference_db/lanl_immunology/ab_all.csv``):
 
     - ``Epitope.Object Type == 'Linear peptide'`` (excluye epitopos

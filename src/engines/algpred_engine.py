@@ -5,7 +5,7 @@ patron que ``bepipred_engine.py``: invoca el interprete de un venv dedicado
 (``Settings.ALGPRED_PYTHON_BIN``) contra el script instalado
 (``Settings.ALGPRED_SCRIPT_PATH``), nunca red.
 
-Modelo (``Settings.ALGPRED_MODEL``, por defecto 2 desde 2026-08-14): el
+Modelo (``Settings.ALGPRED_MODEL``, por defecto 2): el
 script upstream soporta dos modos con formatos de CSV de salida DISTINTOS,
 por eso este wrapper parsea cada uno por separado en vez de asumir un unico
 esquema:
@@ -22,8 +22,7 @@ esquema:
         que el orden se preserva end-to-end en el script upstream (misma
         lista ``seqid``/``seq`` reutilizada en cada paso interno).
 
-Se eligio el modelo 2 como default tras verificar (sesion 2026-08-14, ver
-vault) que el modelo 1 marca "Allergen" candidatos sin ninguna homologia o
+Se eligio el modelo 2 como default tras verificar que el modelo 1 marca "Allergen" candidatos sin ninguna homologia o
 motivo IgE real detras -- artefacto de la composicion de aminoacidos, no
 evidencia biologica. El resultado siempre expone ``algpred_ml_score``/
 ``algpred_merci_score``/``algpred_blast_score`` por separado (0 si el modelo

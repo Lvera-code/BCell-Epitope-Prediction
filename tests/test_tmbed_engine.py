@@ -1,7 +1,7 @@
 """Tests de la Fase 3b (src/engines/tmbed_engine.py): parseo del formato de 3 lineas
 por proteina de 'tmbed predict --out-format 1', colapsado de clases (incluida 'i',
 intracelular) en regiones de riesgo topologico, anotacion de solapamiento contra
-la union anotada (desde 2026-08-13 ya NO excluye filas, ver docstring del modulo)
+la union anotada (ya NO excluye filas, ver docstring del modulo)
 -- incluyendo los casos de validacion PSMD7 (control negativo, proteina 100%
 citoplasmatica, que debe quedar marcada pero sigue presente) y THBS2 (control
 positivo, secretada, que debe quedar sin marcar) --, y propagacion de errores del

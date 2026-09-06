@@ -119,11 +119,23 @@ def test_multiples_queries_independientes():
 # --- filter_self_tolerant: re-chequeo sobre la secuencia FINAL de largo real -----------
 
 
-def _fake_run_blastp_filter(status_by_sequence):
-    """Mock de 'run_blastp_filter': asigna 'status' segun 'status_by_sequence[sequence]'."""
+def _fake_run_blastp_filter(status_by_sequence, pident_by_sequence=None):
+    """Mock de 'run_blastp_filter': asigna 'status'/'max_pident' segun los dicts dados.
+
+    Incluye SIEMPRE 'blast_task'/'blast_evalue'/'max_pident' (ademas de
+    'status'), igual que la funcion real -- un mock que solo devolviera
+    'status' no reproduciria el contrato real y dejaria pasar sin detectar
+    el bug de 'max_pident' obsoleto que corrigio 'filter_self_tolerant'
+    (ver tests de esa funcion mas abajo).
+    """
+    pident_by_sequence = pident_by_sequence or {}
+
     def _fake(epitopes_df, db_path=None, identity_threshold=None):
         result = epitopes_df.copy()
         result["status"] = result["sequence"].map(status_by_sequence)
+        result["blast_task"] = "blastp-short"
+        result["blast_evalue"] = 50.0
+        result["max_pident"] = result["sequence"].map(pident_by_sequence).fillna(0.0)
         return result
     return _fake
 
@@ -168,3 +180,57 @@ def test_filter_self_tolerant_df_vacio_no_invoca_blast(monkeypatch):
 
     assert result.empty
     assert not calls
+
+
+def test_filter_self_tolerant_sobreescribe_max_pident_obsoleto_de_la_region_padre(monkeypatch):
+    """Regresion del bug real corregido (ver docstring de 'filter_self_tolerant').
+
+    'df' ya trae 'max_pident'/'blast_task'/'blast_evalue' calculados sobre la
+    region PADRE mas ancha (como ocurre de verdad en el pipeline: 'safe_df'
+    hereda estas columnas de la Fase 4). El re-chequeo interno sobre la
+    secuencia FINAL calcula un 'max_pident' distinto (57.9, simulando el
+    caso real encontrado con BLAST contra el proteoma humano) -- ese valor
+    fresco debe reemplazar al viejo (0.0) en el resultado, no coexistir con
+    el ni descartarse.
+    """
+    monkeypatch.setattr(
+        blast_engine_module, "run_blastp_filter",
+        _fake_run_blastp_filter(
+            status_by_sequence={"VENTANAFINAL": "Segura"},
+            pident_by_sequence={"VENTANAFINAL": 57.9},
+        ),
+    )
+    df = pd.DataFrame({
+        "accession": ["P1"],
+        "sequence": ["VENTANAFINAL"],
+        # Valores OBSOLETOS de la region padre de Fase 4 (mas ancha, ya recortada
+        # a 'sequence' antes de llegar aqui -- mismo escenario que 'safe_df' real).
+        "blast_task": ["blastp"],
+        "blast_evalue": [0.05],
+        "max_pident": [0.0],
+    })
+
+    result = filter_self_tolerant(df, "sequence")
+
+    assert result["max_pident"].iloc[0] == 57.9  # fresco, NO el 0.0 obsoleto de la region padre
+    assert result["blast_task"].iloc[0] == "blastp-short"  # tambien refrescado
+    assert result["blast_evalue"].iloc[0] == 50.0  # tambien refrescado
+
+
+def test_filter_self_tolerant_anade_max_pident_si_df_no_lo_traia(monkeypatch):
+    """Camino HTL/CTL (Fase 5/5b): 'df' no viene de un BLAST anterior, no trae estas
+    columnas todavia -- deben aparecer como nuevas (no hay valor obsoleto que
+    sobreescribir, pero antes del fix se perdian igual porque solo se usaba 'status')."""
+    monkeypatch.setattr(
+        blast_engine_module, "run_blastp_filter",
+        _fake_run_blastp_filter(
+            status_by_sequence={"AAAKKKAAA": "Segura"},
+            pident_by_sequence={"AAAKKKAAA": 12.3},
+        ),
+    )
+    df = pd.DataFrame({"accession": ["P1"], "sequence_f5": ["AAAKKKAAA"], "n_alelos_promiscuos": [5]})
+
+    result = filter_self_tolerant(df, "sequence_f5")
+
+    assert result["max_pident"].iloc[0] == 12.3
+    assert result["n_alelos_promiscuos"].iloc[0] == 5  # el resto de columnas originales se preserva

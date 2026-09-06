@@ -84,7 +84,7 @@ def test_todo_vacio_no_ensambla_nada():
 
 
 def test_bcell_no_excluye_allergen_pero_lo_anota():
-    # DECISION 2026-08-13: la validacion de publicacion encontro que AlgPred2
+    # La validacion de publicacion encontro que AlgPred2
     # marcaba 'Allergen' 7 de 9 candidatos evaluados sin correlato clinico
     # real -- se dejo de excluir, mismo tratamiento que la glicosilacion.
     safe = _safe_df([
@@ -108,8 +108,8 @@ def test_bcell_no_excluye_allergen_pero_lo_anota():
 
 
 def test_bcell_no_excluye_con_sequon_glicosilado_pero_lo_anota():
-    # Existen anticuerpos descritos contra regiones glicosiladas (feedback de
-    # Carmen Elena Gomez, ver vault) -- ya no se descarta, solo se anota.
+    # Existen anticuerpos descritos contra regiones glicosiladas -- ya no se
+    # descarta, solo se anota.
     safe = _safe_df([
         {"accession": "A", "start": 1, "end": 10, "sequence": "AAAAAAAAAA", "bepipred_score": 0.9},
         {"accession": "A", "start": 20, "end": 29, "sequence": "BBBBBBBBBB", "bepipred_score": 0.8},
@@ -579,7 +579,7 @@ def test_bcell_padding_se_aplica_igual_si_la_version_extendida_es_alergeno_pero_
     full_sequence = "AAAAAAAASHRTAAAAAAAA"
     _write_bepipred_raw(tmp_path, "GP1", "P1", full_sequence)
 
-    # DECISION 2026-08-13: la version extendida "AAASHRTAAA" es alergena
+    # La version extendida "AAASHRTAAA" es alergena
     # segun el motor (mockeado) -- el padding ya NO se descarta por eso, se
     # aplica igual y el veredicto de alergenicidad de la version YA extendida
     # queda anotado en 'allergen' (mismo tratamiento que la glicosilacion).
@@ -631,7 +631,7 @@ def test_bcell_candidato_ya_largo_no_se_extiende(monkeypatch, tmp_path):
 
 
 def test_bcell_candidato_final_con_homologia_humana_se_excluye(monkeypatch, tmp_path):
-    """Hallazgo de sesion: Fase 4 corre sobre la region padre (potencialmente mas larga
+    """Fase 4 corre sobre la region padre (potencialmente mas larga
     que 20 aa), asi que un motivo corto peligroso enterrado dentro puede pasar su filtro
     de cobertura sin ser detectado. '_select_bcell_candidates' debe re-chequear la
     secuencia FINAL (ya recortada/extendida) y descartar la que de verdad resulte
@@ -762,3 +762,76 @@ def test_bcell_sin_raw_estructural_cacheado_no_falla_ni_anota(tmp_path):
 
     bcell_row = meta[meta["block"] == "B-cell"].iloc[0]
     assert "conformational_coverage_pct" not in bcell_row["source_score_note"]
+
+
+# --- Deduplicacion cross-clase (B-cell -> HTL -> CTL) ----------------------------------
+
+
+def test_htl_solapado_con_bcell_se_excluye_y_entra_el_siguiente_mejor():
+    """Reproduce el patron real encontrado en el panel de validacion (p. ej. 5O14,
+    9BJG, 9BJH): un candidato HTL que solapa exactamente el bloque B-cell ya
+    seleccionado, aunque puntue mejor que el resto, debe excluirse -- y el
+    siguiente mejor candidato HTL NO solapante debe ocupar su lugar (no dejar
+    la clase con menos de top_n bloques)."""
+    safe = _safe_df([{"accession": "A", "start": 20, "end": 34, "sequence": "B" * 15, "bepipred_score": 0.9}])
+    algpred = _algpred_df([["B" * 15, 0.1, "Non-Allergen"]])
+    htl = pd.DataFrame([
+        # Solapa el bloque B-cell (20-34) y puntua MEJOR (n_prom mas alto) --
+        # sin dedup cross-clase, esta seria la seleccionada.
+        _htl_ctl_row("A", "OVERLAP", "OVLCORE", 20, 34, n_prom=10, min_rank=0.1),
+        # No solapa, puntua peor -- debe ser la seleccionada tras excluir la anterior.
+        _htl_ctl_row("A", "NOOVERLAP", "NOVCORE", 50, 64, n_prom=3, min_rank=0.8),
+    ])
+
+    seq, meta = assemble_construct(safe, algpred, _stackgly_df([]), htl, pd.DataFrame(), top_n_per_class=1)
+
+    htl_rows = meta[meta["block"] == "HTL"]
+    assert len(htl_rows) == 1
+    assert htl_rows.iloc[0]["sequence"] == "NOOVERLAP"
+
+
+def test_ctl_solapado_con_bcell_o_htl_se_excluye():
+    """Mismo mecanismo que el test anterior, para CTL frente a B-cell Y HTL ya
+    seleccionados (orden de ensamblaje B-cell -> HTL -> CTL)."""
+    safe = _safe_df([{"accession": "A", "start": 1, "end": 10, "sequence": "B" * 10, "bepipred_score": 0.9}])
+    algpred = _algpred_df([["B" * 10, 0.1, "Non-Allergen"]])
+    htl = pd.DataFrame([_htl_ctl_row("A", "W1", "HTLCORE", 20, 34, n_prom=5, min_rank=0.5)])
+    ctl = pd.DataFrame([
+        # Solapa el bloque B-cell.
+        _htl_ctl_row("A", "OVERLAP_BCELL", "OVBCORE", 1, 10, n_prom=10, min_rank=0.1, netcleave_match=True, netcleave_score=0.9),
+        # Solapa el bloque HTL.
+        _htl_ctl_row("A", "OVERLAP_HTL", "OVHCORE", 25, 34, n_prom=9, min_rank=0.2, netcleave_match=True, netcleave_score=0.9),
+        # No solapa ninguno de los dos.
+        _htl_ctl_row("A", "CLEAN", "CLNCORE", 50, 59, n_prom=2, min_rank=0.9, netcleave_match=False, netcleave_score=0.1),
+    ])
+
+    seq, meta = assemble_construct(safe, algpred, _stackgly_df([]), htl, ctl, top_n_per_class=1)
+
+    ctl_rows = meta[meta["block"] == "CTL"]
+    assert len(ctl_rows) == 1
+    assert ctl_rows.iloc[0]["sequence"] == "CLEAN"
+
+
+def test_htl_sin_solapamiento_no_se_ve_afectado():
+    """Caso base: si ningun candidato HTL solapa el bloque B-cell, la seleccion
+    no cambia respecto al comportamiento anterior a la deduplicacion cross-clase."""
+    safe = _safe_df([{"accession": "A", "start": 1, "end": 10, "sequence": "B" * 10, "bepipred_score": 0.9}])
+    algpred = _algpred_df([["B" * 10, 0.1, "Non-Allergen"]])
+    htl = pd.DataFrame([_htl_ctl_row("A", "W1", "HTLCORE", 20, 34, n_prom=5, min_rank=0.5)])
+
+    seq, meta = assemble_construct(safe, algpred, _stackgly_df([]), htl, pd.DataFrame())
+
+    assert meta[meta["block"] == "HTL"].iloc[0]["sequence"] == "W1"
+
+
+def test_solapamiento_en_otra_accession_no_excluye():
+    """El solapamiento cross-clase solo aplica dentro de la MISMA accession --
+    un candidato HTL en una accession distinta con el mismo rango de posiciones
+    no debe excluirse."""
+    safe = _safe_df([{"accession": "A", "start": 20, "end": 34, "sequence": "B" * 15, "bepipred_score": 0.9}])
+    algpred = _algpred_df([["B" * 15, 0.1, "Non-Allergen"]])
+    htl = pd.DataFrame([_htl_ctl_row("OTRA_ACCESSION", "W1", "HTLCORE", 20, 34, n_prom=5, min_rank=0.5)])
+
+    seq, meta = assemble_construct(safe, algpred, _stackgly_df([]), htl, pd.DataFrame())
+
+    assert meta[meta["block"] == "HTL"].iloc[0]["sequence"] == "W1"

@@ -164,7 +164,11 @@ def test_camino3_structure_and_sequence_invoca_los_4_motores(tmp_path, mock_all_
 
     union_df = fase_3_mapeo_y_union(raw_dfs, structure_record, 0.5, 9, 0.5, 9, output_dir, pdb_path.stem)
     assert not union_df.empty
-    assert set(union_df["origen"]) == {"Consenso total"}
+    # Fase 3 fusiona los scores de los 4 motores ANTES de umbralizar (ver
+    # src.engines.score_fusion): todo motor activo contribuye siempre a la
+    # señal fusionada de cada region, no solo los que superan su propio
+    # umbral aislado -- no hay ya un caso especial de "todos de acuerdo".
+    assert set(union_df["origen"]) == {"Bp+Ed+Dt+Sn"}
 
     # Las posiciones de motores estructurales y de secuencia coinciden: ambas
     # provienen del mismo sequence_lookup (StructureRecord.sequence), que a

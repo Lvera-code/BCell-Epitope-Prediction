@@ -76,12 +76,51 @@ def test_position_mapping_columnas_y_numeracion(tmp_path):
     mapping = record.position_mapping
     assert list(mapping.columns) == [
         "accession", "chain_id", "pdb_seqid", "insertion_code", "fasta_position", "residue_letter",
+        "label_seq_id",
     ]
     assert mapping["fasta_position"].tolist() == [1, 2, 3, 4]
     assert mapping["pdb_seqid"].tolist() == [1, 2, 3, 4]
     assert mapping["residue_letter"].tolist() == ["M", "M", "S", "G"]
     assert (mapping["accession"] == record.accession).all()
     assert (mapping["chain_id"] == "A").all()
+    # Sin SEQRES en el PDB de entrada: fallback declara la entidad como
+    # "exactamente lo observado", label_seq_id coincide con fasta_position.
+    assert mapping["label_seq_id"].tolist() == [1, 2, 3, 4]
+
+
+PDB_CON_SEQRES_Y_HUECO = (
+    "HEADER    TEST\n"
+    "SEQRES   1 A    6  MET PRO TRP THR TYR ASN\n"
+    "ATOM      1  N   MET A   1      11.104  13.207   2.100  1.00 20.00           N\n"
+    "ATOM      2  CA  MET A   1      12.560  13.207   2.100  1.00 20.00           C\n"
+    "ATOM      3  N   PRO A   2      13.100  14.600   2.100  1.00 20.00           N\n"
+    "ATOM      4  CA  PRO A   2      13.600  15.100   2.100  1.00 20.00           C\n"
+    # Residuos 3 y 4 del SEQRES (TRP, THR) no tienen registro ATOM: hueco de densidad.
+    # TYR/ASN (unicos en la secuencia, sin ambiguedad de alineamiento) si estan resueltos.
+    "ATOM      5  N   TYR A   5      16.500  16.700   2.100  1.00 20.00           N\n"
+    "ATOM      6  CA  TYR A   5      17.000  17.700   2.100  1.00 20.00           C\n"
+    "ATOM      7  N   ASN A   6      18.500  18.700   2.100  1.00 20.00           N\n"
+    "ATOM      8  CA  ASN A   6      19.000  19.700   2.100  1.00 20.00           C\n"
+    "END\n"
+)
+
+
+def test_label_seq_id_no_coincide_con_fasta_position_cuando_hay_hueco_real(tmp_path):
+    """Verificacion end-to-end (hallazgo BoltzGen/Fase 0):
+
+    fasta_position es secuencial sobre ATMSEQ (solo residuos con
+    coordenadas, sin huecos). label_seq_id es secuencial sobre la entidad
+    completa declarada en SEQRES (incluye los residuos sin coordenadas) --
+    deben DIVERGIR exactamente en el tamano del hueco. Reproduce en
+    miniatura lo observado en 7OH1/7BEP del panel de validacion real.
+    """
+    pdb_path = _write(tmp_path, "hueco.pdb", PDB_CON_SEQRES_Y_HUECO)
+    record = parse_structure(pdb_path, tmp_path / "out")
+
+    mapping = record.position_mapping
+    assert mapping["fasta_position"].tolist() == [1, 2, 3, 4]  # ATMSEQ: MET,PRO,TYR,ASN sin huecos
+    assert mapping["pdb_seqid"].tolist() == [1, 2, 5, 6]  # auth_seqid: hueco real 2->5
+    assert mapping["label_seq_id"].tolist() == [1, 2, 5, 6]  # label_seq_id sigue al SEQRES, no a fasta_position
 
 
 def test_multi_cadena_estrategia_longest_elige_la_mas_larga(tmp_path):

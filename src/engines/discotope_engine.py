@@ -55,6 +55,9 @@ logger = setup_logger(__name__)
 ACCESSION_COLUMN = "Accession"
 RESIDUE_COLUMN = "Residue"
 SCORE_COLUMN = "DiscoTope-3.0 calibrated score"
+RSA_COLUMN = "DiscoTope-3.0 rsa"
+PLDDT_COLUMN = "DiscoTope-3.0 pLDDT"
+ALPHAFOLD_STRUC_FLAG_COLUMN = "DiscoTope-3.0 alphafold_struc_flag"
 
 # Columnas confirmadas EMPIRICAMENTE corriendo la instalacion real (el CSV
 # real trae mas columnas que las documentadas explicitamente en el README:
@@ -66,6 +69,35 @@ SCORE_COLUMN = "DiscoTope-3.0 calibrated score"
 # DiscoTope) y 'pdb' se ignoran (ver ADR de reconciliacion de accession).
 _RAW_RESIDUE_COLUMN = "residue"
 _RAW_SCORE_COLUMN = "calibrated_score"
+
+# Retenidas para Proyecto 3/BoltzGen (ver ADR "Por que se retienen
+# rsa/pLDDTs/alphafold_struc_flag" mas abajo). OPCIONALES a proposito: ningun
+# consumidor de Project 1 las requeria hasta ahora (por eso se descartaban),
+# asi que si una version futura de DiscoTope-3.0 deja de emitirlas, el
+# pipeline de Project 1 no debe romperse -- se completan con NA, nunca con un
+# KeyError.
+_RAW_RSA_COLUMN = "rsa"
+_RAW_PLDDT_COLUMN = "pLDDTs"
+_RAW_ALPHAFOLD_STRUC_FLAG_COLUMN = "alphafold_struc_flag"
+
+# ADR -- por que se retienen rsa/pLDDTs/alphafold_struc_flag
+# ----------------------------------------------------------------
+# Encontradas auditando el input de Proyecto 3 (BoltzGen): DiscoTope-3.0 ya
+# las calcula, pero hasta ahora se descartaban en '_load_raw_scores' junto
+# con el resto de columnas no usadas. Ninguna influye en 'calibrated_score'
+# como filtro adicional en Project 1 -- se retienen como metadata pura,
+# mismo patron no-decisorio que 'tmbed_masked'/'glycosylated'.
+# - 'rsa' (accesibilidad solvente relativa, por residuo): distinto de
+#   'tmbed_masked' -- TMbed detecta "esta insertado en membrana/es
+#   intracelular" (contexto de dominio), 'rsa' detecta "esta enterrado
+#   dentro del propio plegamiento del dominio soluble" (fenomeno distinto,
+#   un motor de antigenicidad puede puntuar alto una ventana secuencialmente
+#   plausible que en 3D no es accesible).
+# - 'pLDDTs'/'alphafold_struc_flag' (confianza por residuo de la estructura,
+#   y si el input es un modelo predicho -AlphaFold- o experimental):
+#   relevante para dianas futuras de Proyecto 3 sin estructura experimental
+#   resuelta -- disenar contra una ventana de baja confianza estructural es
+#   construir sobre una hipotesis 3D poco fiable.
 
 # ADR -- por que 'calibrated_score' y no 'DiscoTope-3.0_score'
 # ----------------------------------------------------------------
@@ -256,7 +288,22 @@ class DiscoTopeEngine(BaseEngine[str, pd.DataFrame]):
 
         df = df.rename(columns={_RAW_RESIDUE_COLUMN: RESIDUE_COLUMN, _RAW_SCORE_COLUMN: SCORE_COLUMN})
         df.insert(0, ACCESSION_COLUMN, accession)
-        return df[[ACCESSION_COLUMN, RESIDUE_COLUMN, SCORE_COLUMN]]
+
+        # rsa/pLDDTs/alphafold_struc_flag son OPCIONALES (ver ADR arriba): si la
+        # instalacion real de DiscoTope-3.0 no las emite, se completan con NA en
+        # vez de fallar -- ningun consumidor existente de Project 1 las requeria
+        # antes de esto, asi que no deben convertirse en un nuevo punto de fallo.
+        for raw_col, public_col in (
+            (_RAW_RSA_COLUMN, RSA_COLUMN),
+            (_RAW_PLDDT_COLUMN, PLDDT_COLUMN),
+            (_RAW_ALPHAFOLD_STRUC_FLAG_COLUMN, ALPHAFOLD_STRUC_FLAG_COLUMN),
+        ):
+            df[public_col] = df[raw_col] if raw_col in df.columns else pd.NA
+
+        return df[[
+            ACCESSION_COLUMN, RESIDUE_COLUMN, SCORE_COLUMN,
+            RSA_COLUMN, PLDDT_COLUMN, ALPHAFOLD_STRUC_FLAG_COLUMN,
+        ]]
 
 
 def extract_epitopes(

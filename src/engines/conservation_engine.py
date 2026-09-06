@@ -1,7 +1,6 @@
 """Fase 4d (OPCIONAL): amplitud de conservacion de secuencia contra un panel de referencia local.
 
-Motivo (feedback de Carmen Elena Gomez, group leader Poxvirus and Vaccines,
-2026-07-30): un epitopo poco conservado entre cepas/variantes de un mismo
+Motivo: un epitopo poco conservado entre cepas/variantes de un mismo
 patogeno protege solo contra la variante exacta usada para diseñarlo. Priorizar
 epitopos conservados amplia la cobertura (un solo constructo protege contra mas
 variantes circulantes) y presiona al patogeno de forma mas dura (las regiones
@@ -41,7 +40,7 @@ Puramente informativo, igual que Fase 6 (bnAb): NO descarta ningun candidato,
 solo lo anota (``conservation_pct`` en la metadata del constructo, Fase 7) --
 mismo criterio ya aplicado a N-glicosilacion (ver
 ``src.engines.construct_assembly``): la decision de priorizar conservacion
-queda para una sesion posterior, una vez resuelto tambien el punto de
+queda para trabajo futuro, una vez resuelto tambien el punto de
 "regiones de interes" (Fase 7 no compone hoy multiples señales en un unico
 ranking).
 
@@ -49,14 +48,77 @@ Reutiliza la ejecucion de BLASTp por lotes (``_select_task``/
 ``_select_evalue``/``_run_blastp_batch``) de ``blast_engine.py`` tal cual, sin
 duplicarla -- misma mecanica de eleccion dinamica de task/E-value por
 longitud de peptido que ya usa Fase 4.
+
+ADR -- deteccion del "acantilado de cobertura terminal" (peptidos con cola no
+nativa de cristalizacion/clonaje)
+----------------------------------------------------------------------
+Caso real que motiva este mecanismo (verificado sobre el panel de 17
+estructuras, PDB 4XAW, gp41 MPER): el candidato B-cell cristalizado incluye
+una cola no nativa de 2-3 residuos (`KKK`) añadida para la cristalizacion.
+Al consultarlo tal cual contra el panel de conservacion, el filtro de
+cobertura minima de query (``min_query_coverage``) descarta casi todos los
+hits reales (la cola nunca alinea), hundiendo la amplitud medida a 0.23%
+pese a que el motivo nativo (sin la cola) esta conservado en 60.09% del
+panel -- una cifra completamente distinta, no un margen de error.
+
+Se investigo, y se descarto, resolver esto leyendo la cabecera de deposito
+del PDB (flags ``ENGINEERED``/``SYNTHETIC``, o ausencia de referencia
+UniProt): verificado sobre el panel completo que ``ENGINEERED`` no
+discrimina (15 de 17 estructuras lo llevan, incluidas cadenas 100% nativas)
+y ``SYNTHETIC`` da un falso positivo real en este mismo panel (8FDD:
+sintetizado quimicamente, pero 100% nativo en secuencia) -- "sintetizado"
+no equivale a "contiene residuos no nativos", y ademas ninguna de las 2
+rutas de parseo disponibles (PDB legacy vs. mmCIF moderno) expone estos
+flags con la misma consistencia. Comparar contra el UniProt canonico de la
+proteina de origen fallaria justo en el caso que motiva esto (4XAW no tiene
+referencia UniProt en su cabecera) y añadiria una dependencia de red a un
+pipeline deliberadamente 100% local.
+
+En vez de depender de metadatos de deposito (inexistentes o poco fiables),
+se detecta la señal directamente en los propios hits de BLASTp de esta
+fase: para cada candidato con suficientes hits (``_TERMINAL_TRIM_MIN_HITS``)
+por encima de ``identity_threshold``, se calcula la cobertura fraccional
+por POSICION de query (que fraccion de esos hits alinea cada residuo). Un
+residuo no nativo tipicamente cristalizado como cola muestra un acantilado
+real: cobertura ~100% en el interior y ~0-1% en un tramo contiguo de >=2
+residuos en un extremo -- a diferencia de un candidato nativo (verificado
+con los 2 candidatos de control de gp120/3NGB en el mismo panel: cobertura
+uniformemente alta o con caida gradual, nunca un acantilado terminal
+limpio). Cuando se detecta, se anota (``conservation_query_trim_start``/
+``_end``, 1-indexados sobre ``sequence``) y se re-consulta BLASTp SOLO ese
+sub-rango para obtener ``conservation_pct_native_core`` -- verificado sobre
+4XAW: recupera el 60.09% real, sin tocar ``conservation_pct`` (que sigue
+siendo el valor honesto sobre el candidato tal cual, informativo, no un
+reemplazo).
+
+Mecanicamente, esto SOLO tiene sentido para candidatos B-CELL: son los
+unicos que pueden provenir de un constructo cristalizado con una cola
+añadida real. Los candidatos HTL/CTL son ventanas de barrido de secuencia
+sobre la proteina completa (Fase 5/5b) -- nunca un constructo de laboratorio
+-- asi que cualquier "acantilado" en uno de ellos es, por construccion,
+variabilidad de conservacion real en el borde arbitrario de esa ventana, no
+una cola no nativa. Verificado exhaustivamente sobre los 62 candidatos
+B-cell/HTL/CTL reales de conservacion del panel de validacion (3NGB, 4XAW,
+los 2 unicos antigenos con panel LANL/CATNAP disponible): activar la
+deteccion tambien en HTL/CTL genera 4 falsos positivos reales, uno por
+candidato (p. ej. ``ENFNMWKNNMVEQMQ``, un HTL de 15aa donde solo los 2
+residuos iniciales caen a baja cobertura -- variabilidad real de gp120, no
+un artefacto). Por eso ``run_conservation_filter`` expone
+``detect_terminal_trim`` como parametro (``False`` por defecto) y
+``pipeline.py`` (Fase 6b) lo activa unicamente para el bloque B-cell.
+
+Puramente informativo, igual que el resto de la fase: nunca
+descarta ni recorta el candidato en si, solo expone la cifra corregida y un
+aviso en el log para que el investigador decida.
 """
 
 import hashlib
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Tuple
+from typing import Dict, List, Optional, Tuple
 
+import numpy as np
 import pandas as pd
 
 from src.config.settings import Settings
@@ -66,6 +128,17 @@ from src.utils.logger_config import setup_logger
 from src.utils.table_format import Column, print_fixed_width_table
 
 logger = setup_logger(__name__)
+
+# Umbrales del acantilado de cobertura terminal (ver ADR del modulo). No son
+# parametros de produccion que calibrar por panel -- describen la FORMA de un
+# artefacto de cola de cristalizacion/clonaje (interior ~solido, extremo
+# ~vacio), verificados sobre el panel de 17 estructuras (caso 4XAW y 2
+# controles negativos de 3NGB).
+_TERMINAL_TRIM_LOW_COVERAGE = 0.10
+_TERMINAL_TRIM_HIGH_COVERAGE = 0.80
+_TERMINAL_TRIM_MIN_RUN = 2
+_TERMINAL_TRIM_MAX_RUN = 5
+_TERMINAL_TRIM_MIN_HITS = 10
 
 
 def _panel_cache_dir(panel_fasta: Path) -> Path:
@@ -185,11 +258,114 @@ def _panel_breadth_by_query(
     return qualifying.groupby("qseqid")["sseqid"].nunique()
 
 
+def _query_position_coverage(group: pd.DataFrame, length: int) -> np.ndarray:
+    """Cobertura fraccional (0-1) por posicion 0-indexada de un query, sobre los hits de ``group``.
+
+    Args:
+        group: Subconjunto de ``hits`` (formato ``-outfmt 6``) de UN solo
+            query, ya filtrado por ``pident >= identity_threshold``.
+        length: Longitud (aa) del query.
+    """
+    coverage = np.zeros(length, dtype=float)
+    for qstart, qend in zip(group["qstart"], group["qend"]):
+        start0 = max(int(qstart) - 1, 0)
+        end0 = min(int(qend), length)
+        coverage[start0:end0] += 1.0
+    return coverage / len(group)
+
+
+def _detect_terminal_trim(coverage_frac: np.ndarray) -> Optional[Tuple[int, int]]:
+    """Nucleo (start, end) 0-indexado inclusive soportado por el panel, o ``None`` si no hay acantilado.
+
+    Ver ADR del modulo. Requiere un tramo contiguo, en UN extremo, de entre
+    ``_TERMINAL_TRIM_MIN_RUN`` y ``_TERMINAL_TRIM_MAX_RUN`` residuos con
+    cobertura por debajo de ``_TERMINAL_TRIM_LOW_COVERAGE``, y que el resto
+    del query (nucleo) tenga cobertura uniformemente por encima de
+    ``_TERMINAL_TRIM_HIGH_COVERAGE``.
+
+    El tope superior (``_TERMINAL_TRIM_MAX_RUN``) es la correccion a un falso
+    positivo real encontrado sobre el propio panel de validacion (candidato
+    nativo 312-324 de gp120/3NGB, region hipervariable del CD4bs): un tramo
+    de 5 residuos casi universales (ancla corta real) seguido de 8 residuos
+    con cobertura uniformemente baja (~5-6%, NO cercana a 0%) parece
+    superficialmente un acantilado, pero es variabilidad biologica real de
+    una region hipervariable -- la mayoria del peptido, no una cola breve --
+    no una cola no nativa de cristalizacion/clonaje (que en este mismo panel
+    mide 2 residuos, caso 4XAW). Un tramo de baja cobertura mas largo que
+    ``_TERMINAL_TRIM_MAX_RUN`` se trata como señal biologica real y NO se
+    recorta (ese extremo del query se mantiene, en vez de forzar un nucleo
+    corto y descartar la mayor parte del candidato).
+    """
+    n = len(coverage_frac)
+    lead = 0
+    while lead < n and coverage_frac[lead] < _TERMINAL_TRIM_LOW_COVERAGE:
+        lead += 1
+    trail = 0
+    while trail < n - lead and coverage_frac[n - 1 - trail] < _TERMINAL_TRIM_LOW_COVERAGE:
+        trail += 1
+
+    lead_is_tag = _TERMINAL_TRIM_MIN_RUN <= lead <= _TERMINAL_TRIM_MAX_RUN
+    trail_is_tag = _TERMINAL_TRIM_MIN_RUN <= trail <= _TERMINAL_TRIM_MAX_RUN
+    if not lead_is_tag and not trail_is_tag:
+        return None
+
+    core_start = lead if lead_is_tag else 0
+    core_end = (n - 1 - trail) if trail_is_tag else n - 1
+    if core_start > core_end:
+        return None
+    if coverage_frac[core_start : core_end + 1].min() < _TERMINAL_TRIM_HIGH_COVERAGE:
+        return None
+    return core_start, core_end
+
+
+def _native_core_conservation(
+    result: pd.DataFrame,
+    trim_by_index: Dict[int, Tuple[int, int]],
+    db_prefix: Path,
+    n_panel_total: int,
+    identity_threshold: float,
+    min_query_coverage: float,
+) -> Dict[int, float]:
+    """Re-consulta BLASTp SOLO el sub-rango nativo detectado para cada candidato recortado.
+
+    Segunda pasada de BLASTp deliberadamente separada de la principal (mismo
+    patron que el re-chequeo de autotolerancia sobre ``sequence_f5`` en
+    ``pipeline.py``): son consultas distintas (subsecuencia, no la secuencia
+    completa del candidato), no tiene sentido mezclarlas en el mismo lote.
+    """
+    trimmed_lengths = pd.Series(
+        {idx: end - start + 1 for idx, (start, end) in trim_by_index.items()}
+    )
+    tasks = trimmed_lengths.apply(_select_task)
+    evalues = trimmed_lengths.apply(_select_evalue)
+
+    hits_frames = []
+    tiers = pd.DataFrame({"task": tasks, "evalue": evalues}).drop_duplicates()
+    for task, evalue in tiers.itertuples(index=False):
+        tier_idx = trimmed_lengths.index[(tasks == task) & (evalues == evalue)]
+        records = [
+            (idx, result.loc[idx, "sequence"][trim_by_index[idx][0] : trim_by_index[idx][1] + 1])
+            for idx in tier_idx
+        ]
+        hits_frames.append(_run_blastp_batch(records, task, db_prefix, evalue, max_target_seqs=n_panel_total))
+    non_empty_frames = [df for df in hits_frames if not df.empty]
+    trimmed_hits = (
+        pd.concat(non_empty_frames, ignore_index=True) if non_empty_frames else pd.DataFrame(columns=_OUTFMT6_COLUMNS)
+    )
+
+    breadth = _panel_breadth_by_query(trimmed_hits, trimmed_lengths, identity_threshold, min_query_coverage)
+    return {
+        idx: round(int(breadth.get(f"peptide_{idx}", 0)) / n_panel_total * 100.0, 2)
+        for idx in trim_by_index
+    }
+
+
 def run_conservation_filter(
     candidates_df: pd.DataFrame,
     panel_fasta_path: str,
     identity_threshold: float = Settings.CONSERVATION_IDENTITY_THRESHOLD,
     min_query_coverage: float = Settings.BLAST_MIN_QUERY_COVERAGE,
+    detect_terminal_trim: bool = False,
 ) -> pd.DataFrame:
     """Ejecuta BLASTp local de ``candidates_df`` contra el panel y anota amplitud de conservacion.
 
@@ -211,12 +387,32 @@ def run_conservation_filter(
         min_query_coverage: Fraccion minima (0-1) de cobertura de consulta
             para que un hit cuente (default ``Settings.BLAST_MIN_QUERY_COVERAGE``,
             mismo criterio que Fase 4).
+        detect_terminal_trim: Activa la deteccion del acantilado de
+            cobertura terminal (ver ADR del modulo). ``False`` por defecto:
+            SOLO tiene sentido mecanistico para candidatos B-cell derivados
+            de una estructura PDB (unicos que pueden llevar una cola no
+            nativa de cristalizacion/clonaje) -- verificado exhaustivamente
+            sobre los 62 candidatos B-cell/HTL/CTL reales de conservacion
+            del panel de validacion (3NGB, 4XAW): activarlo para HTL/CTL
+            genera 4 falsos positivos reales, uno por candidato (ventanas de
+            barrido de secuencia sobre la proteina completa, nunca un
+            constructo cristalizado -- cualquier "acantilado" ahi es
+            variabilidad de secuencia real en el borde arbitrario de esa
+            ventana, no una cola no nativa). El llamador (``pipeline.py``,
+            Fase 6b) lo activa unicamente para el bloque B-cell.
 
     Returns:
         Copia de ``candidates_df`` con 3 columnas nuevas: ``n_panel_matches``
         (secuencias distintas del panel matcheadas), ``n_panel_total``
         (tamaño del panel) y ``conservation_pct`` (``n_panel_matches /
-        n_panel_total * 100``, redondeado a 2 decimales).
+        n_panel_total * 100``, redondeado a 2 decimales); mas 3 columnas
+        informativas casi siempre vacias (``pd.NA``/``NaN``), pobladas solo
+        cuando se detecta un acantilado de cobertura terminal (ver ADR del
+        modulo): ``conservation_query_trim_start``/``_end`` (1-indexados
+        sobre ``sequence``, el sub-rango realmente soportado por el panel) y
+        ``conservation_pct_native_core`` (conservacion recalculada SOLO
+        sobre ese sub-rango). ``conservation_pct`` nunca se modifica por
+        esto -- sigue siendo el valor honesto sobre el candidato completo.
 
     Raises:
         BlastExecutionError: Ver ``ensure_panel_db`` y
@@ -241,7 +437,14 @@ def run_conservation_filter(
     for task, evalue in tiers.itertuples(index=False):
         tier_mask = (tasks == task) & (evalues == evalue)
         records = list(zip(result.index[tier_mask], result.loc[tier_mask, "sequence"]))
-        hits_frames.append(_run_blastp_batch(records, task, db_prefix, evalue))
+        # A diferencia de Fase 4 (solo importa la identidad MAXIMA), esta
+        # fase cuenta la amplitud completa -- TODAS las secuencias del panel
+        # que pasan el umbral, no solo la mejor -- asi que el limite por
+        # defecto de BLAST (500 hits/query) truncaria en silencio el conteo
+        # de cualquier candidato conservado en mas del 17% del panel (ver
+        # docstring de ``blast_engine._run_blastp_batch``). Se pide
+        # explicitamente cubrir el panel entero.
+        hits_frames.append(_run_blastp_batch(records, task, db_prefix, evalue, max_target_seqs=n_panel_total))
     non_empty_frames = [df for df in hits_frames if not df.empty]
     hits = pd.concat(non_empty_frames, ignore_index=True) if non_empty_frames else pd.DataFrame(columns=_OUTFMT6_COLUMNS)
 
@@ -250,6 +453,48 @@ def run_conservation_filter(
     result["n_panel_matches"] = [int(breadth.get(f"peptide_{idx}", 0)) for idx in result.index]
     result["n_panel_total"] = n_panel_total
     result["conservation_pct"] = (result["n_panel_matches"] / n_panel_total * 100.0).round(2)
+
+    # Deteccion del acantilado de cobertura terminal (ver ADR del modulo y
+    # docstring de ``detect_terminal_trim``): SOLO si el llamador la activa
+    # explicitamente (candidatos B-cell), sobre los hits que ya pasan
+    # identity_threshold, ANTES del filtro de cobertura minima de query (que
+    # es precisamente lo que el acantilado explica que se pierda).
+    trim_by_index: Dict[int, Tuple[int, int]] = {}
+    if detect_terminal_trim and not hits.empty:
+        pident_hits = hits[hits["pident"] >= identity_threshold]
+        if not pident_hits.empty:
+            hit_query_idx = pident_hits["qseqid"].str.replace("peptide_", "", regex=False).astype(int)
+            for idx, group in pident_hits.groupby(hit_query_idx):
+                if len(group) < _TERMINAL_TRIM_MIN_HITS or idx not in lengths.index:
+                    continue
+                length = int(lengths.loc[idx])
+                coverage_frac = _query_position_coverage(group, length)
+                trim = _detect_terminal_trim(coverage_frac)
+                if trim is not None and trim != (0, length - 1):
+                    trim_by_index[idx] = trim
+
+    result["conservation_query_trim_start"] = pd.Series(dtype="Int64")
+    result["conservation_query_trim_end"] = pd.Series(dtype="Int64")
+    result["conservation_pct_native_core"] = pd.Series(dtype="float64")
+
+    if trim_by_index:
+        native_core_pct = _native_core_conservation(
+            result, trim_by_index, db_prefix, n_panel_total, identity_threshold, min_query_coverage
+        )
+        for idx, (start0, end0) in trim_by_index.items():
+            result.loc[idx, "conservation_query_trim_start"] = start0 + 1
+            result.loc[idx, "conservation_query_trim_end"] = end0 + 1
+            result.loc[idx, "conservation_pct_native_core"] = native_core_pct[idx]
+            logger.warning(
+                "Candidato '%s' (fila %d): acantilado de cobertura terminal detectado en el panel de "
+                "conservacion -- solo los residuos %d-%d (de %d) estan realmente soportados. "
+                "conservation_pct=%.2f%% (candidato completo) vs. conservation_pct_native_core=%.2f%% "
+                "(sub-rango soportado). Posible cola no nativa de cristalizacion/clonaje; revisar antes "
+                "de reportar la cifra sobre el candidato completo.",
+                result.loc[idx, "sequence"], idx, start0 + 1, end0 + 1, len(result.loc[idx, "sequence"]),
+                result.loc[idx, "conservation_pct"], native_core_pct[idx],
+            )
+
     return result
 
 
@@ -291,3 +536,13 @@ def print_conservation_report(conservation_df: pd.DataFrame) -> None:
         print(f"({n_omitted} candidato(s) con 0% de conservacion omitido(s) de la tabla -- ver CSV para el detalle completo.)")
 
     print(f"\nPanel de referencia: {n_panel_total} secuencia(s). Conservacion media: {mean_pct:.2f}%.")
+
+    if "conservation_pct_native_core" in conservation_df.columns:
+        trimmed = conservation_df[conservation_df["conservation_pct_native_core"].notna()]
+        for row in trimmed.itertuples():
+            print(
+                f"  [AVISO] '{row.sequence}': acantilado de cobertura terminal detectado -- solo "
+                f"{row.conservation_query_trim_start}-{row.conservation_query_trim_end} esta soportado "
+                f"por el panel. conservation_pct={row.conservation_pct:.2f}% (candidato completo) vs. "
+                f"conservation_pct_native_core={row.conservation_pct_native_core:.2f}% (sub-rango nativo)."
+            )

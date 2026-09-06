@@ -399,7 +399,7 @@ class Settings:
     # de 'src.engines.population_coverage' para el porque y la formula (Bui et
     # al. 2006, misma metodologia base que la herramienta Population Coverage
     # del IEDB). Default: dataset REAL bundleado (AFND via
-    # github.com/slowkow/allelefrequencies, fetched 2026-08-02), promedio
+    # github.com/slowkow/allelefrequencies), promedio
     # mundial ponderado por tamano de muestra, no estratificado por region/
     # etnia -- simplificacion deliberada y documentada, no el calculo completo
     # de IEDB. Vacio ("") desactiva la anotacion sin romper nada (mismo patron
@@ -431,10 +431,10 @@ class Settings:
     # aminoacidos, sin homologia real); 2 = hibrido RF+BLAST+MERCI (compara
     # contra la base real de alergenos IgE y motivos IgE documentados, AUC
     # 0.98/MCC 0.85 en el paper original, Sharma et al. 2021, PMID 33201237).
-    # Por defecto 2 desde el 2026-08-14: se verifico que el modo ML puro
+    # Por defecto 2: se verifico que el modo ML puro
     # marca "Allergen" candidatos (ej. repeticiones NPNV de CSP) sin ninguna
     # homologia ni motivo IgE real detras -- artefacto de composicion, no
-    # biologia (ver vault, Decisiones/2026-08-14-investigacion-6b5m-...).
+    # biologia.
     ALGPRED_MODEL: int = _env_int("ALGPRED_MODEL", 2)
 
     # --- Cleavage MHC-I/II (NetCleave LOCAL, reentrenado con datos propios) ---

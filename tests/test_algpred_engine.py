@@ -8,7 +8,7 @@ binarios/instalaciones externas en un test unitario). ``_resolve_binary`` se sat
 apuntando ``Settings.ALGPRED_PYTHON_BIN``/``ALGPRED_SCRIPT_PATH`` a archivos que ya existen
 en el repo (su contenido no importa, solo que ``Path.is_file()`` de verdadero).
 
-``Settings.ALGPRED_MODEL`` por defecto es 2 (hibrido) desde 2026-08-14, asi que las filas
+``Settings.ALGPRED_MODEL`` por defecto es 2 (hibrido), asi que las filas
 sinteticas de la mayoria de estos tests usan el esquema de salida del modelo 2
 (``Subject,ML Score,MERCI Score,BLAST Score,Hybrid Score,Prediction``, sin columna
 ``Sequence`` -- la secuencia se reconstruye por posicion). Hay tests dedicados para el
@@ -110,8 +110,8 @@ def test_batch_de_una_sola_secuencia_duplica_y_descarta_fila_extra(monkeypatch, 
 
 
 def test_modelo_hibrido_expone_desglose_de_evidencia(monkeypatch, tmp_path):
-    # Caso real que motivo el cambio de default (ver investigacion 6B5M,
-    # 2026-08-14): un candidato "Allergen" con evidencia BLAST/MERCI real
+    # Caso real que motivo el cambio de default (ver investigacion 6B5M):
+    # un candidato "Allergen" con evidencia BLAST/MERCI real
     # debe distinguirse de uno que solo lo es por el RF de composicion.
     rows = _hybrid_rows(
         subjects=["candidato_0", "candidato_1"],

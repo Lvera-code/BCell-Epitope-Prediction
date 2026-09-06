@@ -24,7 +24,7 @@ suficiente para inferir topologia completa (incluida una proteina
 enteramente citoplasmatica, sin TM ni peptido senal, como PSMD7) sin
 sumar ninguna herramienta de localizacion subcelular aparte.
 
-DECISION 2026-08-13: esta fase paso de EXCLUIR candidatos a solo
+Esta fase paso de EXCLUIR candidatos a solo
 ANOTARLOS (misma logica que Fase 4c/6/6c). Motivo: la validacion de
 publicacion sobre 17 estructuras PDB reales encontro que TMbed, corriendo
 sobre fragmentos/dominios aislados (sin la proteina completa ni contexto
@@ -36,7 +36,7 @@ corroborados de forma independiente en literatura. Excluir automatica-
 mente en base a ese veredicto descartaba senal real. La decision de
 excluir un candidato por su topologia queda ahora para una revision
 informada (o una etapa posterior), no automatica -- mismo principio ya
-aplicado a la glicosilacion en Fase 4c desde 2026-08-01.
+aplicado a la glicosilacion en Fase 4c.
 """
 
 import subprocess
@@ -60,7 +60,7 @@ _REGIONS_COLUMNS = ["accession", "start", "end", "type"]
 # citoplasmatico) se marca igual que TM/senal -- en principio no accesible
 # a anticuerpos. Solo 'o' (no-membrana, lado extracelular) se deja sin
 # marcar: es la unica clase que se presume accesible al solvente en la
-# proteina madura. Desde 2026-08-13 estas marcas ya NO excluyen candidatos
+# proteina madura. Estas marcas ya NO excluyen candidatos
 # (ver docstring del modulo) -- una accession sin TM ni peptido senal cuya
 # secuencia sea 100% 'i' (ej. PSMD7) queda anotada de punta a punta como
 # 'intracellular', pero sus candidatos siguen llegando a Fase 4 en adelante.
@@ -223,7 +223,7 @@ def predict_tm_signal_regions(
 def annotate_overlapping_regions(union_df: pd.DataFrame, regions_df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """Anota en ``union_df`` las filas cuyo rango ``[start, end]`` se solapa con una region TMbed de la misma accession.
 
-    Hasta 2026-08-13 esta funcion se llamaba ``filter_overlapping_regions``
+    Esta funcion se llamaba antes ``filter_overlapping_regions``
     y DESCARTABA esas filas. Ya no: devuelve ``union_df`` completo (misma
     cantidad de filas, mismo orden), con dos columnas nuevas para que la
     exclusion (si se quiere) sea una decision informada posterior, no
@@ -304,7 +304,7 @@ def print_masked_regions_report(overlap_df: pd.DataFrame) -> None:
     ``overlap_df`` es la salida de :func:`annotate_overlapping_regions`: una
     fila por cada (region marcada, region TMbed con la que se solapo) --
     ``tipo`` explica el motivo puntual de la marca. Estas regiones YA NO se
-    excluyen (ver docstring del modulo, decision 2026-08-13) -- este reporte
+    excluyen (ver docstring del modulo) -- este reporte
     es solo informativo.
     """
     if overlap_df.empty:

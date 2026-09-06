@@ -49,7 +49,7 @@ constructo manejable):
 
 * B-cell: de ``safe_df`` (Fase 4 'Segura'), TODOS los candidatos entran al
   ranking, incluidos los marcados 'Allergen' por AlgPred2 (Fase 4b).
-  DECISION 2026-08-13: hasta entonces se descartaban aqui -- se revirtio
+  Se descartaban aqui antes; se revirtio
   porque el mismo veredicto de AlgPred2 resulto no corresponder con datos
   clinicos/poblacionales reales en la mayoria de los 9 candidatos
   evaluados de la validacion de publicacion (7 de 9 marcados 'Allergen'
@@ -64,7 +64,7 @@ constructo manejable):
   anota con su veredicto de alergenicidad (columna ``allergen``, visible
   en ``source_score_note`` del constructo final) para que la decision
   quede informada, no automatica. La N-glicosilacion (StackGlyEmbed,
-  Fase 4c) tampoco excluye candidatos, decision mas antigua (2026-08-01):
+  Fase 4c) tampoco excluye candidatos:
   existen anticuerpos descritos que reconocen especificamente regiones
   glicosiladas (p. ej. epitopos de envoltura de HIV), asi que descartar
   por glicosilacion perdia candidatos biologicamente validos sin una
@@ -164,10 +164,9 @@ secuencia YA extendida con AlgPred2/StackGlyEmbed de verdad (es contenido
 nuevo, Fase 4b/4c nunca lo vio) y anota el veredicto de alergenicidad de
 la version extendida en la columna ``allergen`` -- el padding SIEMPRE se
 aplica, ya no se descarta si la version extendida sale 'Allergen'
-(DECISION 2026-08-13, revierte la invariante previa: alergenicidad ya no
+(revierte la invariante previa: alergenicidad ya no
 excluye nada en B-cell, ver parrafo de mas arriba). La glicosilacion,
-igual que antes, solo se re-anota (nunca excluyo en B-cell, ver decision
-de 2026-08-01). Aplica solo a candidatos <15 aa: los que ya miden 15-20 aa
+igual que antes, solo se re-anota (nunca excluyo en B-cell). Aplica solo a candidatos <15 aa: los que ya miden 15-20 aa
 no se tocan (no hay evidencia de que les falte contexto), y los que
 superan 20 aa van al recorte de arriba, nunca a padding (rangos disjuntos
 por construccion).
@@ -392,7 +391,7 @@ def _pad_short_bcell_candidates(
        (``predict_allergenicity``) y StackGlyEmbed (``predict_nglycosylation``)
        -- unica excepcion de este modulo a "sin subprocess real", ver
        docstring del modulo.
-    3. El padding SIEMPRE se aplica (DECISION 2026-08-13): el veredicto de
+    3. El padding SIEMPRE se aplica: el veredicto de
        alergenicidad de la version extendida se anota en ``allergen``, igual
        que la glicosilacion se anota en ``glycosylated`` -- ninguna de las
        dos excluye nada en B-cell.
@@ -493,7 +492,7 @@ def _select_bcell_candidates(
 ) -> pd.DataFrame:
     """Anota ``safe_df`` con alergenicidad/glicosilacion/conservacion/region-documentada (sin excluir), rankea por consenso entre motores, top-N.
 
-    DECISION 2026-08-13: ya no filtra por 'Non-Allergen' -- todos los
+    Ya no filtra por 'Non-Allergen' -- todos los
     candidatos de ``safe_df`` entran al ranking, anotados con su veredicto
     de AlgPred2 en la columna ``allergen`` (``True`` = 'Allergen'). Ver el
     parrafo de alergenicidad en el docstring del modulo para el porque.
@@ -597,25 +596,70 @@ def _glycosylated_regions(safe_df: pd.DataFrame, stackgly_df: pd.DataFrame) -> p
     return merged[["accession", "start", "end"]]
 
 
-def _overlaps_glyco_region(row, glyco_regions: pd.DataFrame) -> bool:
-    """Indica si ``row`` (con ``accession``/``start``/``end``) solapa algun sequon glicosilado.
+def _overlaps_any_region(row, regions: pd.DataFrame) -> bool:
+    """Indica si ``row`` (con ``accession``/``start``/``end``) solapa alguna fila de ``regions``.
 
     Mismo mecanismo de solapamiento por posicion que
     ``tmbed_engine.discard_overlapping_regions`` usa para enmascarar TM/senal
-    en Fase 3b -- acá se aplica a nivel de candidato individual HTL/CTL en vez
-    de a la union de Fase 3.
+    en Fase 3b, generalizado para cualquier conjunto de regiones nativas
+    (sequones glicosilados -- ver :func:`_overlaps_glyco_region` --, o
+    bloques ya seleccionados de otra clase -- ver
+    :func:`_deduplicate_cross_class`).
     """
-    if glyco_regions.empty:
+    if regions.empty:
         return False
-    acc_regions = glyco_regions[glyco_regions["accession"] == row["accession"]]
+    acc_regions = regions[regions["accession"] == row["accession"]]
     if acc_regions.empty:
         return False
     return bool(((acc_regions["start"] <= row["end"]) & (acc_regions["end"] >= row["start"])).any())
 
 
+def _overlaps_glyco_region(row, glyco_regions: pd.DataFrame) -> bool:
+    """Indica si ``row`` (con ``accession``/``start``/``end``) solapa algun sequon glicosilado.
+
+    Aplicado a nivel de candidato individual HTL/CTL (ver
+    :func:`_overlaps_any_region` para el mecanismo generico).
+    """
+    return _overlaps_any_region(row, glyco_regions)
+
+
+def _deduplicate_cross_class(candidates: pd.DataFrame, already_selected: pd.DataFrame) -> pd.DataFrame:
+    """Excluye de ``candidates`` cualquier fila que solape (misma accession, mismo
+    rango nativo ``start``-``end``) un bloque YA seleccionado de una clase de
+    mayor prioridad en el orden de ensamblaje (B-cell -> HTL -> CTL).
+
+    Corrige una limitacion real encontrada en la validacion del sistema: la
+    deduplicacion de solapamientos anterior (``_dedupe_by_core``) operaba
+    solo DENTRO de cada clase, nunca entre clases distintas -- un mismo
+    tramo del antigeno nativo podia aparecer duplicado en el constructo
+    final, una vez como bloque B-cell y otra vez anidado dentro de una
+    ventana HTL o CTL (verificado en 9 de 17 estructuras del panel de
+    validacion, no solo en los 2 casos documentados originalmente). Se
+    aplica ANTES del corte ``top_n`` (no despues) para que, si un candidato
+    queda excluido por solapamiento, el siguiente mejor candidato no
+    solapante ocupe su lugar en vez de dejar la clase con menos de
+    ``top_n`` bloques.
+
+    Args:
+        candidates: Candidatos de la clase actual (HTL o CTL), antes de
+            aplicar ``top_n``.
+        already_selected: Bloques YA seleccionados de clases de mayor
+            prioridad (p. ej. B-cell al filtrar HTL; B-cell + HTL al
+            filtrar CTL). Vacio -- no excluye nada.
+
+    Returns:
+        ``candidates`` sin las filas que solapan ``already_selected``.
+    """
+    if candidates.empty or already_selected.empty:
+        return candidates
+    mask = ~candidates.apply(lambda r: _overlaps_any_region(r, already_selected), axis=1)
+    return candidates[mask]
+
+
 def _select_htl_candidates(
     htl_df: pd.DataFrame, glyco_regions: pd.DataFrame, top_n: int,
     conservation_map: Optional[Dict[str, float]] = None,
+    exclude_overlapping: Optional[pd.DataFrame] = None,
 ) -> pd.DataFrame:
     """Colapsa por 'core_9aa' (mejor promiscuidad/%Rank), anota glicosilacion/conservacion (sin excluir), top-N.
 
@@ -626,6 +670,8 @@ def _select_htl_candidates(
     esto, solo se anota en la columna ``glycosylated`` para decision informada.
     ``conservation_map`` (``sequence_f5`` -> ``conservation_pct``, de Fase 6b)
     se mapea igual, ausente si no se paso ``--panel-conservacion``.
+    ``exclude_overlapping`` (bloques B-cell ya seleccionados) se aplica ANTES
+    del corte ``top_n``, ver :func:`_deduplicate_cross_class`.
     """
     if htl_df.empty:
         return htl_df
@@ -633,6 +679,8 @@ def _select_htl_candidates(
     candidates["glycosylated"] = candidates.apply(lambda r: _overlaps_glyco_region(r, glyco_regions), axis=1)
     if conservation_map:
         candidates["conservation_pct"] = candidates["sequence_f5"].map(conservation_map)
+    if exclude_overlapping is not None:
+        candidates = _deduplicate_cross_class(candidates, exclude_overlapping)
     sort_columns = [("n_alelos_promiscuos", False), ("min_rank_el", True)]
     deduped = _dedupe_by_core(candidates, sort_columns)
     deduped = deduped.sort_values(by=[c for c, _ in sort_columns], ascending=[a for _, a in sort_columns])
@@ -642,12 +690,14 @@ def _select_htl_candidates(
 def _select_ctl_candidates(
     ctl_df: pd.DataFrame, glyco_regions: pd.DataFrame, top_n: int,
     conservation_map: Optional[Dict[str, float]] = None,
+    exclude_overlapping: Optional[pd.DataFrame] = None,
 ) -> pd.DataFrame:
     """Colapsa por 'core_9aa', anota glicosilacion/conservacion (sin excluir), prioriza NetCleave/promiscuidad/%Rank, top-N.
 
     Mismo criterio que ``_select_htl_candidates`` (ver ese docstring): ya no
     se descarta por glicosilacion, solo se anota; mismo mapeo opcional de
-    conservacion.
+    conservacion, mismo mecanismo de ``exclude_overlapping`` ANTES del corte
+    ``top_n`` (aca, tipicamente bloques B-cell + HTL ya seleccionados).
     """
     if ctl_df.empty:
         return ctl_df
@@ -655,6 +705,8 @@ def _select_ctl_candidates(
     candidates["glycosylated"] = candidates.apply(lambda r: _overlaps_glyco_region(r, glyco_regions), axis=1)
     if conservation_map:
         candidates["conservation_pct"] = candidates["sequence_f5"].map(conservation_map)
+    if exclude_overlapping is not None:
+        candidates = _deduplicate_cross_class(candidates, exclude_overlapping)
     sort_columns = [("netcleave_c_term_match", False), ("n_alelos_promiscuos", False), ("min_rank_el", True)]
     deduped = _dedupe_by_core(candidates, sort_columns)
     deduped = deduped.sort_values(by=[c for c, _ in sort_columns], ascending=[a for _, a in sort_columns])
@@ -730,7 +782,7 @@ def assemble_construct(
             parametro. Igual que ``glycosylated``, es puramente informativo
             (visible en ``source_score_note``), NO influye en la seleccion
             top-N: la decision de usarlo como criterio de ranking queda
-            pendiente de una sesion futura (ver vault).
+            pendiente de trabajo futuro.
         iedb_df: Salida de Fase 6c (``iedb_engine``, siempre corre), con
             columnas ``sequence``/``epitope_sequence``/... Anota
             ``documented_region`` (bool) SOLO en candidatos B-cell -- IEDB
@@ -778,8 +830,17 @@ def assemble_construct(
         flank_threshold=bcell_flank_threshold, flank_padding=bcell_flank_padding,
         blast_db=blast_db, identity_threshold=identity_threshold,
     )
-    htl_selected = _select_htl_candidates(htl_df, glyco_regions, top_n, conservation_map)
-    ctl_selected = _select_ctl_candidates(ctl_df, glyco_regions, top_n, conservation_map)
+    # Deduplicacion cross-clase (ver _deduplicate_cross_class): un candidato
+    # HTL/CTL que solape un bloque YA seleccionado de mayor prioridad
+    # (B-cell -> HTL -> CTL) se excluye ANTES del corte top_n, para que el
+    # siguiente mejor candidato no solapante ocupe su lugar.
+    htl_selected = _select_htl_candidates(
+        htl_df, glyco_regions, top_n, conservation_map, exclude_overlapping=bcell_selected,
+    )
+    bcell_and_htl = pd.concat([bcell_selected, htl_selected], ignore_index=True, sort=False)
+    ctl_selected = _select_ctl_candidates(
+        ctl_df, glyco_regions, top_n, conservation_map, exclude_overlapping=bcell_and_htl,
+    )
 
     blocks: List[_Block] = []
     if not bcell_selected.empty:
