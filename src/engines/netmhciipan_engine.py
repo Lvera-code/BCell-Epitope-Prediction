@@ -1,60 +1,60 @@
-"""Fase 5: Prediccion de presentacion T-helper (MHC-II) via NetMHCIIpan-4.3 LOCAL.
+"""Phase 5: T-helper (MHC-II) presentation prediction via LOCAL NetMHCIIpan-4.3.
 
-ADR - pivote metodologico: MHC-I descartado, luego revertido
+ADR - methodological pivot: MHC-I discarded, then reverted
 --------------------------------------------------------------
-Toda la logica de prediccion de presentacion MHC-I (celulas T citotoxicas
-CD8+, servida anteriormente por MHCflurry/NetMHCpan) fue eliminada de este
-pipeline en una version anterior. La Fase 5 evaluaba exclusivamente
-presentacion MHC-II (celulas T-helper CD4+), requisito para activar una
-respuesta humoral sostenida (T-B cross-talk) en el diseno de vacunas de
-subunidad.
+All the MHC-I presentation prediction logic (cytotoxic CD8+ T
+cells, previously served by MHCflurry/NetMHCpan) was removed from this
+pipeline in an earlier version. Phase 5 evaluated exclusively
+MHC-II presentation (helper CD4+ T cells), a requirement for activating a
+sustained humoral response (T-B cross-talk) in subunit vaccine
+design.
 
-Esta decision se REVIRTIO despues: el scope del proyecto crecio (ver
-``netmhcpan_engine.py``) para cubrir tambien evaluacion de inmunogenicidad
-CD8+ (MHC-I, NetMHCpan-4.2), como parte del set ampliado de chequeos de
-construccion (tox/aller/antigenicidad, N-glico, TM/senal, cross-ref bnAb) mas
-alla del pipeline original de 5 fases centrado solo en B-cell/T-helper. La
-prediccion MHC-I NO se fusiono dentro de esta Fase 5 (que sigue siendo
-exclusivamente MHC-II, con su propio modulo/reporte independiente en
-``netmhcpan_engine.py``): la razon original (foco en respuesta humoral, no
-citotoxica) sigue siendo valida para el veredicto final de esta fase
-especifica, asi que MHC-I se anade como una senal adicional en paralelo en
-vez de reemplazar o mezclarse con el criterio de promiscuidad T-helper de
-aqui.
+This decision was REVERTED later: the project scope grew (see
+``netmhcpan_engine.py``) to also cover CD8+ immunogenicity
+evaluation (MHC-I, NetMHCpan-4.2), as part of the extended set of
+construct checks (tox/aller/antigenicity, N-glyco, TM/signal, bnAb cross-ref)
+beyond the original 5-phase pipeline centred only on B-cell/T-helper. The
+MHC-I prediction was NOT merged inside this Phase 5 (which remains
+exclusively MHC-II, with its own independent module/report in
+``netmhcpan_engine.py``): the original reason (a focus on the humoral, not
+cytotoxic, response) remains valid for the final verdict of this specific
+phase, so MHC-I is added as an additional parallel signal instead
+of replacing or mixing with the T-helper promiscuity criterion
+here.
 
-Este modulo es, igual que ``blast_engine.py`` y ``bepipred_engine.py``, un
-wrapper puro de ``subprocess`` sobre un binario local con licencia academica
-DTU Health Tech (``Settings.NETMHCIIPAN_HOME``, nunca hardcodeado, resuelto
-desde variable de entorno). No se usa ``requests`` ni ninguna llamada de red.
+This module is, just like ``blast_engine.py`` and ``bepipred_engine.py``, a
+pure ``subprocess`` wrapper over a local binary with a DTU Health Tech
+academic licence (``Settings.NETMHCIIPAN_HOME``, never hardcoded, resolved
+from an environment variable). Neither ``requests`` nor any network call is used.
 
-Promiscuidad HLA-II: en vez de evaluar un unico alelo (insuficiente para
-cobertura poblacional), cada peptido candidato se evalua contra
-``IEDB_REFERENCE_PANEL`` -el panel de referencia de 27 alelos HLA-DR/DQ/DP
-mas representativos de la poblacion (IEDB) para estimar cobertura amplia-
-pasado tal cual al flag ``-a`` de NetMHCIIpan. Un peptido se reporta como
-``'Candidato Valido'`` (T-helper promiscuo) solo si clasifica como
-aglutinador fuerte (SB) o debil (WB), segun los umbrales de %Rank POR
-DEFECTO del propio NetMHCIIpan-4.3, en al menos
-``Settings.NETMHCIIPAN_MIN_PROMISCUOUS_ALLELES`` alelos distintos del panel
-CON REGISTRO DE UNION EN ORIENTACION NORMAL.
+HLA-II promiscuity: instead of evaluating a single allele (insufficient for
+population coverage), each candidate peptide is evaluated against
+``IEDB_REFERENCE_PANEL`` -the reference panel of the 27 HLA-DR/DQ/DP alleles
+most representative of the population (IEDB) to estimate broad coverage-
+passed as-is to NetMHCIIpan's ``-a`` flag. A peptide is reported as
+``'Candidato Valido'`` (promiscuous T-helper) only if it classifies as a
+strong (SB) or weak (WB) binder, according to the DEFAULT %Rank
+thresholds of NetMHCIIpan-4.3 itself, in at least
+``Settings.NETMHCIIPAN_MIN_PROMISCUOUS_ALLELES`` distinct alleles of the panel
+WITH A BINDING REGISTER IN NORMAL ORIENTATION.
 
-Fiabilidad para sintesis/validacion experimental - alelos invertidos se
-DESCARTAN por completo, no solo del veredicto: NetMHCIIpan marca
-``Inverted=1`` en un alelo cuando su
-procedimiento de alineacion del core (entrenado por Gibbs sampling sobre
-datos de eluido por espectrometria de masas) ajusta mejor leyendo el
-peptido en reversa que en su sentido N->C real. No hay evidencia
-estructural de que MHC-II presente peptidos "al reves"; se trata como un
-artefacto/limitacion del alineador, de menor confianza que un ajuste en
-orientacion normal. Como este pipeline alimenta sintesis y validacion
-experimental (costosa e irreversible una vez lanzada), un alelo invertido
-se trata como si NO existiera para efectos de reporte: no cuenta para la
-promiscuidad, y tampoco puede ser el alelo "ganador" que determina
-``core_9aa``/``min_rank_el`` (se excluye de ese calculo desde el origen,
-no se calcula-y-descarta despues). Asi, todo numero que llega a la tabla
-final (consola y CSV) es, por construccion, de un alelo en orientacion
-normal; no hace falta exponer un desglose normal/invertido en la salida
-porque el invertido nunca entra a la cuenta.
+Reliability for synthesis/experimental validation - inverted alleles are
+DISCARDED completely, not just from the verdict: NetMHCIIpan marks
+``Inverted=1`` on an allele when its
+core alignment procedure (trained by Gibbs sampling over
+mass spectrometry elution data) fits better reading the
+peptide in reverse than in its real N->C direction. There is no
+structural evidence that MHC-II presents peptides "backwards"; it is treated as an
+artifact/limitation of the aligner, of lower confidence than a fit in
+normal orientation. Since this pipeline feeds synthesis and experimental
+validation (costly and irreversible once launched), an inverted allele
+is treated as if it did NOT exist for reporting purposes: it does not count towards
+promiscuity, and nor can it be the "winning" allele that determines
+``core_9aa``/``min_rank_el`` (it is excluded from that calculation from the start,
+it is not computed-and-discarded afterwards). Thus every number that reaches the
+final table (console and CSV) is, by construction, from an allele in normal
+orientation; there is no need to expose a normal/inverted breakdown in the output
+because the inverted one never enters the count.
 """
 
 import os

@@ -1,54 +1,54 @@
-"""Cobertura poblacional REAL de candidatos HTL/CTL, ponderada por frecuencia alelica.
+"""REAL population coverage of HTL/CTL candidates, weighted by allele frequency.
 
-Motivo: ``n_alelos_promiscuos`` (Fase 5/5b) cuenta cuantos alelos del panel de
-referencia clasifican SB/WB para un candidato, tratando cada alelo por igual.
-Pero las frecuencias reales de los alelos HLA varian enormemente entre si --
-3 alelos muy comunes globalmente no es lo mismo que 3 alelos raros: el primer
-candidato protegeria a una fraccion mucho mayor de la poblacion real que el
-segundo, aunque ambos tengan ``n_alelos_promiscuos == 3``. Este modulo
-calcula esa fraccion real usando la misma metodologia que la herramienta
-Population Coverage del IEDB (Bui HH, Sidney J, Dinh K, Southwood S, Newman
+Rationale: ``n_alelos_promiscuos`` (Phase 5/5b) counts how many alleles of the
+reference panel classify SB/WB for a candidate, treating each allele equally.
+But the real frequencies of HLA alleles vary enormously between each other:
+3 globally very common alleles is not the same as 3 rare alleles. The first
+candidate would protect a much larger fraction of the real population than the
+second, even though both have ``n_alelos_promiscuos == 3``. This module
+computes that real fraction using the same methodology as the IEDB
+Population Coverage tool (Bui HH, Sidney J, Dinh K, Southwood S, Newman
 MJ, Sette A. "Predicting population coverage of T-cell epitope-based
 diagnostics and vaccines." BMC Bioinformatics. 2006).
 
-Formula (asume equilibrio de Hardy-Weinberg, herencia mendeliana estandar):
-para un locus dado (ej. HLA-A) y un SUBCONJUNTO de sus alelos (los que un
-candidato especifico golpea SB/WB), la "frecuencia fenotipica" -probabilidad
-de que un individuo porte AL MENOS UNO de esos alelos en ese locus- es:
+Formula (it assumes Hardy-Weinberg equilibrium, standard Mendelian inheritance):
+for a given locus (e.g. HLA-A) and a SUBSET of its alleles (those that a
+specific candidate hits SB/WB), the "phenotypic frequency" -the probability
+that an individual carries AT LEAST ONE of those alleles at that locus- is:
 
-    phenotypic_frequency = 1 - (1 - sum(frecuencias de esos alelos)) ** 2
+    phenotypic_frequency = 1 - (1 - sum(frequencies of those alleles)) ** 2
 
-(la formula binomial de "al menos uno de dos alelos independientes,
-heredados uno de cada progenitor, cae en el subconjunto"). Combinando varios
-loci (ej. HLA-A + HLA-B + HLA-C para MHC-I; DR + DQ + DP para MHC-II),
-asumiendo independencia ENTRE loci (simplificacion estandar del calculo
-basico de IEDB, no corrige por desequilibrio de ligamiento entre genes de
-loci distintos):
+(the binomial formula for "at least one of two independent alleles,
+inherited one from each parent, falls in the subset"). Combining several
+loci (e.g. HLA-A + HLA-B + HLA-C for MHC-I; DR + DQ + DP for MHC-II),
+assuming independence BETWEEN loci (the standard simplification of IEDB's
+basic calculation, it does not correct for linkage disequilibrium between genes of
+different loci):
 
     population_coverage = 1 - product(1 - phenotypic_frequency_locus)
 
-Fuente de frecuencias alelicas: ``reference_db/allele_frequencies/world_pooled_afnd.csv``,
-derivado de la Allele Frequency Net Database (allelefrequencies.net) via el
-mirror MIT-licenciado github.com/slowkow/allelefrequencies. Para cada alelo de ``NETMHCPAN_REFERENCE_PANEL``/
-``IEDB_REFERENCE_PANEL``, la frecuencia es el promedio ponderado por tamano
-de muestra (``n``) entre TODOS los estudios/poblaciones disponibles en AFND
-para ese alelo -- un promedio mundial agrupado, NO estratificado por region/
-etnia (a diferencia del propio tool de IEDB, que si permite elegir una
-poblacion especifica). Documentado como simplificacion deliberada, no un
-intento de replicar exactamente la metodologia de IEDB.
+Source of allele frequencies: ``reference_db/allele_frequencies/world_pooled_afnd.csv``,
+derived from the Allele Frequency Net Database (allelefrequencies.net) via the
+MIT-licensed mirror github.com/slowkow/allelefrequencies. For each allele of ``NETMHCPAN_REFERENCE_PANEL``/
+``IEDB_REFERENCE_PANEL``, the frequency is the sample-size-weighted average
+(``n``) across ALL studies/populations available in AFND
+for that allele, a pooled worldwide average, NOT stratified by region/
+ethnicity (unlike IEDB's own tool, which does allow choosing a specific
+population). Documented as a deliberate simplification, not an
+attempt to replicate IEDB's methodology exactly.
 
-2 huecos conocidos en los datos, documentados en el CSV (columna ``method``):
-* DRB3_0101/DRB3_0202/DRB4_0101/DRB5_0101: sin datos en AFND (genes DR
-  secundarios, ligados a haplotipos DRB1 especificos, reportados con mucha
-  menos consistencia entre estudios poblacionales que los genes primarios).
-  ``frequency`` queda vacio para estos 4 alelos -- se EXCLUYEN del calculo
-  (no se asume frecuencia 0, que subestimaria la cobertura real).
-* Alelos DQ/DP del panel son combos alfa-beta (ej. 'HLA-DQA10501-DQB10201'):
-  AFND reporta frecuencias de DQA1/DQB1 (o DPA1/DPB1) por SEPARADO, no del
-  heterodimero conjunto. Se aproxima la frecuencia del combo como el
-  PRODUCTO de las 2 frecuencias de gen (asuncion de independencia -- en la
-  practica DQA1 y DQB1 estan en desequilibrio de ligamiento real, asi que
-  esto es una aproximacion, no un valor medido directamente).
+2 known gaps in the data, documented in the CSV (the ``method`` column):
+* DRB3_0101/DRB3_0202/DRB4_0101/DRB5_0101: no data in AFND (secondary DR
+  genes, linked to specific DRB1 haplotypes, reported with far
+  less consistency between population studies than the primary genes).
+  ``frequency`` is left empty for these 4 alleles. They are EXCLUDED from the calculation
+  (frequency 0 is not assumed, which would underestimate the real coverage).
+* The panel's DQ/DP alleles are alpha-beta combos (e.g. 'HLA-DQA10501-DQB10201'):
+  AFND reports DQA1/DQB1 (or DPA1/DPB1) frequencies SEPARATELY, not those of the
+  joint heterodimer. The combo frequency is approximated as the
+  PRODUCT of the 2 gene frequencies (an independence assumption; in
+  practice DQA1 and DQB1 are in real linkage disequilibrium, so
+  this is an approximation, not a directly measured value).
 """
 
 from pathlib import Path

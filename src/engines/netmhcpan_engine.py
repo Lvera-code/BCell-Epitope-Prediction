@@ -1,102 +1,102 @@
-"""Inmunogenicidad T-citotoxica (MHC-I) via NetMHCpan-4.2 LOCAL.
+"""Cytotoxic T-cell immunogenicity (MHC-I) via LOCAL NetMHCpan-4.2.
 
-ADR: MHC-I descartado, luego revertido
+ADR: MHC-I discarded, then reverted
 ----------------------------------------
-Ver docstring de ``netmhciipan_engine.py`` para el historial completo. Este
-modulo es la reintroduccion de MHC-I, como parte del set ampliado de
-chequeos de construccion (tox/aller/antigenicidad, N-glico, TM/senal,
-cross-ref bnAb) mas alla del pipeline original de 5 fases. Deliberadamente
-NO se fusiona con la Fase 5 (NetMHCIIpan, T-helper/MHC-II): son vias de
-presentacion antigenica biologicamente distintas (celula presentadora
-profesional vs. cualquier celula nucleada; CD8+ citotoxico vs. CD4+ helper;
-reglas de longitud de peptido distintas -8-11 aa vs. nucleo de 9 aa dentro de
-una ventana flexible-), asi que se reportan como veredictos independientes en
-paralelo, nunca mezclados en una unica cifra de "promiscuidad".
+See the docstring of ``netmhciipan_engine.py`` for the full history. This
+module is the reintroduction of MHC-I, as part of the extended set of
+construct checks (tox/aller/antigenicity, N-glyco, TM/signal,
+bnAb cross-ref) beyond the original 5-phase pipeline. It is deliberately
+NOT merged with Phase 5 (NetMHCIIpan, T-helper/MHC-II): they are biologically
+distinct antigen presentation pathways (professional presenting
+cell vs. any nucleated cell; cytotoxic CD8+ vs. helper CD4+;
+different peptide length rules -8-11 aa vs. a 9 aa core inside
+a flexible window-), so they are reported as independent verdicts in
+parallel, never mixed into a single "promiscuity" figure.
 
-Igual que ``netmhciipan_engine.py``, ``blast_engine.py`` y
-``bepipred_engine.py``: wrapper puro de ``subprocess`` sobre un binario local
-con licencia academica DTU Health Tech (``Settings.NETMHCPAN_HOME``, nunca
-hardcodeado). No se usa ``requests`` ni ninguna llamada de red.
+Just like ``netmhciipan_engine.py``, ``blast_engine.py`` and
+``bepipred_engine.py``: a pure ``subprocess`` wrapper over a local binary
+with a DTU Health Tech academic licence (``Settings.NETMHCPAN_HOME``, never
+hardcoded). Neither ``requests`` nor any network call is used.
 
-Promiscuidad HLA-I: cada peptido candidato se evalua contra
-``Settings.NETMHCPAN_REFERENCE_PANEL`` -un panel de referencia de alelos
-HLA-A/B/C representativos, pasado tal cual al flag ``-a``. Un peptido se
-reporta como ``'Candidato Valido'`` (T-citotoxico promiscuo) solo si
-clasifica como aglutinador fuerte (SB) o debil (WB), segun
-``Settings.NETMHCPAN_RANK_STRONG``/``NETMHCPAN_RANK_WEAK`` (0.5/2.0 por
-defecto -- DISTINTOS de los de NetMHCIIpan, 1.0/5.0: MHC-I tiene su propia
-escala de %Rank, no comparable 1:1), en al menos
-``Settings.NETMHCPAN_MIN_PROMISCUOUS_ALLELES`` alelos distintos del panel.
+HLA-I promiscuity: each candidate peptide is evaluated against
+``Settings.NETMHCPAN_REFERENCE_PANEL`` -a reference panel of representative
+HLA-A/B/C alleles, passed as-is to the ``-a`` flag. A peptide is
+reported as ``'Candidato Valido'`` (promiscuous cytotoxic T-cell) only if it
+classifies as a strong (SB) or weak (WB) binder, according to
+``Settings.NETMHCPAN_RANK_STRONG``/``NETMHCPAN_RANK_WEAK`` (0.5/2.0 by
+default, DIFFERENT from those of NetMHCIIpan, 1.0/5.0: MHC-I has its own
+%Rank scale, not comparable 1:1), in at least
+``Settings.NETMHCPAN_MIN_PROMISCUOUS_ALLELES`` distinct alleles of the panel.
 
-**Composicion del panel:**
-- **HLA-A/B (12 alelos, sin cambios desde el diseño original):**
-  representativos de los 12 supertipos HLA clase I de Sidney et al. 2008
+**Panel composition:**
+- **HLA-A/B (12 alleles, unchanged since the original design):**
+  representative of the 12 HLA class I supertypes of Sidney et al. 2008
   ("HLA class I supertypes: a revised and updated classification",
-  Immunome Res 4:2) -- ese paper clasifica ~700 alelos HLA-A/-B en 12
-  supertipos, pero NO cubre HLA-C en absoluto (confirmado leyendo el
-  paper). El panel de 27 alelos de IEDB para MHC-II
-  (``netmhciipan_engine.IEDB_REFERENCE_PANEL``) tampoco es el precedente
-  aca: el panel HOMOLOGO de MHC-I mas citado para cobertura poblacional
-  (Weiskopf et al. 2013, PNAS, "Comprehensive analysis of dengue
-  virus-specific responses...", el "panel de 27 alelos" que popularizo
-  IEDB para clase I) TAMBIEN es exclusivamente HLA-A/B (16 A + 11 B) --
-  osea que la ausencia historica de HLA-C en este modulo no fue una
-  decision deliberada de este proyecto, sino que reproducia una omision
-  real y bien documentada en las dos referencias mas citadas del campo
-  para paneles de MHC-I.
-- **HLA-C (11 alelos):** `HLA-C01:02`, `HLA-C03:04`,
+  Immunome Res 4:2). That paper classifies ~700 HLA-A/-B alleles into 12
+  supertypes, but does NOT cover HLA-C at all (confirmed by reading the
+  paper). The IEDB panel of 27 alleles for MHC-II
+  (``netmhciipan_engine.IEDB_REFERENCE_PANEL``) is not the precedent
+  here either: the most cited HOMOLOGOUS MHC-I panel for population
+  coverage (Weiskopf et al. 2013, PNAS, "Comprehensive analysis of dengue
+  virus-specific responses...", the "27 allele panel" that IEDB
+  popularized for class I) is ALSO exclusively HLA-A/B (16 A + 11 B),
+  meaning that the historical absence of HLA-C in this module was not a
+  deliberate decision of this project, but reproduced a real and
+  well documented omission in the two most cited references of the field
+  for MHC-I panels.
+- **HLA-C (11 alleles):** `HLA-C01:02`, `HLA-C03:04`,
   `HLA-C04:01`, `HLA-C05:01`, `HLA-C06:02`, `HLA-C07:01`, `HLA-C07:02`,
-  `HLA-C08:02`, `HLA-C12:03`, `HLA-C15:02`, `HLA-C16:01`. HLA-C SI es un
-  elemento de restriccion CD8+ real (solo que historicamente menos
-  caracterizado y expresado en superficie celular a menor nivel que
-  HLA-A/B) -- no hay una clasificacion de "supertipos" de HLA-C tan
-  limpia/unica como la de Sidney 2008 para A/B (la division C1/C2 que SI
-  esta bien establecida es sobre residuos 77/80 relevantes para ligandos
-  de receptores KIR de celulas NK, un eje de clasificacion distinto al de
-  especificidad de union a peptido de celulas T). Estos 11 alelos se
-  eligieron por ser los que aparecen consistentemente en dos fuentes
-  independientes: (a) Rasmussen et al. 2014, J Immunol 193(10):4790-4801,
-  "Uncovering the Peptide-Binding Specificities of HLA-C..." -- 17 de los
-  alelos HLA-C mas comunes globalmente, elegidos por frecuencia
-  poblacional y caracterizados experimentalmente (motivos de union reales,
-  no solo inferidos); y (b) el criterio de umbral >=1% de frecuencia
-  poblacional global que recomienda IEDB para paneles de cobertura
-  poblacional, tal como lo aplico un estudio de diseño de vacuna
-  SARS-CoV-2 de 2020 que evaluo HLA-A/B/C juntos para maximizar cobertura
-  (PMC7754929). Los 11 elegidos aparecen en ambas fuentes. Confirmados
-  soportados por el binario local (``netMHCpan-4.2/data/allelenames`` y
-  ``MHC_pseudo.dat``, verificado antes de agregarlos) y validados con una
-  corrida real contra epitopos de referencia conocidos (NLVPMVATV/CMV
-  pp65, GILGFVFTL/Flu M1, ambos HLA-A*02:01) sin errores.
-- **``NETMHCPAN_MIN_PROMISCUOUS_ALLELES`` (3) se dejo SIN CAMBIOS** al
-  ampliar el panel de 12 a 23 alelos -- es una decision deliberada, no un
-  descuido: sigue la misma convencion ya establecida por
-  ``netmhciipan_engine.IEDB_REFERENCE_PANEL`` (27 alelos, mismo umbral fijo
-  de 3, nunca escalado como fraccion del tamaño del panel). Dicho eso, 3
-  de 23 es una barra relativamente mas laxa que 3 de 12 -- si en el futuro
-  se decide que la "promiscuidad" deberia escalar con el tamaño del panel,
-  este es el lugar a revisar; redefinir ese criterio esta fuera del alcance
-  de agregar HLA-C al panel.
+  `HLA-C08:02`, `HLA-C12:03`, `HLA-C15:02`, `HLA-C16:01`. HLA-C IS a
+  real CD8+ restriction element (only historically less
+  characterized and expressed at the cell surface at a lower level than
+  HLA-A/B). There is no classification of HLA-C "supertypes" as
+  clean/unique as that of Sidney 2008 for A/B (the C1/C2 division that IS
+  well established is about residues 77/80 relevant for ligands
+  of NK cell KIR receptors, a classification axis different from that of
+  T cell peptide binding specificity). These 11 alleles were
+  chosen for being the ones that appear consistently in two
+  independent sources: (a) Rasmussen et al. 2014, J Immunol 193(10):4790-4801,
+  "Uncovering the Peptide-Binding Specificities of HLA-C...", 17 of the
+  most globally common HLA-C alleles, chosen by population
+  frequency and characterized experimentally (real binding motifs,
+  not merely inferred); and (b) the criterion of a >=1% global population
+  frequency threshold that IEDB recommends for population coverage
+  panels, as applied by a 2020 SARS-CoV-2 vaccine design
+  study that evaluated HLA-A/B/C together to maximize coverage
+  (PMC7754929). The 11 chosen appear in both sources. Confirmed as
+  supported by the local binary (``netMHCpan-4.2/data/allelenames`` and
+  ``MHC_pseudo.dat``, verified before adding them) and validated with a
+  real run against known reference epitopes (NLVPMVATV/CMV
+  pp65, GILGFVFTL/Flu M1, both HLA-A*02:01) without errors.
+- **``NETMHCPAN_MIN_PROMISCUOUS_ALLELES`` (3) was left UNCHANGED** when
+  extending the panel from 12 to 23 alleles. This is a deliberate decision, not an
+  oversight: it follows the same convention already established by
+  ``netmhciipan_engine.IEDB_REFERENCE_PANEL`` (27 alleles, the same fixed
+  threshold of 3, never scaled as a fraction of the panel size). That said, 3
+  of 23 is a relatively more lax bar than 3 of 12. If in the future
+  it is decided that "promiscuity" should scale with the panel size,
+  this is the place to review; redefining that criterion is out of the scope
+  of adding HLA-C to the panel.
 
-A diferencia de NetMHCIIpan, el .xls de NetMHCpan-4.2 NO tiene columna
-``Inverted``: el nucleo de union MHC-I no sufre el artefacto de alineacion
-"al reves" del entrenamiento por Gibbs sampling de MHC-II (groove cerrado en
-ambos extremos, sin margen para invertir el registro), asi que no hace falta
-ningun filtro equivalente aqui -- confirmado leyendo las columnas reales del
-.xls (ver ``_parse_xls``), no asumido por analogia con NetMHCIIpan.
+Unlike NetMHCIIpan, the NetMHCpan-4.2 .xls does NOT have an
+``Inverted`` column: the MHC-I binding core does not suffer the "backwards"
+alignment artifact of the MHC-II Gibbs sampling training (a groove closed at
+both ends, with no room to invert the register), so no
+equivalent filter is needed here, confirmed by reading the real columns of the
+.xls (see ``_parse_xls``), not assumed by analogy with NetMHCIIpan.
 
-Buffer overflow del binario en modo peptido exacto: igual que NetMHCIIpan,
-NetMHCpan-4.2 (Linux_x86_64) revienta con "*** buffer overflow detected ***"
-(SIGABRT, core dump, exit code 0 -- el wrapper tcsh NO propaga el fallo) para
-peptidos demasiado largos en modo ``-p``: 55 aa OK, 57 aa crash, verificado
-tanto con el panel de 12 como con el de 23 alelos -- el limite NO cambia con
-el tamaño del panel, es una propiedad del parseo interno de la longitud del
-peptido, no
-de cuantos alelos se pasan por '-a' (mismo binario/arquitectura de buffer
-que NetMHCIIpan, cuyo limite tambien cae en ese rango). Peptidos mas largos
-que ``_MAX_PEPTIDE_MODE_LENGTH`` se enrutan a modo FASTA/proteina (``-l``,
-ventana deslizante interna de NetMHCpan sobre las longitudes de
-``Settings.NETMHCPAN_PEPTIDE_LENGTHS``), igual que hace ``netmhciipan_engine.py``.
+Buffer overflow of the binary in exact peptide mode: just like NetMHCIIpan,
+NetMHCpan-4.2 (Linux_x86_64) blows up with "*** buffer overflow detected ***"
+(SIGABRT, core dump, exit code 0, the tcsh wrapper does NOT propagate the failure) for
+peptides that are too long in ``-p`` mode: 55 aa OK, 57 aa crash, verified
+both with the panel of 12 and with that of 23 alleles. The limit does NOT change with
+the panel size, it is a property of the internal parsing of the peptide
+length, not
+of how many alleles are passed via '-a' (the same binary/buffer architecture
+as NetMHCIIpan, whose limit also falls in that range). Peptides longer
+than ``_MAX_PEPTIDE_MODE_LENGTH`` are routed to FASTA/protein mode (``-l``,
+NetMHCpan's internal sliding window over the lengths of
+``Settings.NETMHCPAN_PEPTIDE_LENGTHS``), just as ``netmhciipan_engine.py`` does.
 """
 
 import os

@@ -1,175 +1,175 @@
-"""Fase 7: ensamblaje automatico del constructo multi-epitopo vacunal.
+"""Phase 7: automatic assembly of the multi-epitope vaccine construct.
 
-Toma los candidatos que ya sobrevivieron el resto del pipeline (B-cell de
-Fase 4/4b/4c, HTL de Fase 5, CTL de Fase 5b), selecciona los mejores
-``Settings.CONSTRUCT_TOP_N_PER_CLASS`` por clase, y los concatena con los
-linkers estandar del campo de diseno de vacunas multi-epitopo en un unico
-FASTA, junto con una tabla de metadata 100% trazable (que peptido individual
-aporto cada tramo, en que orden, que linker se uso en cada union). Logica
-CASI 100% pura (sin subprocess): la Fase 6b (``conservation_engine``,
-OPCIONAL, solo si el usuario paso ``--panel-conservacion``) corre BLASTp
-ANTES de llegar aqui y entrega ya calculado ``conservation_df``, exactamente
-igual que ``algpred_df``/``stackgly_df`` -- esta invariante es lo que permite
-testear la mayoria de este modulo con DataFrames sinteticos. UNICA excepcion
-deliberada: ``_pad_short_bcell_candidates`` SI invoca AlgPred2/StackGlyEmbed
-de verdad (re-chequeo de la secuencia extendida con flancos, ver su
-docstring) -- justificado porque esa secuencia extendida es contenido nuevo
-que Fase 4b/4c nunca evaluo, no algo que ya viniera precalculado.
+It takes the candidates that already survived the rest of the pipeline (B-cell from
+Phase 4/4b/4c, HTL from Phase 5, CTL from Phase 5b), selects the best
+``Settings.CONSTRUCT_TOP_N_PER_CLASS`` per class, and concatenates them with the
+standard linkers of the multi-epitope vaccine design field into a single
+FASTA, together with a 100% traceable metadata table (which individual peptide
+contributed each stretch, in what order, which linker was used at each junction). The logic is
+ALMOST 100% pure (no subprocess): Phase 6b (``conservation_engine``,
+OPTIONAL, only if the user passed ``--panel-conservacion``) runs BLASTp
+BEFORE getting here and delivers ``conservation_df`` already computed, exactly
+like ``algpred_df``/``stackgly_df``. This invariant is what allows
+most of this module to be tested with synthetic DataFrames. The ONLY deliberate
+exception: ``_pad_short_bcell_candidates`` DOES invoke AlgPred2/StackGlyEmbed
+for real (a re-check of the extended sequence with flanks, see its
+docstring), justified because that extended sequence is new content
+that Phase 4b/4c never evaluated, not something that came precomputed.
 
-Reglas de ensamblaje (convencion estandar del campo, con multiples fuentes
-que coinciden):
+Assembly rules (standard convention of the field, with multiple sources
+that agree):
 
-* Linker intra-bloque CTL: ``AAY`` -- sitio de corte del proteasoma en
-  celulas de mamifero, libera cada epitopo correctamente durante el
-  procesamiento antigenico y evita epitopos de union espurios en la union.
-* Linker intra-bloque HTL: ``GPGPG`` -- espaciador universal (Livingston
-  et al. 2002), rompe la inmunogenicidad de union y preserva la capacidad
-  de inducir respuesta Th de cada epitopo.
-* Linker intra-bloque B-cell: ``KK`` -- mantiene la especificidad de cada
-  epitopo individual.
-* Linker entre bloques de distinta clase: ``GPGPG`` (el mismo espaciador
-  universal, usado consistentemente en la literatura como puente entre
-  bloques, no solo intra-HTL).
-* Orden de bloques: B-cell -> HTL -> CTL. Decision final: sin consenso
-  fuerte en la literatura sobre el orden optimo (los linkers ya garantizan
-  liberacion correcta por procesamiento antigenico, independiente de la
-  posicion); se ancla en B-cell por ser el foco humoral original del
-  proyecto (bnAb/HIV).
-* Sin adjuvante: decision ACTIVA de no incluir uno en esta version -- la
-  eleccion (beta-defensina, PADRE, flagelina, L7/L12, etc.) requiere
-  criterio biologico/estrategico especifico del patogeno/huesped, fuera de
-  scope de este pipeline. ``assemble_construct`` acepta un
-  ``adjuvant_sequence`` opcional (``None`` por defecto) para insertarlo en
-  el N-terminal con su propio linker rigido EAAAK (Arai et al. 2001) sin
-  rediseñar nada, si se decide agregar uno mas adelante.
+* CTL intra-block linker: ``AAY``, a proteasome cleavage site in
+  mammalian cells, it releases each epitope correctly during
+  antigen processing and avoids spurious junctional binding epitopes.
+* HTL intra-block linker: ``GPGPG``, a universal spacer (Livingston
+  et al. 2002), it breaks junctional immunogenicity and preserves the ability
+  of each epitope to induce a Th response.
+* B-cell intra-block linker: ``KK``, it maintains the specificity of each
+  individual epitope.
+* Linker between blocks of different classes: ``GPGPG`` (the same universal
+  spacer, used consistently in the literature as a bridge between
+  blocks, not only intra-HTL).
+* Block order: B-cell -> HTL -> CTL. Final decision: there is no strong
+  consensus in the literature on the optimal order (the linkers already guarantee
+  correct release by antigen processing, independently of
+  position); it is anchored on B-cell because that was the project's original
+  humoral focus (bnAb/HIV).
+* Without adjuvant: an ACTIVE decision not to include one in this version. The
+  choice (beta-defensin, PADRE, flagellin, L7/L12, etc.) requires
+  biological/strategic criteria specific to the pathogen/host, out of
+  scope for this pipeline. ``assemble_construct`` accepts an
+  optional ``adjuvant_sequence`` (``None`` by default) to insert it at
+  the N-terminus with its own rigid EAAAK linker (Arai et al. 2001) without
+  redesigning anything, if it is decided to add one later.
 
-Seleccion top-N por clase (necesaria en la practica: una corrida real con
-GP120 dio 18 candidatos validos solo en HTL/Fase 5, demasiados para un
-constructo manejable):
+Top-N selection per class (necessary in practice: a real run with
+GP120 gave 18 valid candidates in HTL/Phase 5 alone, too many for a
+manageable construct):
 
-* B-cell: de ``safe_df`` (Fase 4 'Segura'), TODOS los candidatos entran al
-  ranking, incluidos los marcados 'Allergen' por AlgPred2 (Fase 4b).
-  Se descartaban aqui antes; se revirtio
-  porque el mismo veredicto de AlgPred2 resulto no corresponder con datos
-  clinicos/poblacionales reales en la mayoria de los 9 candidatos
-  evaluados de la validacion de publicacion (7 de 9 marcados 'Allergen'
-  sin correlato de alergenicidad documentado, correlacionando en cambio
-  con el ancho de la region que le llega desde Fase 3, no con la quimica
-  real del antigeno) -- excluir automaticamente en base a ese veredicto
-  perdia candidatos reales y seguros. Igual que con la glicosilacion
-  (parrafo siguiente): existen ademas anticuerpos descritos que
-  reconocen regiones con similitud de secuencia a alergenos conocidos
-  sin que eso implique riesgo real, asi que ya no hay una razon
-  mecanistica universal para excluir. En su lugar, cada candidato se
-  anota con su veredicto de alergenicidad (columna ``allergen``, visible
-  en ``source_score_note`` del constructo final) para que la decision
-  quede informada, no automatica. La N-glicosilacion (StackGlyEmbed,
-  Fase 4c) tampoco excluye candidatos:
-  existen anticuerpos descritos que reconocen especificamente regiones
-  glicosiladas (p. ej. epitopos de envoltura de HIV), asi que descartar
-  por glicosilacion perdia candidatos biologicamente validos sin una
-  razon mecanistica universal. En su lugar, cada candidato se anota con
-  su estado de glicosilacion (columna ``glycosylated``, visible en
-  ``source_score_note`` del constructo final) -- un peptido SIN ningun
-  sequon en el reporte de Fase 4c se anota como ``glycosylated=False``
-  (Fase 4c solo produce filas para sequones reales). El top-N se elige
-  por el MAYOR de sus ``'{motor}_score'`` disponibles (BepiPred/EpiDope/
-  DiscoTope/ScanNet, el que exista para esa fila) -- sin filtro previo
-  por alergenicidad ni glicosilacion. Tambien se anota
-  ``documented_region`` (Fase 6c, IEDB): ``True`` si el candidato solapa
-  con un epitopo de proteccion/neutralizacion YA DOCUMENTADO en algun
-  patogeno estudiado -- puramente informativo, igual que
-  ``conservation_pct``, NO influye en el ranking todavia. Solo aplica a
-  B-cell (no HTL/CTL, ver docstring de ``src.engines.iedb_engine``).
-* HTL/CTL: de los ``'Candidato Valido'`` de Fase 5/5b (``build_traceback_report``
-  ya filtra a esos), TODAS las ventanas se mantienen independientemente
-  de si solapan un sequon 'Glicosilado' de Fase 4c -- mismo razonamiento
-  que B-cell arriba. ``_glycosylated_regions``/``_overlaps_glyco_region``
-  (mismo mecanismo de solapamiento por posicion que usa ``tmbed_engine``
-  para enmascarar TM/senal en Fase 3b) ahora solo ANOTAN la columna
-  ``glycosylated`` por fila, no descartan. Las ventanas se colapsan por
-  ``core_9aa`` (mismo nucleo de union evaluado en ventanas de posicion
-  vecinas es la misma prediccion, no epitopos distintos -- mismo criterio
-  que ``_deduplicate_protein_mode_windows`` de
-  ``netmhciipan_engine.py``/``netmhcpan_engine.py``, pero aqui colapsando
-  TODA la promiscuidad, no solo por trio exacto), quedandose con la mejor
-  fila (mas alelos promiscuos, luego menor %Rank; en CTL ademas prioriza
-  ``netcleave_c_term_match == True`` primero). Top-N sobre esas filas
-  deduplicadas, mismo criterio de orden.
-* NO se excluye HTL/CTL por alergenicidad (AlgPred2), a diferencia de
-  B-cell: AlgPred2 predice potencial IgE/mastocitario, que depende de que el
-  epitopo circule INTACTO y expuesto para ser reconocido por un anticuerpo
-  -exactamente el escenario B-cell-. Un nucleo de 8-11 aa que vive escondido
-  en el surco del MHC nunca circula libre de esa forma, asi que el
-  fundamento mecanicista para descartarlo por "alergenico" es mucho mas
-  debil -- deliberadamente no se aplica ese filtro ahi, para no descartar
-  candidatos MHC validos sin una razon biologica solida.
+* B-cell: from ``safe_df`` (Phase 4 'Segura'), ALL candidates enter the
+  ranking, including those marked 'Allergen' by AlgPred2 (Phase 4b).
+  They used to be discarded here; this was reverted
+  because that same AlgPred2 verdict turned out not to correspond with real
+  clinical/population data in most of the 9 candidates
+  evaluated in the publication validation (7 of 9 marked 'Allergen'
+  without a documented allergenicity correlate, correlating instead
+  with the width of the region reaching them from Phase 3, not with the real
+  chemistry of the antigen). Excluding automatically on the basis of that verdict
+  lost real and safe candidates. Just as with glycosylation
+  (next paragraph): there are also described antibodies that
+  recognize regions with sequence similarity to known allergens
+  without that implying real risk, so there is no longer a
+  universal mechanistic reason to exclude. Instead, each candidate is
+  annotated with its allergenicity verdict (the ``allergen`` column, visible
+  in ``source_score_note`` of the final construct) so that the decision
+  is informed, not automatic. N-glycosylation (StackGlyEmbed,
+  Phase 4c) does not exclude candidates either:
+  there are described antibodies that specifically recognize glycosylated
+  regions (e.g. HIV envelope epitopes), so discarding
+  by glycosylation lost biologically valid candidates without a
+  universal mechanistic reason. Instead, each candidate is annotated with
+  its glycosylation status (the ``glycosylated`` column, visible in
+  ``source_score_note`` of the final construct). A peptide WITHOUT any
+  sequon in the Phase 4c report is annotated as ``glycosylated=False``
+  (Phase 4c only produces rows for real sequons). The top-N is chosen
+  by the HIGHEST of its available ``'{motor}_score'`` values (BepiPred/EpiDope/
+  DiscoTope/ScanNet, whichever exists for that row), without a prior filter
+  by allergenicity or glycosylation. ``documented_region`` is also annotated
+  (Phase 6c, IEDB): ``True`` if the candidate overlaps
+  with a protection/neutralization epitope ALREADY DOCUMENTED in some
+  studied pathogen, purely informative, just like
+  ``conservation_pct``, it does NOT influence the ranking yet. It only applies to
+  B-cell (not HTL/CTL, see the docstring of ``src.engines.iedb_engine``).
+* HTL/CTL: from the ``'Candidato Valido'`` entries of Phase 5/5b (``build_traceback_report``
+  already filters to those), ALL windows are kept regardless
+  of whether they overlap a 'Glicosilado' sequon from Phase 4c, the same reasoning
+  as B-cell above. ``_glycosylated_regions``/``_overlaps_glyco_region``
+  (the same positional overlap mechanism that ``tmbed_engine`` uses
+  to mask TM/signal in Phase 3b) now only ANNOTATE the
+  ``glycosylated`` column per row, they do not discard. The windows are collapsed by
+  ``core_9aa`` (the same binding core evaluated in neighbouring position
+  windows is the same prediction, not distinct epitopes, the same criterion
+  as ``_deduplicate_protein_mode_windows`` of
+  ``netmhciipan_engine.py``/``netmhcpan_engine.py``, but here collapsing
+  ALL promiscuity, not only by exact triple), keeping the best
+  row (more promiscuous alleles, then lower %Rank; in CTL it additionally prioritizes
+  ``netcleave_c_term_match == True`` first). Top-N over those deduplicated
+  rows, the same ordering criterion.
+* HTL/CTL are NOT excluded by allergenicity (AlgPred2), unlike
+  B-cell: AlgPred2 predicts IgE/mast cell potential, which depends on the
+  epitope circulating INTACT and exposed to be recognized by an antibody,
+  exactly the B-cell scenario. A core of 8-11 aa that lives hidden
+  in the MHC groove never circulates free in that way, so the
+  mechanistic basis for discarding it as "allergenic" is much
+  weaker. That filter is deliberately not applied there, so as not to discard
+  valid MHC candidates without a solid biological reason.
 
-Decision de diseno: el "epitopo" insertado en los bloques HTL/CTL es
-``sequence_f5`` (la ventana completa evaluada -- 15-mero para HTL, el
-peptido evaluado completo para CTL), NO solo ``core_9aa`` (el nucleo de
-union real evaluado por NetMHCIIpan/NetMHCpan) -- los residuos
-flanqueantes alrededor del nucleo tambien contribuyen al reconocimiento
-(estabilidad de la interaccion peptido-MHC/TCR, procesamiento antigenico
-correcto), asi que reducir el bloque insertado al nucleo minimo
-descartaba esa contribucion sin necesidad. ``core_9aa`` se sigue usando
-para deduplicar candidatos solapados (mismo nucleo de union = misma
-prediccion, sea cual sea la ventana completa que lo contiene) y queda
-registrado en la trazabilidad, pero la secuencia que entra al constructo
-final es la ventana completa.
+Design decision: the "epitope" inserted into the HTL/CTL blocks is
+``sequence_f5`` (the complete evaluated window, a 15-mer for HTL, the
+complete evaluated peptide for CTL), NOT just ``core_9aa`` (the real binding
+core evaluated by NetMHCIIpan/NetMHCpan). The flanking
+residues around the core also contribute to recognition
+(stability of the peptide-MHC/TCR interaction, correct antigen
+processing), so reducing the inserted block to the minimal core
+discarded that contribution unnecessarily. ``core_9aa`` is still used
+to deduplicate overlapping candidates (the same binding core = the same
+prediction, whatever the complete window containing it) and is
+recorded in the traceability, but the sequence that enters the final
+construct is the complete window.
 
-Manejo de solapamientos entre epitopos candidatos: decision FINAL del
-usuario de NO fusionar epitopos de CLASES DISTINTAS aunque se solapen en
-posicion dentro de la proteina de origen (p. ej. un B-cell que se solapa
-con un HTL) -- fusionarlos rompería la semantica de los linkers, ya que
-cada bloque espera un peptido de esa clase especifica, no un hibrido. La
-fusion INTRA-clase (dos candidatos de la MISMA clase que se solapan) ya la
-resuelve la Fase 3 (union anotada de regiones solapadas del mismo tipo de
-motor, antes de que las clases se separen en Fase 4b/4c/5/5b) -- no hace
-falta resolverla de nuevo aqui.
+Handling of overlaps between candidate epitopes: the user's FINAL decision
+NOT to merge epitopes of DIFFERENT CLASSES even if they overlap in
+position within the source protein (e.g. a B-cell that overlaps
+with an HTL). Merging them would break the semantics of the linkers, since
+each block expects a peptide of that specific class, not a hybrid. The
+INTRA-class merge (two candidates of the SAME class that overlap) is already
+resolved by Phase 3 (annotated union of overlapping regions of the same engine
+type, before the classes separate in Phase 4b/4c/5/5b), so there is no
+need to resolve it again here.
 
-Largo maximo de candidatos B-cell (``Settings.CONSTRUCT_BCELL_MAX_LENGTH``,
-20 aa): a diferencia de HTL/CTL (ventana de tamano fijo impuesta por
-NetMHCIIpan/NetMHCpan), un candidato B-cell viene de la union anotada de
-Fase 3, que puede fusionar transitivamente regiones solapadas de varios
-motores en una sola secuencia de decenas de aa -- mas larga que un epitopo
-lineal B-cell tipico, y sin evaluar individualmente cada sub-tramo por
-AlgPred2/glicosilacion. Si el candidato seleccionado supera el maximo,
-``_trim_long_bcell_candidates`` lo recorta a la sub-ventana de mayor score
-por-residuo (releyendo los raw CSV de Fase 2, mismo criterio anti-sesgo-de-
-escala de percentil-por-motor que el ranking de ``_select_bcell_candidates``)
-en vez de insertar la region fusionada completa. El recorte ocurre DESPUES
-del top-N (el ranking sigue siendo por la fuerza de la region completa), y
-queda registrado en ``trimmed_from_length`` para trazabilidad.
+Maximum length of B-cell candidates (``Settings.CONSTRUCT_BCELL_MAX_LENGTH``,
+20 aa): unlike HTL/CTL (a fixed-size window imposed by
+NetMHCIIpan/NetMHCpan), a B-cell candidate comes from the annotated union of
+Phase 3, which can transitively merge overlapping regions of several
+engines into a single sequence of tens of aa, longer than a typical linear
+B-cell epitope, and without individually evaluating each sub-stretch by
+AlgPred2/glycosylation. If the selected candidate exceeds the maximum,
+``_trim_long_bcell_candidates`` trims it to the sub-window with the highest
+per-residue score (re-reading the raw Phase 2 CSVs, the same anti-scale-bias
+criterion of per-engine percentile as the ranking of ``_select_bcell_candidates``)
+instead of inserting the complete merged region. The trim happens AFTER
+the top-N (the ranking is still by the strength of the complete region), and
+is recorded in ``trimmed_from_length`` for traceability.
 
-Flancos nativos en candidatos B-cell CORTOS (``Settings.
+Native flanks on SHORT B-cell candidates (``Settings.
 CONSTRUCT_BCELL_FLANK_THRESHOLD``, 15 aa / ``Settings.
-CONSTRUCT_BCELL_FLANK_PADDING``, 3 aa por lado): un candidato B-cell en el
-piso de largo (9 aa, ``MIN_FINAL_PEPTIDE_LENGTH`` de ``consensus.py``) NO
-tiene el mismo colchon de contexto que HTL/CTL -- ahi, los flancos de
-``sequence_f5`` YA fueron evaluados por NetMHCIIpan/NetMHCpan junto al
-nucleo (evidencia computacional real, solo decidimos no descartarla). Los
-motores B-cell no tienen esa estructura de dos niveles: el limite de la
-union de Fase 3 YA ES el limite completo de lo que cualquier motor marco
-como antigenico -- no hay un "core" mas chico escondido dentro de una
-ventana mas grande que el motor haya evaluado y no usemos. Extender un
-candidato corto agrega residuos nativos que NINGUN motor flageo como
-antigenicos: es una asuncion de DISEÑO (contexto estructural/exposicion del
-paratopo mas alla de un umbral estadistico arbitrario, practica reconocida
-en literatura de vacunas multiepitopo), no un hallazgo de herramienta como
-el resto de este pipeline -- por eso queda anotada aparte
-(``flanked_from_length``) y NO se mezcla con el mismo nivel de certeza que
-``bepipred_score``/etc. ``_pad_short_bcell_candidates`` re-chequea la
-secuencia YA extendida con AlgPred2/StackGlyEmbed de verdad (es contenido
-nuevo, Fase 4b/4c nunca lo vio) y anota el veredicto de alergenicidad de
-la version extendida en la columna ``allergen`` -- el padding SIEMPRE se
-aplica, ya no se descarta si la version extendida sale 'Allergen'
-(revierte la invariante previa: alergenicidad ya no
-excluye nada en B-cell, ver parrafo de mas arriba). La glicosilacion,
-igual que antes, solo se re-anota (nunca excluyo en B-cell). Aplica solo a candidatos <15 aa: los que ya miden 15-20 aa
-no se tocan (no hay evidencia de que les falte contexto), y los que
-superan 20 aa van al recorte de arriba, nunca a padding (rangos disjuntos
-por construccion).
+CONSTRUCT_BCELL_FLANK_PADDING``, 3 aa per side): a B-cell candidate at the
+length floor (9 aa, ``MIN_FINAL_PEPTIDE_LENGTH`` of ``consensus.py``) does NOT
+have the same cushion of context as HTL/CTL. There, the flanks of
+``sequence_f5`` were ALREADY evaluated by NetMHCIIpan/NetMHCpan alongside the
+core (real computational evidence, we merely decided not to discard it). The
+B-cell engines do not have that two-level structure: the limit of the
+Phase 3 union IS ALREADY the complete limit of what any engine marked
+as antigenic. There is no smaller "core" hidden inside a
+larger window that the engine evaluated and we are not using.
+Extending a short candidate adds native residues that NO engine flagged as
+antigenic: it is a DESIGN assumption (structural context/exposure of the
+paratope beyond an arbitrary statistical threshold, a practice recognized
+in the multi-epitope vaccine literature), not a tool finding like
+the rest of this pipeline. That is why it is annotated separately
+(``flanked_from_length``) and is NOT mixed with the same level of certainty as
+``bepipred_score``/etc. ``_pad_short_bcell_candidates`` re-checks the
+ALREADY extended sequence with AlgPred2/StackGlyEmbed for real (it is new
+content, Phase 4b/4c never saw it) and annotates the allergenicity verdict of
+the extended version in the ``allergen`` column. The padding is ALWAYS
+applied, it is no longer discarded if the extended version comes out 'Allergen'
+(this reverts the previous invariant: allergenicity no longer
+excludes anything in B-cell, see the paragraph above). Glycosylation,
+as before, is only re-annotated (it never excluded in B-cell). It applies only to candidates <15 aa: those that already measure 15-20 aa
+are not touched (there is no evidence that they lack context), and those that
+exceed 20 aa go to the trim above, never to padding (disjoint ranges
+by construction).
 """
 
 from pathlib import Path

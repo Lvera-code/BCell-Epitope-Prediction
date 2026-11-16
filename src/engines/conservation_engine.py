@@ -1,115 +1,115 @@
-"""Fase 4d (OPCIONAL): amplitud de conservacion de secuencia contra un panel de referencia local.
+"""Phase 4d (OPTIONAL): sequence conservation breadth against a local reference panel.
 
-Motivo: un epitopo poco conservado entre cepas/variantes de un mismo
-patogeno protege solo contra la variante exacta usada para diseñarlo. Priorizar
-epitopos conservados amplia la cobertura (un solo constructo protege contra mas
-variantes circulantes) y presiona al patogeno de forma mas dura (las regiones
-conservadas suelen estarlo porque son funcionalmente restringidas -- mutarlas
-tiene un costo real de fitness para el patogeno).
+Rationale: an epitope that is poorly conserved between strains/variants of the same
+pathogen protects only against the exact variant used to design it. Prioritizing
+conserved epitopes broadens coverage (a single construct protects against more
+circulating variants) and puts harder pressure on the pathogen (conserved
+regions are usually conserved because they are functionally constrained, so mutating them
+has a real fitness cost for the pathogen).
 
-A diferencia de Fase 4 (BLAST_HUMAN_DB, un proteoma humano fijo compartido por
-cualquier corrida), no existe un panel de conservacion universal: conservacion
-es relativo a las cepas/variantes del PATOGENO especifico bajo analisis, que
-cambia de corrida en corrida. Por eso esta fase es enteramente OPCIONAL y no
-tiene ninguna base de datos por defecto -- se activa solo si el usuario pasa
-`--panel-conservacion <fasta>` (ver `pipeline.py`), un multi-FASTA SIN indexar
-con secuencias de referencia (otras cepas/clados/variantes) del mismo
-patogeno. Sin el flag, la fase se omite por completo: a diferencia de Fase 6
-(bnAb, que siempre corre y puede legitimamente devolver vacio), aca ni
-siquiera se invoca 'blastp'/'makeblastdb' si no hay panel -- no tiene sentido
-intentarlo sin saber contra que comparar.
+Unlike Phase 4 (BLAST_HUMAN_DB, a fixed human proteome shared by
+any run), there is no universal conservation panel: conservation
+is relative to the strains/variants of the specific PATHOGEN under analysis, which
+changes from run to run. That is why this phase is entirely OPTIONAL and has
+no default database. It is activated only if the user passes
+`--panel-conservacion <fasta>` (see `pipeline.py`), an UNindexed multi-FASTA
+with reference sequences (other strains/clades/variants) of the same
+pathogen. Without the flag, the phase is skipped completely: unlike Phase 6
+(bnAb, which always runs and can legitimately return empty), here not
+even 'blastp'/'makeblastdb' is invoked if there is no panel. There is no sense in
+attempting it without knowing what to compare against.
 
-Indexado: el FASTA del panel se indexa una vez con 'makeblastdb' (mismo
-paquete NCBI BLAST+ que ya requiere Fase 4) y el resultado se cachea en
-``Settings.CONSERVATION_DB_CACHE_DIR``, con el nombre del directorio de cache
-derivado de un hash del CONTENIDO del archivo -- si el usuario reusa el mismo
-panel entre corridas, no se vuelve a indexar; si lo edita, el hash cambia y se
-reindexa automaticamente sin intervencion manual.
+Indexing: the panel FASTA is indexed once with 'makeblastdb' (the same
+NCBI BLAST+ package that Phase 4 already requires) and the result is cached in
+``Settings.CONSERVATION_DB_CACHE_DIR``, with the name of the cache directory
+derived from a hash of the file CONTENT. If the user reuses the same
+panel between runs, it is not indexed again; if they edit it, the hash changes and it is
+reindexed automatically without manual intervention.
 
-Metrica -- AMPLITUD, no mejor-hit: se cuenta, por candidato, cuantas
-secuencias DISTINTAS del panel matchean por encima de
-``Settings.CONSERVATION_IDENTITY_THRESHOLD`` (con el mismo filtro de
-cobertura minima de consulta que Fase 4, ver
-``Settings.BLAST_MIN_QUERY_COVERAGE``), no solo la identidad maxima contra
-cualquiera de ellas. Un candidato identico a una unica cepa rara del panel no
-es "conservado" en el sentido que le importa a Elena (proteger contra MUCHAS
-variantes circulantes); uno con match aceptable contra el 80% del panel si lo
-es, aunque ninguno de esos matches individuales sea un 100% de identidad.
+Metric, BREADTH, not best-hit: it counts, per candidate, how many
+DISTINCT sequences of the panel match above
+``Settings.CONSERVATION_IDENTITY_THRESHOLD`` (with the same minimum query
+coverage filter as Phase 4, see
+``Settings.BLAST_MIN_QUERY_COVERAGE``), not just the maximum identity against
+any one of them. A candidate identical to a single rare strain of the panel is
+not "conserved" in the sense that matters to Elena (protecting against MANY
+circulating variants); one with an acceptable match against 80% of the panel is,
+even if none of those individual matches is 100% identity.
 
-Puramente informativo, igual que Fase 6 (bnAb): NO descarta ningun candidato,
-solo lo anota (``conservation_pct`` en la metadata del constructo, Fase 7) --
-mismo criterio ya aplicado a N-glicosilacion (ver
-``src.engines.construct_assembly``): la decision de priorizar conservacion
-queda para trabajo futuro, una vez resuelto tambien el punto de
-"regiones de interes" (Fase 7 no compone hoy multiples señales en un unico
+Purely informative, just like Phase 6 (bnAb): it does NOT discard any candidate,
+it only annotates it (``conservation_pct`` in the construct metadata, Phase 7),
+the same criterion already applied to N-glycosylation (see
+``src.engines.construct_assembly``): the decision to prioritize conservation
+is left for future work, once the point of
+"regions of interest" is also resolved (Phase 7 does not today compose multiple signals into a single
 ranking).
 
-Reutiliza la ejecucion de BLASTp por lotes (``_select_task``/
-``_select_evalue``/``_run_blastp_batch``) de ``blast_engine.py`` tal cual, sin
-duplicarla -- misma mecanica de eleccion dinamica de task/E-value por
-longitud de peptido que ya usa Fase 4.
+It reuses the batch BLASTp execution (``_select_task``/
+``_select_evalue``/``_run_blastp_batch``) of ``blast_engine.py`` as-is, without
+duplicating it, the same mechanics of dynamic task/E-value choice by
+peptide length that Phase 4 already uses.
 
-ADR -- deteccion del "acantilado de cobertura terminal" (peptidos con cola no
-nativa de cristalizacion/clonaje)
+ADR: detection of the "terminal coverage cliff" (peptides with a non-native
+crystallization/cloning tail)
 ----------------------------------------------------------------------
-Caso real que motiva este mecanismo (verificado sobre el panel de 17
-estructuras, PDB 4XAW, gp41 MPER): el candidato B-cell cristalizado incluye
-una cola no nativa de 2-3 residuos (`KKK`) añadida para la cristalizacion.
-Al consultarlo tal cual contra el panel de conservacion, el filtro de
-cobertura minima de query (``min_query_coverage``) descarta casi todos los
-hits reales (la cola nunca alinea), hundiendo la amplitud medida a 0.23%
-pese a que el motivo nativo (sin la cola) esta conservado en 60.09% del
-panel -- una cifra completamente distinta, no un margen de error.
+The real case that motivates this mechanism (verified on the panel of 17
+structures, PDB 4XAW, gp41 MPER): the crystallized B-cell candidate includes
+a non-native tail of 2-3 residues (`KKK`) added for crystallization.
+When querying it as-is against the conservation panel, the minimum query
+coverage filter (``min_query_coverage``) discards almost all the real
+hits (the tail never aligns), sinking the measured breadth to 0.23%
+even though the native motif (without the tail) is conserved in 60.09% of the
+panel, a completely different figure, not a margin of error.
 
-Se investigo, y se descarto, resolver esto leyendo la cabecera de deposito
-del PDB (flags ``ENGINEERED``/``SYNTHETIC``, o ausencia de referencia
-UniProt): verificado sobre el panel completo que ``ENGINEERED`` no
-discrimina (15 de 17 estructuras lo llevan, incluidas cadenas 100% nativas)
-y ``SYNTHETIC`` da un falso positivo real en este mismo panel (8FDD:
-sintetizado quimicamente, pero 100% nativo en secuencia) -- "sintetizado"
-no equivale a "contiene residuos no nativos", y ademas ninguna de las 2
-rutas de parseo disponibles (PDB legacy vs. mmCIF moderno) expone estos
-flags con la misma consistencia. Comparar contra el UniProt canonico de la
-proteina de origen fallaria justo en el caso que motiva esto (4XAW no tiene
-referencia UniProt en su cabecera) y añadiria una dependencia de red a un
-pipeline deliberadamente 100% local.
+Resolving this by reading the PDB deposition header was investigated and
+discarded (the ``ENGINEERED``/``SYNTHETIC`` flags, or the absence of a
+UniProt reference): it was verified over the complete panel that ``ENGINEERED`` does not
+discriminate (15 of 17 structures carry it, including 100% native chains)
+and ``SYNTHETIC`` gives a real false positive in this same panel (8FDD:
+chemically synthesized, but 100% native in sequence). "Synthesized"
+is not equivalent to "contains non-native residues", and moreover neither of the 2
+available parsing routes (legacy PDB vs. modern mmCIF) exposes these
+flags with the same consistency. Comparing against the canonical UniProt of the
+source protein would fail precisely in the case that motivates this (4XAW has no
+UniProt reference in its header) and would add a network dependency to a
+deliberately 100% local pipeline.
 
-En vez de depender de metadatos de deposito (inexistentes o poco fiables),
-se detecta la señal directamente en los propios hits de BLASTp de esta
-fase: para cada candidato con suficientes hits (``_TERMINAL_TRIM_MIN_HITS``)
-por encima de ``identity_threshold``, se calcula la cobertura fraccional
-por POSICION de query (que fraccion de esos hits alinea cada residuo). Un
-residuo no nativo tipicamente cristalizado como cola muestra un acantilado
-real: cobertura ~100% en el interior y ~0-1% en un tramo contiguo de >=2
-residuos en un extremo -- a diferencia de un candidato nativo (verificado
-con los 2 candidatos de control de gp120/3NGB en el mismo panel: cobertura
-uniformemente alta o con caida gradual, nunca un acantilado terminal
-limpio). Cuando se detecta, se anota (``conservation_query_trim_start``/
-``_end``, 1-indexados sobre ``sequence``) y se re-consulta BLASTp SOLO ese
-sub-rango para obtener ``conservation_pct_native_core`` -- verificado sobre
-4XAW: recupera el 60.09% real, sin tocar ``conservation_pct`` (que sigue
-siendo el valor honesto sobre el candidato tal cual, informativo, no un
-reemplazo).
+Instead of depending on deposition metadata (non-existent or unreliable),
+the signal is detected directly in this phase's own BLASTp
+hits: for each candidate with enough hits (``_TERMINAL_TRIM_MIN_HITS``)
+above ``identity_threshold``, the fractional coverage
+per query POSITION is computed (what fraction of those hits aligns each residue). A
+non-native residue typically crystallized as a tail shows a real
+cliff: ~100% coverage in the interior and ~0-1% in a contiguous stretch of >=2
+residues at one end, unlike a native candidate (verified
+with the 2 control candidates of gp120/3NGB in the same panel: coverage
+uniformly high or with a gradual decline, never a clean terminal
+cliff). When detected, it is annotated (``conservation_query_trim_start``/
+``_end``, 1-indexed over ``sequence``) and BLASTp is re-queried on ONLY that
+sub-range to obtain ``conservation_pct_native_core``, verified on
+4XAW: it recovers the real 60.09%, without touching ``conservation_pct`` (which remains
+the honest value over the candidate as-is, informative, not a
+replacement).
 
-Mecanicamente, esto SOLO tiene sentido para candidatos B-CELL: son los
-unicos que pueden provenir de un constructo cristalizado con una cola
-añadida real. Los candidatos HTL/CTL son ventanas de barrido de secuencia
-sobre la proteina completa (Fase 5/5b) -- nunca un constructo de laboratorio
--- asi que cualquier "acantilado" en uno de ellos es, por construccion,
-variabilidad de conservacion real en el borde arbitrario de esa ventana, no
-una cola no nativa. Verificado exhaustivamente sobre los 62 candidatos
-B-cell/HTL/CTL reales de conservacion del panel de validacion (3NGB, 4XAW,
-los 2 unicos antigenos con panel LANL/CATNAP disponible): activar la
-deteccion tambien en HTL/CTL genera 4 falsos positivos reales, uno por
-candidato (p. ej. ``ENFNMWKNNMVEQMQ``, un HTL de 15aa donde solo los 2
-residuos iniciales caen a baja cobertura -- variabilidad real de gp120, no
-un artefacto). Por eso ``run_conservation_filter`` expone
-``detect_terminal_trim`` como parametro (``False`` por defecto) y
-``pipeline.py`` (Fase 6b) lo activa unicamente para el bloque B-cell.
+Mechanistically, this ONLY makes sense for B-CELL candidates: they are the
+only ones that can come from a construct crystallized with a real added
+tail. The HTL/CTL candidates are sequence scanning windows
+over the complete protein (Phase 5/5b), never a laboratory construct,
+so any "cliff" in one of them is, by construction, real conservation
+variability at the arbitrary border of that window, not
+a non-native tail. Verified exhaustively over the 62 real
+B-cell/HTL/CTL conservation candidates of the validation panel (3NGB, 4XAW,
+the only 2 antigens with a LANL/CATNAP panel available): activating the
+detection in HTL/CTL as well generates 4 real false positives, one per
+candidate (e.g. ``ENFNMWKNNMVEQMQ``, a 15aa HTL where only the 2
+initial residues fall to low coverage, real gp120 variability, not
+an artifact). That is why ``run_conservation_filter`` exposes
+``detect_terminal_trim`` as a parameter (``False`` by default) and
+``pipeline.py`` (Phase 6b) activates it only for the B-cell block.
 
-Puramente informativo, igual que el resto de la fase: nunca
-descarta ni recorta el candidato en si, solo expone la cifra corregida y un
-aviso en el log para que el investigador decida.
+Purely informative, like the rest of the phase: it never
+discards or trims the candidate itself, it only exposes the corrected figure and a
+warning in the log so that the researcher decides.
 """
 
 import hashlib

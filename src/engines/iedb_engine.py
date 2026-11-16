@@ -1,63 +1,63 @@
-"""Cruce de candidatos B-cell contra epitopos con proteccion/neutralizacion documentada (IEDB), 100% local.
+"""Cross-reference of B-cell candidates against epitopes with documented protection/neutralization (IEDB), 100% local.
 
-Objetivo: identificar que regiones de un patogeno tienen efecto
-protector/neutralizante YA DOCUMENTADO (su ejemplo: V1/V2, CD4bs, MPER de
-HIV), para poder priorizarlas -- lo mismo que ``lanl_catnap_engine`` (Fase 6)
-ya hace, pero especifico de HIV Env. Este motor generaliza esa misma idea a
-CUALQUIER patogeno estudiado, usando el bulk export B-cell de IEDB
-(iedb.org) como fuente.
+Objective: to identify which regions of a pathogen have an ALREADY DOCUMENTED
+protective/neutralizing effect (the example given: V1/V2, CD4bs, HIV
+MPER), so that they can be prioritized, the same thing that ``lanl_catnap_engine`` (Phase 6)
+already does, but specific to HIV Env. This engine generalizes that same idea to
+ANY studied pathogen, using IEDB's B-cell bulk export
+(iedb.org) as the source.
 
-``reference_db/iedb/bcell_protective_epitopes.csv`` es un subconjunto YA
-FILTRADO y persistido localmente del export completo de IEDB
-(``bcell_full_v3_single_file.zip``, 1,688,617 filas / 3.24 GB descomprimido
--- ese archivo crudo NO se distribuye con el repo, solo el filtrado). El
-filtro se aplico UNA SOLA VEZ como paso de SETUP (descarga+filtrado, nunca en
-runtime, mismo principio que ``reference_db/lanl_immunology/ab_all.csv``):
+``reference_db/iedb/bcell_protective_epitopes.csv`` is an ALREADY
+FILTERED subset, persisted locally, of IEDB's complete export
+(``bcell_full_v3_single_file.zip``, 1,688,617 rows / 3.24 GB uncompressed;
+that raw file is NOT distributed with the repo, only the filtered one). The
+filter was applied ONCE ONLY as a SETUP step (download+filter, never at
+runtime, the same principle as ``reference_db/lanl_immunology/ab_all.csv``):
 
-    - ``Epitope.Object Type == 'Linear peptide'`` (excluye epitopos
-      discontinuos/conformacionales y no-peptidicos, sin secuencia lineal
-      reportable -- mismo criterio que ``lanl_catnap_engine`` con
+    - ``Epitope.Object Type == 'Linear peptide'`` (it excludes
+      discontinuous/conformational and non-peptidic epitopes, without a reportable
+      linear sequence, the same criterion as ``lanl_catnap_engine`` with
       ``ab_all.csv``).
-    - ``Assay.Response measured`` en {'neutralization', 'protection from
-      pathogen/tumor/other challenge'(+variantes 'after adoptive transfer'),
-      'protection from fertility'} -- distingue un ensayo de EFECTO real
-      (neutraliza / protege) de "reconocido" generico (binding/ELISA sin
-      consecuencia funcional).
-    - ``Assay.Qualitative Measure`` empieza con 'Positive' (excluye
-      'Negative': un ensayo NEGATIVO de neutralizacion no es una region de
-      interes).
+    - ``Assay.Response measured`` in {'neutralization', 'protection from
+      pathogen/tumor/other challenge'(+ the 'after adoptive transfer' variants),
+      'protection from fertility'}, which distinguishes an assay of real EFFECT
+      (neutralizes / protects) from generic "recognized" (binding/ELISA without
+      functional consequence).
+    - ``Assay.Qualitative Measure`` starts with 'Positive' (it excludes
+      'Negative': a NEGATIVE neutralization assay is not a region of
+      interest).
 
-Resultado: 3429 registros (de 1.68M), 561 organismos distintos -- HIV es
-apenas uno mas entre muchos (SARS-CoV-2, P. falciparum, HCV, HPV16,
-poliovirus, B. anthracis, S. aureus, etc.), no un caso especial.
+Result: 3429 records (out of 1.68M), 561 distinct organisms. HIV is
+merely one more among many (SARS-CoV-2, P. falciparum, HCV, HPV16,
+poliovirus, B. anthracis, S. aureus, etc.), not a special case.
 
-Regenerar el CSV filtrado (si IEDB publica una version mas reciente del
-bulk export): descargar
+To regenerate the filtered CSV (if IEDB publishes a more recent version of the
+bulk export): download
 ``https://www.iedb.org/downloader.php?file_name=doc/bcell_full_v3_single_file.zip``,
-descomprimir, y aplicar el mismo filtro de 3 columnas de arriba sobre
+uncompress it, and apply the same 3-column filter from above over
 ``('Epitope','Name')``/``('Epitope','Object Type')``/``('Epitope','Source
 Organism')``/``('Assay','Response measured')``/``('Assay','Qualitative
-Measure')`` (encabezado de 2 niveles, ``pd.read_csv(header=[0,1],
-encoding='latin-1')``) -- ver README.md, Seccion de Instalacion, para el
-comando completo.
+Measure')`` (a 2-level header, ``pd.read_csv(header=[0,1],
+encoding='latin-1')``). See README.md, the Installation section, for the
+complete command.
 
-Sin mapeo organismo<->accession: a diferencia de intentar filtrar el CSV por
-el patogeno de la corrida actual (requeriria taxonomia, sin forma confiable
-de derivarla del header de un FASTA de entrada), este motor NO pre-filtra
-por organismo -- el MATCH POR SECUENCIA ya funciona como filtro implicito
-(si el organismo de entrada no tiene ningun epitopo documentado que
-solape, simplemente no hay filas de resultado), exactamente el mismo
-principio que ya usa Fase 6 (``lanl_catnap_engine``, que tampoco filtra por
-organismo antes de cruzar). Reusa ``_longest_common_substring_len`` de ese
-motor sin duplicar el algoritmo.
+Without an organism<->accession mapping: rather than trying to filter the CSV by
+the pathogen of the current run (which would require taxonomy, with no reliable way
+to derive it from the header of an input FASTA), this engine does NOT pre-filter
+by organism. The SEQUENCE MATCH already works as an implicit filter
+(if the input organism has no documented epitope that
+overlaps, there are simply no result rows), exactly the same
+principle that Phase 6 already uses (``lanl_catnap_engine``, which also does not filter by
+organism before cross-referencing). It reuses ``_longest_common_substring_len`` from that
+engine without duplicating the algorithm.
 
-Solo se aplica a candidatos B-cell (``safe_df``), NO a HTL/CTL: el export de
-IEDB usado aqui es especificamente de ensayos B-cell (union/neutralizacion
-por ANTICUERPO), un mecanismo de reconocimiento distinto al de presentacion
-MHC-I/II que evaluan HTL/CTL -- mismo razonamiento ya aplicado en
-``construct_assembly`` para no aplicarle el filtro de alergenicidad
-(AlgPred2) a HTL/CTL (necesita un epitopo libre/circulante, que un nucleo
-enterrado en el surco del MHC nunca es).
+It only applies to B-cell candidates (``safe_df``), NOT to HTL/CTL: the IEDB
+export used here is specifically of B-cell assays (ANTIBODY
+binding/neutralization), a recognition mechanism different from the
+MHC-I/II presentation that HTL/CTL evaluate, the same reasoning already applied in
+``construct_assembly`` for not applying the allergenicity filter
+(AlgPred2) to HTL/CTL (it needs a free/circulating epitope, which a core
+buried in the MHC groove never is).
 """
 
 from pathlib import Path

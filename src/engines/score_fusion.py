@@ -1,184 +1,184 @@
-"""Fase 3 (fusion continua): combina los scores crudos de los motores de
-antigenicidad activos ANTES de umbralizar, en vez de umbralizar cada motor
-por separado (con su propio umbral de produccion) y unir despues las
-regiones resultantes (mecanismo anterior, ver ``src.engines.consensus``).
+"""Phase 3 (continuous fusion): combines the raw scores of the active
+antigenicity engines BEFORE thresholding, instead of thresholding each engine
+separately (with its own production threshold) and then joining the
+resulting regions (the previous mechanism, see ``src.engines.consensus``).
 
-ADR -- por que fusionar antes de umbralizar
+ADR: why fuse before thresholding
 ----------------------------------------------------------------------
-La union logica anotada (``consensus.build_annotated_union_table``) predice
-un volumen de residuos varias veces mayor que el epitopo real (hasta 20x en
-el peor caso del panel de validacion): al ser una union de 4 motores cada
-uno con su propio umbral, cualquier motor que cruce su umbral en solitario
-basta para que la region completa avance, sin ningun mecanismo que penalice
-el desacuerdo entre motores. Combinar los scores continuos ANTES de decidir
-(en vez de combinar decisiones binarias ya tomadas) permite que el
-desacuerdo entre motores SI cuente: una region donde solo un motor tiene
-señal moderada y los demas no dicen nada puntua mas bajo en la fusion que
-una donde varios motores coinciden, incluso si ninguno individualmente
-supera su propio umbral aislado.
+The annotated logical union (``consensus.build_annotated_union_table``) predicts
+a volume of residues several times larger than the real epitope (up to 20x in
+the worst case of the validation panel): being a union of 4 engines each
+with its own threshold, any engine crossing its threshold on its own
+is enough for the complete region to advance, without any mechanism that penalizes
+disagreement between engines. Combining the continuous scores BEFORE deciding
+(instead of combining binary decisions already taken) lets
+disagreement between engines actually count: a region where only one engine has a
+moderate signal and the others say nothing scores lower in the fusion than
+one where several engines agree, even if none individually
+exceeds its own isolated threshold.
 
-Validado sobre el panel de 17 estructuras (ver Material Suplementario,
-Fase 2/3): la fusion (suma de los scores normalizados de los motores
-activos, umbral calibrado por combinacion de motores via leave-one-out
-cross-validation) reduce el volumen de falsos positivos en ~89% frente a
-la union de produccion anterior, a cambio de una perdida de recall real
-(no es un reemplazo sin coste). Se probo exhaustivamente producto, suma,
-maximo, ponderacion por calidad discriminativa, normalizacion por
-percentil-rango, optimizacion del umbral para precision, y una regresion
-logistica por pliegue como techo teorico de una combinacion lineal con
-pesos aprendidos: ninguna alternativa supera de forma consistente a la
-suma sin ponderar con umbral absoluto.
+Validated on the panel of 17 structures (see Supplementary Material,
+Phase 2/3): the fusion (sum of the normalized scores of the active
+engines, threshold calibrated per engine combination via leave-one-out
+cross-validation) reduces the volume of false positives by ~89% compared with
+the previous production union, at the cost of a real loss of recall
+(it is not a cost-free replacement). Product, sum,
+maximum, weighting by discriminative quality, percentile-rank
+normalization, threshold optimization for precision, and a per-fold logistic
+regression as the theoretical ceiling of a linear combination with
+learned weights were all tested exhaustively: no alternative consistently beats the
+unweighted sum with an absolute threshold.
 
-ADR -- suma, con un umbral calibrado por separado para cada combinacion
+ADR: sum, with a threshold calibrated separately for each combination
 ----------------------------------------------------------------------
-La calibracion original se hizo sobre el modo por defecto (estructura, los
-4 motores activos a la vez), con la suma de los scores normalizados como
-operador de fusion. El pipeline soporta ademas dos rutas con solo 2 motores
-activos (FASTA puro: BepiPred+EpiDope; ``structure_only``:
-DiscoTope+ScanNet, ver ``pipeline.py``): reusar el mismo umbral de 4
-motores sin recalibrar en esos 2 modos se probo directamente y rompe
-ambos, en direcciones opuestas (verificado sobre las 17 estructuras del
-panel, recombinando los scores crudos ya cacheados en subconjuntos de 2
-motores -- ningun dato fabricado): demasiado bajo para BepiPred+EpiDope
-(EpiDope tiende a puntuar alto sin DiscoTope/ScanNet diluyendo la suma,
-dispara los falsos positivos) y demasiado alto para DiscoTope+ScanNet
-(DiscoTope es negativo en la mayoria de residuos de este panel y ScanNet
-rara vez supera 0.5, la mayoria de antigenos quedan sin ningun candidato).
+The original calibration was done on the default mode (structure, all
+4 engines active at once), with the sum of the normalized scores as the
+fusion operator. The pipeline additionally supports two paths with only 2 engines
+active (pure FASTA: BepiPred+EpiDope; ``structure_only``:
+DiscoTope+ScanNet, see ``pipeline.py``): reusing the same 4-engine
+threshold without recalibrating in those 2 modes was tested directly and breaks
+both, in opposite directions (verified on the 17 structures of the
+panel, recombining the already cached raw scores into subsets of 2
+engines, with no fabricated data): too low for BepiPred+EpiDope
+(EpiDope tends to score high without DiscoTope/ScanNet diluting the sum,
+which triggers false positives) and too high for DiscoTope+ScanNet
+(DiscoTope is negative in most residues of this panel and ScanNet
+rarely exceeds 0.5, so most antigens end up without any candidate).
 
-Por eso ``FUSION_THRESHOLDS`` tiene una entrada calibrada de forma
-INDEPENDIENTE para cada combinacion de motores soportada (no un unico
-valor reescalado matematicamente desde el de 4 motores): cada umbral se
-recalculo desde cero sobre la suma de esa combinacion especifica,
-maximizando F1 con la rejilla exacta de valores unicos del score
-fusionado (sin submuestrear), tanto para la estimacion honesta de
-generalizacion (leave-one-out cross-validation) como para el umbral final
-de despliegue sobre las 17 estructuras completas. El umbral de 4 motores
-(1.612165) es identico al ya usado en la validacion original del sistema.
+That is why ``FUSION_THRESHOLDS`` has an INDEPENDENTLY calibrated entry
+for each supported engine combination (not a single
+value mathematically rescaled from the 4-engine one): each threshold was
+recomputed from scratch on the sum of that specific combination,
+maximizing F1 with the exact grid of unique values of the
+fused score (without subsampling), both for the honest estimate of
+generalization (leave-one-out cross-validation) and for the final deployment
+threshold over the 17 complete structures. The 4-engine threshold
+(1.612165) is identical to the one already used in the system's original validation.
 
-ADR -- limites de normalizacion y umbrales (Tabla S1 nueva, Material
-Suplementario)
+ADR: normalization bounds and thresholds (new Table S1, Supplementary
+Material)
 ----------------------------------------------------------------------
-Los limites min-max por motor (``FUSION_BOUNDS``) se calcularon sobre el
-score crudo de cada motor a lo largo de las 17 estructuras del panel de
-validacion, de forma independiente de que otros motores estuvieran activos
-a la vez (cada motor produce el mismo score exacto corra solo o
-acompañado). Los valores normalizados se recortan a [0,1]
-(``numpy.clip``) para que un antigeno futuro fuera de este panel, cuyo
-score crudo exceda estos limites, no produzca un valor fuera de rango ni
-rompa la fusion -- verificado con valores extremos sinteticos.
+The per-engine min-max bounds (``FUSION_BOUNDS``) were computed on the
+raw score of each engine across the 17 structures of the validation
+panel, independently of whether other engines were active
+at the same time (each engine produces the exact same score whether it runs alone or
+accompanied). The normalized values are clipped to [0,1]
+(``numpy.clip``) so that a future antigen outside this panel, whose
+raw score exceeds these bounds, does not produce an out-of-range value or
+break the fusion, verified with synthetic extreme values.
 
-Los umbrales de decision (``FUSION_THRESHOLDS``) se calibraron maximizando
-F1 (micro) sobre la rejilla exacta de valores unicos del score fusionado en
-las 17 estructuras completas, tras validar honestamente la generalizacion
-esperada via leave-one-out cross-validation (umbral y limites recalculados
-en cada pliegue sin ver la estructura evaluada, para no sobreajustar al
-propio panel que despues reporta los resultados).
+The decision thresholds (``FUSION_THRESHOLDS``) were calibrated by maximizing
+F1 (micro) over the exact grid of unique values of the fused score in
+the 17 complete structures, after honestly validating the expected
+generalization via leave-one-out cross-validation (threshold and bounds recomputed
+in each fold without seeing the evaluated structure, so as not to overfit to the
+very panel that then reports the results).
 
-Se prioriza F1 micro (agregado sobre residuos de todo el panel, no
-promediado por antigeno) por reflejar directamente el volumen total de
-falsos positivos, sobre F1 macro -- una alternativa de 3 motores
-(excluyendo EpiDope, ponderada por calidad discriminativa) da mejor F1
-macro pero peor F1 micro; se descarto por anadir un esquema de pesos sin
-mejorar la metrica que mas importa para este objetivo, y por requerir
-reescribir el argumento de complementariedad entre motores ya establecido
-en la Discusion del articulo (caso fHbp sitio 1, BepiPred+DiscoTope).
+Micro F1 is prioritized (aggregated over residues of the whole panel, not
+averaged per antigen) because it directly reflects the total volume of
+false positives, over macro F1. A 3-engine alternative
+(excluding EpiDope, weighted by discriminative quality) gives better macro
+F1 but worse micro F1; it was discarded for adding a weighting
+scheme without improving the metric that matters most for this objective, and
+for requiring a rewrite of the engine complementarity argument already established
+in the article's Discussion (the fHbp site 1 case, BepiPred+DiscoTope).
 
-ADR -- ventana de decision (por que NO se reutiliza la ventana de 9aa)
+ADR: decision window (why the 9aa window is NOT reused)
 ----------------------------------------------------------------------
-Cada motor individual usa una ventana deslizante de 9 aminoacidos con
-tolerancia a residuos por debajo del umbral (ver
-``src.engines.epitope_mapping.find_valid_windows``) como mecanismo de
-DECISION. Aplicar esa misma ventana sobre la señal ya fusionada se probo
-explicitamente y empeora todas las combinaciones probadas sin excepcion: el
-score fusionado es mas puntiagudo residuo a residuo que cualquier motor
-individual (es una media de 4 señales normalizadas), y promediar sobre 9
-residuos suprime señal real en vez de suavizar ruido. Se descarta como
-criterio de decision. Lo que si hace falta -- y se mantiene -- es agrupar
-residuos positivos ya decididos en regiones contiguas (pura adyacencia, sin
-promediar ni tolerar huecos) y descartar las mas cortas de
-``MIN_FINAL_PEPTIDE_LENGTH``: no cambia ninguna metrica por si solo
-(verificado), pero es necesario porque una region de 2-3 residuos es
-inutilizable en las fases siguientes (NetMHCpan necesita un nucleo de
-8-11aa, NetMHCIIpan una ventana de 15aa).
+Each individual engine uses a sliding window of 9 amino acids with
+tolerance for residues below the threshold (see
+``src.engines.epitope_mapping.find_valid_windows``) as its DECISION
+mechanism. Applying that same window over the already fused signal was tested
+explicitly and worsens every combination tested without exception: the
+fused score is more peaked residue by residue than any individual
+engine (it is a mean of 4 normalized signals), and averaging over 9
+residues suppresses real signal instead of smoothing noise. It is discarded as a
+decision criterion. What IS needed, and is kept, is grouping
+already decided positive residues into contiguous regions (pure adjacency, without
+averaging or tolerating gaps) and discarding those shorter than
+``MIN_FINAL_PEPTIDE_LENGTH``: on its own it changes no metric
+(verified), but it is necessary because a region of 2-3 residues is
+unusable in the following phases (NetMHCpan needs a core of
+8-11aa, NetMHCIIpan a window of 15aa).
 
-ADR -- completado hasta TARGET_CANDIDATES + reserva perezosa (sustituye al
-antiguo mecanismo de respaldo unico)
+ADR: top-up to TARGET_CANDIDATES + lazy reserve (replaces the
+old single-fallback mechanism)
 ----------------------------------------------------------------------
-Con el umbral absoluto, algunos antigenos de señal globalmente debil no
-generan suficientes regiones validas -- desde ninguna hasta 1-2 de las 3
-que Fase 7 puede ensamblar por clase (``Settings.CONSTRUCT_TOP_N_PER_CLASS``,
-verificado: 5-7 de 17 antigenos segun el modo, antes de aplicar este
-mecanismo). Como Fase 7 solo puede ensamblar bloques B-cell de lo que
-sobrevive aqui, un antigeno con menos candidatos de los que Fase 7 podria
-usar pierde una oportunidad real de que un bloque correcto llegue al
-constructo -- mismo argumento que ya usa la Discusion del articulo para
-descartar el consenso estricto entre motores sobre la union anterior, ahora
-generalizado en dos direcciones verificadas sobre el panel de 17
-estructuras (ver Material Suplementario):
+With the absolute threshold, some antigens with a globally weak signal do not
+generate enough valid regions, from none at all to 1-2 of the 3
+that Phase 7 can assemble per class (``Settings.CONSTRUCT_TOP_N_PER_CLASS``,
+verified: 5-7 of 17 antigens depending on the mode, before applying this
+mechanism). Since Phase 7 can only assemble B-cell blocks out of what
+survives here, an antigen with fewer candidates than Phase 7 could
+use loses a real opportunity for a correct block to reach the
+construct. This is the same argument the article's Discussion already uses to
+discard strict consensus between engines over the previous union, now
+generalized in two directions verified on the panel of 17
+structures (see Supplementary Material):
 
-1. El antiguo mecanismo (una unica ventana de respaldo cuando CERO
-   residuos superan el umbral) resolvia el caso mas extremo pero dejaba sin
-   tocar antigenos con 1-2 regiones sobre umbral -- que tampoco alcanzan las
-   ``TARGET_CANDIDATES`` que Fase 7 podria aprovechar. Se generaliza: SIEMPRE
-   que un antigeno tenga menos de ``TARGET_CANDIDATES`` regiones sobre
-   umbral, se completa hasta ese numero con las ventanas de
-   ``FALLBACK_WINDOW`` residuos de mayor score medio de fusion en el resto
-   de la proteina, sin solaparse entre si ni con las regiones ya aceptadas
-   (``_top_windows``, greedy por score descendente). ``TARGET_CANDIDATES``
-   reusa ``Settings.CONSTRUCT_TOP_N_PER_CLASS`` (3): no es un hiperparametro
-   nuevo que calibrar, es el mismo limite que Fase 7 ya aplica al
-   ensamblar -- verificado por leave-one-out cross-validation sobre la
-   rejilla {1..5}, que elige 3 en 17/17 pliegues.
-2. El mecanismo anterior solo garantizaba que un candidato llegara a Fase 4
-   (auto-tolerancia/BLASTp), no que la sobreviviera: un antigeno cuyo unico
-   candidato de respaldo resulta descartado por homologia humana real se
-   queda sin ningun bloque B-cell en el constructo (caso verificado: 7STS).
-   Se añade una reserva de ``RESERVE_EXTRA`` ventanas adicionales (mismo
-   criterio, sin solape con nada ya emitido) quando se activa el
-   completado del punto 1; estas viajan con ``candidate_source='reserve'``
-   y participan igual que cualquier otra fila en Fase 4 (BLASTp) y en el
-   ranking por percentil de Fase 7 (``_select_bcell_candidates``), que ya
-   corta en las mejores ``top_n`` supervivientes -- ninguna de las dos fases
-   necesita saber que una fila viene de la reserva para que la promocion
-   ocurra: si Fase 4 descarta los candidatos de ``threshold``/``top_up``, la
-   reserva que SI sobrevive queda disponible para que Fase 7 la seleccione,
-   sin cambio de control de flujo en ``pipeline.py`` ni en
+1. The old mechanism (a single fallback window when ZERO
+   residues exceed the threshold) solved the most extreme case but left
+   untouched antigens with 1-2 regions above threshold, which also do not reach the
+   ``TARGET_CANDIDATES`` that Phase 7 could exploit. It is generalized: WHENEVER
+   an antigen has fewer than ``TARGET_CANDIDATES`` regions above
+   threshold, it is topped up to that number with the windows of
+   ``FALLBACK_WINDOW`` residues with the highest mean fusion score in the rest
+   of the protein, without overlapping each other or the already accepted regions
+   (``_top_windows``, greedy by descending score). ``TARGET_CANDIDATES``
+   reuses ``Settings.CONSTRUCT_TOP_N_PER_CLASS`` (3): it is not a new
+   hyperparameter to calibrate, it is the same limit that Phase 7 already applies when
+   assembling, verified by leave-one-out cross-validation over the
+   grid {1..5}, which chooses 3 in 17/17 folds.
+2. The previous mechanism only guaranteed that a candidate reached Phase 4
+   (self-tolerance/BLASTp), not that it survived it: an antigen whose only
+   fallback candidate turns out to be discarded for real human homology
+   ends up without any B-cell block in the construct (verified case: 7STS).
+   A reserve of ``RESERVE_EXTRA`` additional windows is added (same
+   criterion, without overlapping anything already emitted) when the
+   top-up of point 1 is activated; these travel with ``candidate_source='reserve'``
+   and participate like any other row in Phase 4 (BLASTp) and in the
+   percentile ranking of Phase 7 (``_select_bcell_candidates``), which already
+   cuts at the best ``top_n`` survivors. Neither of the two phases
+   needs to know that a row comes from the reserve for the promotion to
+   happen: if Phase 4 discards the ``threshold``/``top_up`` candidates, the
+   reserve that DOES survive remains available for Phase 7 to select,
+   without a change of control flow in ``pipeline.py`` or in
    ``construct_assembly.py``.
 
-Cuando un antigeno ya alcanza ``TARGET_CANDIDATES`` regiones sobre umbral,
-no se genera ningun candidato adicional (ni completado ni reserva): el
-mecanismo no toca el volumen de antigenos donde el umbral ya funciona,
-verificado byte a byte sobre el panel completo (12 de 17 antigenos
-identicos al mecanismo anterior). Columna ``candidate_source`` (valores
-``'threshold'``/``'top_up'``/``'reserve'``) reemplaza a la antigua columna
-booleana ``fallback``, que se mantiene como alias derivado
-(``True`` si ``candidate_source != 'threshold'``) para no romper
-``print_fusion_table`` ni el trazado existente hacia Fase 4/7.
+When an antigen already reaches ``TARGET_CANDIDATES`` regions above threshold,
+no additional candidate is generated (neither top-up nor reserve): the
+mechanism does not touch the volume of antigens where the threshold already works,
+verified byte for byte over the complete panel (12 of 17 antigens
+identical to the previous mechanism). The ``candidate_source`` column (values
+``'threshold'``/``'top_up'``/``'reserve'``) replaces the old
+boolean ``fallback`` column, which is kept as a derived alias
+(``True`` if ``candidate_source != 'threshold'``) so as not to break
+``print_fusion_table`` or the existing tracing through to Phase 4/7.
 
-Se probaron y descartaron, con datos reales del panel completo (no solo
-los antigenos problematicos): un umbral de "rescate" secundario mas bajo
-(con o sin puerta de acuerdo entre motores) empeora el compromiso
-precision/recall porque no mueve la region hacia el epitopo real, solo
-engorda la misma region equivocada -- el mismo modo de fallo ya descartado
-del umbral adaptativo por percentil; reutilizar los umbrales YA calibrados
-de 2 motores como regla OR reintroduce el volumen excesivo que la fusion
-elimino; recombinar la señal de ranking (rango percentil, votos por motor,
-z-scores) no mejora el acierto en el primer puesto porque, en los casos que
-fallan, los 4 motores coinciden en la misma region equivocada -- no hay
-complementariedad que explotar ahi; relajar la longitud minima de 9aa
-infla el volumen sin mejorar F1; expandir espacialmente en 3D desde las
-coordenadas (parche de superficie) da precision marginal muy por debajo de
-la media del panel. ``FALLBACK_WINDOW=9`` en si mismo se confirmo optimo
-(barrido de longitud de ventana, N y separacion minima).
+The following were tested and discarded, with real data from the complete panel (not only
+the problematic antigens): a lower secondary "rescue" threshold
+(with or without an agreement gate between engines) worsens the
+precision/recall trade-off because it does not move the region towards the real epitope, it only
+fattens the same wrong region, the same failure mode already discarded
+for the adaptive percentile threshold; reusing the ALREADY calibrated
+2-engine thresholds as an OR rule reintroduces the excessive volume that the fusion
+removed; recombining the ranking signal (percentile rank, votes per engine,
+z-scores) does not improve first-place accuracy because, in the cases that
+fail, all 4 engines agree on the same wrong region, so there is no
+complementarity to exploit there; relaxing the minimum length of 9aa
+inflates the volume without improving F1; expanding spatially in 3D from the
+coordinates (a surface patch) gives marginal precision well below
+the panel mean. ``FALLBACK_WINDOW=9`` itself was confirmed optimal
+(a sweep of window length, N and minimum separation).
 
-Verificado sobre el panel completo (post Fase 4): microF1 sube de 0.306 a
-0.353 y macroF1 de 0.287 a 0.383 frente al mecanismo anterior, con un unico
-antigeno degradado de forma acotada (3NGB, un candidato adicional de bajo
-rendimiento) y cero antigenos sin ningun candidato superviviente de Fase 4.
-Limite residual explicito, no resuelto por este mecanismo: 2 antigenos
-(8UP2, 7STR) siguen sin ningun acierto porque la ventana que si solaparia
-el epitopo real es descartada por Fase 4 (homologia humana real, no un
-fallo de este mecanismo); ver Discusion del articulo.
+Verified over the complete panel (post Phase 4): microF1 rises from 0.306 to
+0.353 and macroF1 from 0.287 to 0.383 compared with the previous mechanism, with a single
+antigen degraded in a bounded way (3NGB, one additional low-performing
+candidate) and zero antigens without any surviving Phase 4 candidate.
+Explicit residual limitation, not solved by this mechanism: 2 antigens
+(8UP2, 7STR) still have no hit at all because the window that would overlap
+the real epitope is discarded by Phase 4 (real human
+homology, not a failure of this mechanism); see the article's Discussion.
 """
 
 from typing import Dict, List, Optional, Sequence, Tuple
