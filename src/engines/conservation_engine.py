@@ -1,4 +1,4 @@
-"""Phase 4d (OPTIONAL): sequence conservation breadth against a local reference panel.
+"""Phase 6b (OPTIONAL): sequence conservation breadth against a local reference panel.
 
 Rationale: an epitope that is poorly conserved between strains/variants of the same
 pathogen protects only against the exact variant used to design it. Prioritizing
@@ -32,7 +32,7 @@ DISTINCT sequences of the panel match above
 coverage filter as Phase 4, see
 ``Settings.BLAST_MIN_QUERY_COVERAGE``), not just the maximum identity against
 any one of them. A candidate identical to a single rare strain of the panel is
-not "conserved" in the sense that matters to Elena (protecting against MANY
+not "conserved" in the sense that matters here (protecting against MANY
 circulating variants); one with an acceptable match against 80% of the panel is,
 even if none of those individual matches is 100% identity.
 

@@ -1,9 +1,9 @@
 # Vaccine Epitope Discovery Pipeline
 
 Terminal orchestrator (`pipeline.py`) that processes a sequence FASTA or a
-structure (PDB/mmCIF) through 15 phases: from antigenicity (annotated
-union of up to 4 independent engines: 2 sequence-based + 2
-structure-based), masking of transmembrane/signal-peptide/
+structure (PDB/mmCIF) through 15 phases: from antigenicity (continuous
+fusion of the scores of up to 4 independent engines: 2 sequence-based + 2
+structure-based), annotation of transmembrane/signal-peptide/
 intracellular regions (not accessible to antibodies), absence of homology with the human proteome
 (autoimmunity risk), allergenicity, N-glycosylation, T-helper
 immunogenicity (MHC-II/HLA-DR/DQ/DP, CD4+) and cytotoxic T-cell
@@ -52,52 +52,86 @@ PDB regardless.
    auto-cache in CSV: BepiPred-3.0 and EpiDope (sequence engines, FASTA →
    per-residue score) and DiscoTope-3.0 and ScanNet (structural engines, single-chain
    PDB → per-residue score).
-3. **Epitope mapping and annotated logical union.** For each active engine, a
-   local sliding window (9 aa, tolerating up to 2 residues below
-   the threshold per window, merging overlapping/adjacent windows;
-   independent threshold per engine, the scales are not comparable with each other)
-   over its antigenicity scores. Then, EVERY region detected by
-   any active engine advances to Phase 4 (`src/engines/consensus.py`):
-   regions that overlap between engines are **merged** (minimum `start`,
-   maximum `end`, without trimming to the intersection, including transitive merging
-   of chains of regions), and are marked in the `origen` column with
-   2-letter abbreviations per contributing engine: `Bp` (BepiPred), `Ed`
-   (EpiDope), `Dt` (DiscoTope-3.0), `Sn` (ScanNet). A single engine is
-   reported on its own (e.g. `'Bp'`); two or three are joined with `'+'` (e.g.
-   `'Bp+Ed'`, `'Dt+Sn'`, `'Bp+Dt'`, any combination, not just the
-   "natural" pairs, so that all of them can be distinguished unambiguously).
-   The only exception: when all 4 engines contribute at once, the label
-   is `'Consenso total'` instead of `'Bp+Ed+Dt+Sn'`. Unbreakable length
-   filter: any final region shorter than 9 aa is discarded
-   before Phase 4.
+3. **Epitope mapping and continuous score fusion.** The raw scores of the
+   active engines are combined BEFORE thresholding, instead of thresholding
+   each engine separately with its own production threshold and joining the
+   resulting regions afterwards (`src/engines/score_fusion.py`; the previous
+   mechanism, `src/engines/consensus.py`, is no longer invoked). Each
+   engine's score is normalized min-max with per-engine bounds calibrated
+   over the validation panel (`FUSION_BOUNDS`) and clipped to [0,1], and the
+   fused signal is their unweighted sum. A residue is positive when that sum
+   reaches the threshold calibrated INDEPENDENTLY for each supported engine
+   combination (`FUSION_THRESHOLDS`: 1.612165 for the 4 engines, 1.164683 for
+   BepiPred+EpiDope, 0.344902 for DiscoTope+ScanNet). Positive residues are
+   grouped into contiguous regions by pure adjacency, without averaging and
+   without gap tolerance, and any region shorter than
+   `MIN_FINAL_PEPTIDE_LENGTH` (9 aa) is discarded. Fusing before deciding is
+   what allows disagreement between engines to count: a region where only one
+   engine has a moderate signal scores lower than one where several agree.
+   The per-engine thresholds (`--bepipred-threshold` and the rest) NO longer
+   decide what survives this phase; each engine still reports, for
+   transparency, the regions it would have called in isolation with its own
+   threshold (printed to the console and written to the per-engine
+   `*_epitopes.csv` files), but those regions do not build the fused result.
+   The `origen` column records the engines that contributed to the fused
+   signal, abbreviated and joined by `'+'`: `Bp` (BepiPred), `Ed` (EpiDope),
+   `Dt` (DiscoTope-3.0), `Sn` (ScanNet). Because every active engine
+   contributes to every residue, `origen` is identical for all regions of a
+   given run.
+
+   **Top-up and reserve.** An antigen with a globally weak signal may not
+   reach the `TARGET_CANDIDATES` (3, reused from
+   `Settings.CONSTRUCT_TOP_N_PER_CLASS`) that Phase 7 can assemble per class.
+   Whenever fewer regions clear the threshold, the result is topped up with
+   the non-overlapping `FALLBACK_WINDOW` (9 residue) windows of highest mean
+   fused score, and `RESERVE_EXTRA` (3) further reserve windows are added, so
+   that a candidate later discarded by Phase 4 does not leave the antigen
+   without a B-cell block. The `candidate_source` column distinguishes
+   `'threshold'`, `'top_up'` and `'reserve'`, and the boolean `fallback`
+   column is kept as a derived alias (`True` when
+   `candidate_source != 'threshold'`). An antigen that already reaches
+   `TARGET_CANDIDATES` above threshold receives no additional candidate. See
+   the ADR in `score_fusion.py` for the full calibration and for the
+   alternatives tested and discarded.
 
    *Biological note:* DiscoTope-3.0/ScanNet score conformational epitopes
    (3D patches potentially discontinuous in the linear sequence);
-   collapsing them into contiguous regions via a sliding window is a
+   collapsing them into contiguous linear regions is a
    deliberate simplification so that Phases 4/5 keep operating on
    synthesizable linear peptides.
-3b. **Transmembrane/signal-peptide/intracellular masking.** TMbed executed
+3b. **Transmembrane/signal-peptide/intracellular annotation.** TMbed executed
    locally (`src/engines/tmbed_engine.py`), on the COMPLETE sequence of
    each accession (not per candidate peptide, unlike Phases 4b/4c: TMbed
    needs the full protein context to predict membrane
-   topology). It discards from the Phase 3 annotated union any region that
-   falls inside a transmembrane helix/strand, the N-terminal
-   signal peptide or an intracellular (cytoplasmic) stretch. Those residues are
-   not accessible to antibodies in the mature/membrane-anchored protein, so
-   proposing them as a B-cell epitope makes no biological sense. Complete
-   per-residue topology comes directly from TMbed (`--out-format 1`, classes
-   `i`/`o` for inside/outside the membrane in addition to `B`/`H`/`S`), without adding
-   any separate subcellular localization tool: an accession with no
-   TM and no signal peptide but entirely cytoplasmic (e.g. PSMD7,
-   a 26S proteasome subunit) ends up covered end to end by a
-   single `intracellular` region and loses all its candidates, a
-   complete exclusion by the same overlap mechanism, without a separate flag at
-   the protein level. It reuses the same venv/weights already installed for the
-   Scipion plugin `scipion-chem-tmbed` (sibling repo, same ProtT5-XL-U50 encoder
+   topology). It ANNOTATES, and does not discard, every region of the Phase 3
+   result that overlaps a transmembrane helix/strand, the N-terminal
+   signal peptide or an intracellular (cytoplasmic) stretch: two columns are
+   added to ALL rows, `tmbed_masked` (bool) and `tmbed_mask_type` (the type of
+   the first region overlapped), and every row continues to Phase 4.
+   Such residues are not accessible to antibodies in the mature,
+   membrane-anchored protein, so the annotation is a strong prioritization
+   signal, but it is deliberately not an eligibility criterion, for two
+   reasons. First, TMbed produces real false positives on amphipathic
+   helices that are structurally analogous to membrane signals, and a hard
+   filter would delete an experimentally validated epitope silently and
+   without an auditable trace, whereas a wrong label only costs the reviewer
+   the effort of ignoring it. Second, whether a cytoplasmic region is
+   reachable depends on the final application (an intact cell versus a
+   lysate, diagnostics, or non-native presentation), which the pipeline does
+   not know and the researcher does. Complete per-residue topology comes
+   directly from TMbed (`--out-format 1`, classes `i`/`o` for inside/outside
+   the membrane in addition to `B`/`H`/`S`), without adding any separate
+   subcellular localization tool: an accession with no TM and no signal
+   peptide but entirely cytoplasmic (e.g. PSMD7, a 26S proteasome subunit)
+   ends up covered end to end by a single `intracellular` region, so all of
+   its candidates are annotated and none is removed. It reuses the same
+   venv/weights already installed for the Scipion plugin
+   `scipion-chem-tmbed` (sibling repo, same ProtT5-XL-U50 encoder
    as StackGlyEmbed), without importing code from that plugin (it depends on
    `pwchem`). Its own report: `<nombre>_tmbed_regions.csv` (detected
-   regions) and `<nombre>_union_epitopes_masked.csv` (post-masking
-   union, the real input of Phase 4).
+   regions) and `<nombre>_union_epitopes_masked.csv` (the annotated result
+   that feeds Phase 4; the file name is retained for backward compatibility
+   even though nothing is removed from it).
 4. **Tolerance filter.** Local BLASTp against the human proteome, with an
    E-value selected dynamically by peptide length (lax for
    short peptides, strict for complete domains/proteins), discarding
@@ -125,7 +159,7 @@ PDB regardless.
    `<= 40 aa` in exact peptide mode (one output row per peptide);
    `> 40 aa` in protein mode (NetMHCIIpan internally slides a 15 aa
    window and evaluates all candidate binding cores inside the
-   fragment; exact peptide mode blows up with a *buffer overflow* of the
+   fragment; exact peptide mode fails with a *buffer overflow* of the
    binary for inputs > 55 aa with the panel of 27 alleles that this
    pipeline uses, hence the safety margin of 40).
 
@@ -178,7 +212,7 @@ PDB regardless.
 6. **Cross-reference with known bnAbs.** LANL HIV Molecular Immunology Database +
    CATNAP, executed locally on already downloaded CSVs
    (`src/engines/lanl_catnap_engine.py`), without any subprocess (pure
-   pandas). It replaces bNAber, whose domain is dead/parked. It cross-references each
+   pandas). It replaces bNAber, whose domain is no longer available. It cross-references each
    `'Segura'` peptide against the known linear epitopes of broadly
    neutralizing antibodies (substring matching, configurable minimum
    threshold, `LANL_CATNAP_MIN_OVERLAP`, 6 aa by default) and appends
@@ -226,8 +260,8 @@ PDB regardless.
    It selects the best `CONSTRUCT_TOP_N_PER_CLASS` candidates (3 by
    default) of each class, **B-cell** (`'Segura'` peptides that are also
    `Non-Allergen` in Phase 4b, ranked by the best available `{motor}_score`),
-   **HTL** (`'Candidato Válido'` from Phase 5, collapsed by
-   `core_9aa`) and **CTL** (`'Candidato Válido'` from Phase 5b, collapsed by
+   **HTL** (`'Candidato Valido'` from Phase 5, collapsed by
+   `core_9aa`) and **CTL** (`'Candidato Valido'` from Phase 5b, collapsed by
    `core_9aa`, prioritizing `netcleave_c_term_match == True`), and
    concatenates them with the standard linkers of the multi-epitope vaccine
    design field: `AAY` intra-CTL (proteasome cleavage site),
@@ -382,7 +416,7 @@ packaged in EpiDope's own repo. Inference is 100% local, without
 any network call or external API.
 
 **a) Create the dedicated conda environment** from the repo's official
-`epidope.yml` (do not install the packages by hand: that dependency resolution is
+`epidope.yml` (do not install the packages manually: that dependency resolution is
 fragile and version by version ends in an inconsistent environment):
 
 ```bash
@@ -461,7 +495,7 @@ and `BLAST_EVALUE_SHORT` / `BLAST_EVALUE_MEDIUM` / `BLAST_EVALUE_LONG`.
 
 **e) Minimum alignment coverage filter.** The lax e-value of
 `blastp-short` (intended not to lose real short homologues) has a
-side effect: a tiny fragment (5-6 aa) 100% identical inside
+side effect: a very short fragment (5-6 aa) 100% identical inside
 a peptide of 9-30 aa is statistically expected *by pure chance* against
 the complete human proteome (~11M residues), not a real homology.
 Without filtering this, almost any short peptide was rejected for
@@ -568,7 +602,7 @@ export SCANNET_RUNTIME=venv   # default is 'docker' (see below)
 ```
 
 **Docker alternative** (`SCANNET_RUNTIME=docker`, official image
-`jertubiana/scannet`): it avoids resolving the old stack by hand. **Validated**
+`jertubiana/scannet`): it avoids resolving the old stack manually. **Validated**
 (`docker pull jertubiana/scannet` + a real run against a PDB, results
 byte-for-byte identical to the `venv` runtime). The image's `WORKDIR` is
 effectively `/ScanNet` (the default of `SCANNET_DOCKER_WORKDIR`, confirmed
@@ -604,7 +638,7 @@ Edit the `NMHOME` line at the start of the `netMHCpan-4.2/netMHCpan` script with
 absolute installation path, just as in NetMHCIIpan-4.3 (Section 5b).
 
 **c) Known buffer overflow.** The `netMHCpan` binary (exact peptide mode,
-`-p`) blows up with `*** buffer overflow detected ***` (exit code 0, the
+`-p`) fails with `*** buffer overflow detected ***` (exit code 0, the
 `tcsh` wrapper does not propagate the failure) for peptides > ~55 aa with the panel of 23
 default alleles (re-verified when extending the panel from 12 to 23: the limit
 does not change, it is a property of the peptide length, not of how many alleles are
@@ -631,7 +665,7 @@ normally `<venv>/lib/python3.X/site-packages/algpred2/python_scripts/algpred2.py
 `ALGPRED_THRESHOLD` (`ML_Score` threshold, 0.3 by default, the same as
 `algpred2.py` itself).
 
-> **Known upstream script bug** (verified empirically): it blows up
+> **Known upstream script bug** (verified empirically): it fails
 > with `ValueError: Expected 2D array, got 1D array` if the input batch
 > has EXACTLY 1 sequence. This pipeline's wrapper avoids it by
 > duplicating the single sequence before invoking the binary and discarding the
@@ -658,7 +692,7 @@ Environment variables: `NETCLEAVE_PYTHON_BIN`, `NETCLEAVE_SCRIPT_PATH` (path to
 
 Open source ([github.com/GaryChan-lab/StackGlyEmbed](https://github.com/GaryChan-lab/StackGlyEmbed)),
 N-glycosylation prediction via an already trained ProteinBERT + ESM-2 650M + ProtT5
-stack. The original repo expects candidate positions written by hand
+stack. The original repo expects candidate positions written manually
 and calls the network on every run (ESM-2 via `torch.hub`, ProtT5 against the
 remote Hub ID). This pipeline replaces it with
 `src/engines/stackglyembed_predict_local.py` (versioned in this same repo,
@@ -749,7 +783,7 @@ python3 -m venv .venv-toxinpred2
 > .venv-toxinpred2/bin/pip install "pandas==1.5.3" "numpy<2"
 > ```
 > (pandas 1.5.3 is compiled against the numpy<2 ABI; without this second
-> pin, importing pandas blows up with
+> pin, importing pandas fails with
 > `ValueError: numpy.dtype size changed...`).
 
 Environment variables: `TOXINPRED2_PYTHON_BIN`, `TOXINPRED2_BINARY_NAME`
@@ -760,9 +794,9 @@ default as `toxinpred2` itself), `TOXINPRED2_MODEL` (1 by default).
 > a Random Forest over amino acid composition and does not compare against
 > any real toxin; model 2 adds BLAST against the embedded toxin database
 > and MERCI motifs, and exposes the three scores separately, just like
-> `ALGPRED_MODEL=2`. Model 2 of `toxinpred2` 1.1 is **broken out of the box**:
+> `ALGPRED_MODEL=2`. Model 2 of `toxinpred2` 1.1 is **broken as shipped**:
 > `BLAST_processor()` iterates over `seqid`, which only exists as a local
-> variable of `main()`, so it blows up with `NameError: name 'seqid' is not
+> variable of `main()`, so it fails with `NameError: name 'seqid' is not
 > defined` whenever BLAST returns no hit, which is the normal case for
 > a short non-toxic peptide. The project fixes it at runtime
 > with `src/engines/toxinpred2_hybrid_shim.py`, without patching the installed
@@ -789,7 +823,7 @@ IApred/.venv-iapred/bin/pip install -r IApred/requirements.txt
 
 > **Note (confirmed in this environment):** the repo's `requirements.txt` is
 > incomplete. `functions.py` imports, without declaring them anywhere,
-> `imbalanced-learn`, `matplotlib` and `seaborn`. Install them by hand:
+> `imbalanced-learn`, `matplotlib` and `seaborn`. Install them manually:
 > ```bash
 > IApred/.venv-iapred/bin/pip install imbalanced-learn matplotlib seaborn
 > ```
@@ -823,7 +857,7 @@ python3 -m venv .venv-signalp   # Python 3.10, see note below
 >   `torch>1.7.0,<2`, with no wheel left in the official CPU-only PyTorch index
 >   for modern installations. It is installed from normal PyPI instead,
 >   which does have wheels for Python 3.10.
-> - `pip install` drags in `numpy>=2` (via `matplotlib`, without an upper pin in
+> - `pip install` pulls in `numpy>=2` (via `matplotlib`, without an upper pin in
 >   `requirements.txt`), incompatible with the ABI of `torch==1.13`, the same
 >   kind of bug as ToxinPred2 (`RuntimeError: Numpy is not available`).
 > - **There is no need to follow step 4 of the official `README.md`** (copying the
@@ -841,7 +875,7 @@ Open source (Apache-2.0, Bernhofer & Rost 2022), pip-installable, but its
 ProtT5-XL-U50 encoder weights (~2.4 GB) do not come bundled and are normally
 downloaded from HuggingFace on first use, which is not allowed by this
 project's local-only/no-scraping policy: both pieces are installed
-once only, by hand.
+once only, manually.
 
 This pipeline **reuses the same venv/weights** already installed for the
 sibling Scipion plugin `scipion-chem-tmbed` (see its `README.rst`), without installing
@@ -963,17 +997,19 @@ environment variables of Sections 2-7).
 ./run.sh --input inputs/secuencia.fasta \
     --alelo-extra "DRB1_1602,HLA-DQA10501-DQB10201"
 
-# The Phase 3 thresholds/minimum length are independent per engine
-# (the score scales are not comparable with each other):
+# The per-engine Phase 3 thresholds/minimum lengths are INFORMATIONAL only:
+# they no longer decide which regions survive (that is the calibrated
+# threshold of the fused signal, see score_fusion.py). They still control
+# what each engine reports in isolation, printed and written per engine:
 ./run.sh --input inputs/secuencia.fasta \
     --bepipred-threshold 0.1512 --bepipred-min-length 9 \
     --epidope-threshold 0.818 --epidope-min-length 9 \
     --discotope-threshold 0.90 --discotope-min-length 9 \
     --scannet-min-length 9
-# ScanNet is different: by default (without --scannet-threshold) it uses an
-# ADAPTIVE percentile threshold, computed per accession (ScanNet does not publish an
-# official absolute threshold, unlike DiscoTope-3.0). To force a
-# fixed value instead of the adaptive one:
+# ScanNet is different: by default (without --scannet-threshold) its
+# isolated report uses an ADAPTIVE percentile threshold, computed per
+# accession (ScanNet does not publish an official absolute threshold, unlike
+# DiscoTope-3.0). To force a fixed value instead of the adaptive one:
 ./run.sh --input inputs/estructura.pdb --scannet-threshold 0.15
 
 # Phase 6b (OPTIONAL): annotates conservation breadth against a local panel
@@ -1030,10 +1066,10 @@ the Phase 7 table).
 | `<nombre>_epidope_epitopes.csv` | 3 | Epitope regions mapped locally (EpiDope) |
 | `<nombre>_discotope_epitopes.csv` | 3 | Epitope regions mapped locally (DiscoTope-3.0) |
 | `<nombre>_scannet_epitopes.csv` | 3 | Epitope regions mapped locally (ScanNet) |
-| `<nombre>_union_epitopes.csv` | 3 | Annotated union of the active engines (`origen` column), the input of Phase 3b |
+| `<nombre>_union_epitopes.csv` | 3 | Regions extracted from the fused signal (`origen`/`fused_score`/`candidate_source`/`fallback` columns), the input of Phase 3b |
 | `<nombre>_tmbed_raw.pred` | 3b | Raw TMbed output (3-line-per-protein format), for traceability |
 | `<nombre>_tmbed_regions.csv` | 3b | Detected transmembrane/signal-peptide/intracellular regions (`accession`/`start`/`end`/`type`) |
-| `<nombre>_union_epitopes_masked.csv` | 3b | Annotated union after discarding regions overlapping TM/signal peptide/intracellular, the real input of Phase 4 |
+| `<nombre>_union_epitopes_masked.csv` | 3b | Same regions annotated with `tmbed_masked`/`tmbed_mask_type`; nothing is removed, all rows feed Phase 4 (file name retained for backward compatibility) |
 | `<nombre>_blast_report.csv` | 4 | Tolerance verdict (Segura / Autoinmunidad) per region |
 | `<nombre>_algpred_raw.csv` | 4b | Raw AlgPred 2.0 output, for traceability |
 | `<nombre>_alergenicidad_report.csv` | 4b | Allergenicity verdict (Allergen / Non-Allergen) per `'Segura'` peptide |
@@ -1070,11 +1106,11 @@ deduplication of redundant windows: it only contains candidates with
 | `sequence_f5` | Peptide/window evaluated by NetMHCIIpan (the complete peptide in exact mode, or the winning 15 aa window in protein mode) |
 | `core_9aa` | 9 aa binding core of the allele with the best %Rank **in normal orientation** (inverted alleles never determine this value) |
 | `start` / `end` | Absolute coordinates in the source protein (1-indexed), recomputed by traceback against the Phase 3/4 region |
-| `origen` | Phase 3 engines that detected the region, abbreviated (`Bp`/`Ed`/`Dt`/`Sn`) and joined by `'+'` (e.g. `'Bp'`, `'Bp+Ed'`, `'Dt+Sn'`, `'Bp+Dt'`); `'Consenso total'` if all 4 contribute |
+| `origen` | Engines that contributed to the fused Phase 3 signal, abbreviated (`Bp`/`Ed`/`Dt`/`Sn`) and joined by `'+'`. Since every active engine contributes to every residue, it is identical for all rows of a run (e.g. `'Bp+Ed'` on Path 1, `'Bp+Ed+Dt+Sn'` on Path 3) |
 | `n_alelos_promiscuos` | How many alleles of the panel (out of 27, or more if you used `--alelo-extra`) classify the peptide as SB/WB **in normal orientation**. This number decides the verdict |
 | `n_alelos_evaluados` | Total size of the evaluated panel |
 | `min_rank_el` | Best (lowest) %Rank among the alleles in normal orientation |
-| `<motor>_score` | One column per engine active in that run (e.g. `bepipred_score`, `discotope_score`, ...): mean antigenicity score from Phase 3 (`NaN` if that engine did not detect that region) |
+| `<motor>_score` | One column per engine active in that run (e.g. `bepipred_score`, `discotope_score`, ...): that engine's mean NORMALIZED score over the region (the per-engine component of the fused signal, not the raw score) |
 
 `<nombre>_candidatos_finales_mhc1.csv` (Phase 5b) has the same format
 (the MHC-I analogue: `NETMHCPAN_REFERENCE_PANEL` instead of the MHC-II panel,
@@ -1102,10 +1138,12 @@ construct) with the columns of the 4 engines combined: `algpred_score`/
 
 ## Tests
 
-The test suite (`tests/`, `pytest`, 219 tests) covers the pure logic of
+The test suite (`tests/`, `pytest`, over 300 unit tests) covers the pure logic of
 each phase: input routing (FASTA vs. structure), structure
-extraction (modified residues, chain selection), annotated union of N
-engines in Phase 3, task/E-value selection in Phase 4, parsing of the NetMHCIIpan
+extraction (modified residues, chain selection), score fusion and region
+extraction in Phase 3 (`test_score_fusion.py`; `test_consensus.py` still
+covers the superseded annotated-union mechanism), task/E-value selection in
+Phase 4, parsing of the NetMHCIIpan
 `.xls` and exclusion of inverted alleles, coordinate traceback,
 window deduplication and validation of `--alelo-extra`/`--pdb-mode`, without
 depending on BepiPred, EpiDope, DiscoTope-3.0, ScanNet, BLAST+ or NetMHCIIpan

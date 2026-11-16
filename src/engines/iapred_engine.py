@@ -1,43 +1,43 @@
-"""Antigenicidad intrinseca del constructo via IApred LOCAL (venv dedicado, subprocess puro).
+"""Intrinsic antigenicity of the construct via LOCAL IApred (dedicated venv, pure subprocess).
 
-Wrapper 100% local sobre ``IApred.py`` (Miles et al. 2025,
-github.com/sebamiles/IApred, open source), mismo patron que
-``netcleave_engine.py``. Reemplazo de VaxiJen: VaxiJen (la herramienta de
-referencia historica para "antigenicidad de proteina completa") NO es
-open-source, no tiene binario standalone descargable ni API publica
-documentada para uso programatico -- descartado explicitamente. IApred es
-la unica alternativa open-source/local publicada especificamente para
-llenar ese hueco.
+A 100% local wrapper over ``IApred.py`` (Miles et al. 2025,
+github.com/sebamiles/IApred, open source), the same pattern as
+``netcleave_engine.py``. A replacement for VaxiJen: VaxiJen (the historical
+reference tool for "whole-protein antigenicity") is NOT
+open-source, has no downloadable standalone binary and no documented public
+API for programmatic use, and was explicitly discarded. IApred is
+the only open-source/local alternative published specifically to
+fill that gap.
 
-A diferencia de los motores de Fase 2 (BepiPred/EpiDope/DiscoTope/ScanNet,
-que puntuan antigenicidad POR RESIDUO para localizar epitopos), IApred
-puntua la secuencia COMPLETA de una sola vez (SVM sobre features
-fisicoquimicas agregadas, sin PyTorch/TensorFlow) -- exactamente la pregunta
-que hace falta en Fase 8 ("es antigenico este constructo como un todo"), no
-"donde estan los epitopos dentro de el".
+Unlike the Phase 2 engines (BepiPred/EpiDope/DiscoTope/ScanNet,
+which score antigenicity PER RESIDUE in order to locate epitopes), IApred
+scores the COMPLETE sequence in one pass (an SVM over aggregated
+physicochemical features, without PyTorch/TensorFlow), which is exactly the question
+needed in Phase 8 ("is this construct antigenic as a whole"), not
+"where are the epitopes inside it".
 
-Detalles de instalacion (no documentados en el propio repo):
+Installation details (not documented in the repo itself):
 
-1. ``models_folder = "models"`` en ``IApred.py`` es una ruta RELATIVA
-   resuelta contra el CWD del proceso, no contra la ubicacion del script.
-   El subprocess se invoca siempre con ``cwd=Settings.IAPRED_HOME`` (la raiz
-   del clon), igual motivo que ``discotope_engine.py``/``netcleave_engine.py``.
-2. ``requirements.txt`` del repo esta INCOMPLETO: declara
+1. ``models_folder = "models"`` in ``IApred.py`` is a RELATIVE path
+   resolved against the process CWD, not against the script's location.
+   The subprocess is therefore always invoked with ``cwd=Settings.IAPRED_HOME`` (the root
+   of the clone), for the same reason as ``discotope_engine.py``/``netcleave_engine.py``.
+2. The repo's ``requirements.txt`` is INCOMPLETE: it declares
    ``numpy``/``biopython``/``scikit-learn==1.5.2``/``joblib``/``scipy``
-   (mas ``imbalanced-learn`` comentado) pero ``functions.py`` tambien
-   importa, sin declararlas en ningun lado, ``imbalanced-learn``,
-   ``matplotlib`` y ``seaborn`` en el top-level del modulo -- sin instalarlas
-   a mano el import revienta con ``ModuleNotFoundError`` antes de llegar a
-   ejecutar nada.
-3. ``main()`` en ``IApred.py`` llama a ``check_and_install_dependencies()``
-   al arrancar, que en teoria podria disparar un ``pip install`` de red si
-   falta ``numpy``/``Bio``/``sklearn``/``joblib`` (OJO: esa lista NO incluye
-   ``imbalanced-learn``/``matplotlib``/``seaborn``, ver punto 2). Con el venv
-   de este proyecto ya completo (los 7 paquetes instalados), esa rama nunca
-   se ejecuta, pero si alguna vez el venv se reinstala sin completar el
-   punto 2, el riesgo real es un
-   ``ModuleNotFoundError``, no una llamada de red silenciosa (la lista
-   chequeada por esa funcion no cubre las 3 dependencias faltantes).
+   (plus ``imbalanced-learn`` commented out) but ``functions.py`` also
+   imports, without declaring them anywhere, ``imbalanced-learn``,
+   ``matplotlib`` and ``seaborn`` at module top level, so without installing them
+   manually the import fails with ``ModuleNotFoundError`` before reaching
+   any execution.
+3. ``main()`` in ``IApred.py`` calls ``check_and_install_dependencies()``
+   at startup, which could in theory trigger a network ``pip install`` if
+   ``numpy``/``Bio``/``sklearn``/``joblib`` are missing (note that this list does NOT include
+   ``imbalanced-learn``/``matplotlib``/``seaborn``, see point 2). With this
+   project's venv already complete (all 7 packages installed), that branch never
+   executes, but if the venv is ever reinstalled without completing
+   point 2, the real risk is a
+   ``ModuleNotFoundError``, not a silent network call (the list
+   checked by that function does not cover the 3 missing dependencies).
 """
 
 import subprocess

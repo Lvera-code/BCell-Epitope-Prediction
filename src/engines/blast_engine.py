@@ -1,42 +1,42 @@
-"""Fase 4: Filtro de tolerancia inmunologica via BLASTp local contra el proteoma humano.
+"""Phase 4: immunological tolerance filter via local BLASTp against the human proteome.
 
-Requisito de entorno: este modulo NUNCA llama a un servicio remoto de BLAST.
-Depende exclusivamente de un binario 'blastp' local (paquete NCBI BLAST+) y de
-una base de datos ya indexada con 'makeblastdb', cuya ruta se lee de
-``Settings.BLAST_HUMAN_DB`` (variable de entorno ``BLAST_HUMAN_DB``, nunca
-hardcodeada). Si el binario o la base de datos faltan, se lanza
-``BlastExecutionError`` con instrucciones accionables -exactamente el mismo
-patron de salida elegante que ``BepiPredEngine`` usa en la Fase 2- en vez de
-fallar con una traza opaca.
+Environment requirement: this module NEVER calls a remote BLAST service.
+It depends exclusively on a local 'blastp' binary (the NCBI BLAST+ package) and on
+a database already indexed with 'makeblastdb', whose path is read from
+``Settings.BLAST_HUMAN_DB`` (the ``BLAST_HUMAN_DB`` environment variable, never
+hardcoded). If the binary or the database are missing,
+``BlastExecutionError`` is raised with actionable instructions, exactly the same
+graceful-exit pattern that ``BepiPredEngine`` uses in Phase 2, instead of
+failing with an opaque traceback.
 
-Seleccion dinamica de algoritmo y E-value (por peptido): BLAST recomienda un
-modo de busqueda y una sensibilidad estadistica distintos segun la longitud
-de la secuencia consultada. Cada peptido de ``epitopes_df`` (Fase 3) se
-evalua individualmente:
+Dynamic selection of algorithm and E-value (per peptide): BLAST recommends a
+different search mode and statistical sensitivity according to the length
+of the queried sequence. Each peptide of ``epitopes_df`` (Phase 3) is
+evaluated individually:
 
-* longitud <= ``Settings.BLAST_SHORT_PEPTIDE_MAX_LEN`` (30 aa por defecto) ->
-  ``-task blastp-short`` (word_size y matriz de sustitucion ajustados para
-  secuencias cortas), ``evalue=Settings.BLAST_EVALUE_SHORT`` (50 por
-  defecto: con el e-value estandar de blastp, un match identico de un
-  peptido corto contra el proteoma humano se descarta como "no
-  significativo" por pura estadistica de longitud, arruinando el filtro de
-  autoinmunidad justo donde mas importa).
-* ``Settings.BLAST_SHORT_PEPTIDE_MAX_LEN`` < longitud <=
-  ``Settings.BLAST_MEDIUM_PEPTIDE_MAX_LEN`` (100 aa por defecto) ->
-  ``-task blastp``, ``evalue=Settings.BLAST_EVALUE_MEDIUM`` (0.1 por defecto).
-* longitud > ese segundo umbral -> ``-task blastp``,
-  ``evalue=Settings.BLAST_EVALUE_LONG`` (0.05 por defecto: en consultas
-  largas un e-value laxo generaria ruido de homologias irrelevantes).
+* length <= ``Settings.BLAST_SHORT_PEPTIDE_MAX_LEN`` (30 aa by default) ->
+  ``-task blastp-short`` (word_size and substitution matrix adjusted for
+  short sequences), ``evalue=Settings.BLAST_EVALUE_SHORT`` (50 by
+  default: with the standard blastp e-value, an identical match of a
+  short peptide against the human proteome is discarded as "not
+  significant" by pure length statistics, ruining the autoimmunity
+  filter exactly where it matters most).
+* ``Settings.BLAST_SHORT_PEPTIDE_MAX_LEN`` < length <=
+  ``Settings.BLAST_MEDIUM_PEPTIDE_MAX_LEN`` (100 aa by default) ->
+  ``-task blastp``, ``evalue=Settings.BLAST_EVALUE_MEDIUM`` (0.1 by default).
+* length > that second threshold -> ``-task blastp``,
+  ``evalue=Settings.BLAST_EVALUE_LONG`` (0.05 by default: on long queries
+  a lax e-value would generate noise from irrelevant homologies).
 
-Los peptidos se agrupan por tramo (misma tarea + mismo E-value) y cada grupo
-se ejecuta en su propia invocacion de ``subprocess.run`` (un unico comando no
-puede mezclar dos ``-task``/``-evalue`` distintos), y los resultados se
-combinan al final.
+The peptides are grouped by band (same task + same E-value) and each group
+is executed in its own ``subprocess.run`` invocation (a single command cannot
+mix two different ``-task``/``-evalue`` values), and the results are
+combined at the end.
 
-``filter_self_tolerant`` (usada en Fase 5/5b/7, no solo Fase 4): re-chequea
-tolerancia inmunologica sobre secuencias FINALES mas cortas (``sequence_f5``
-de HTL/CTL, candidato B-cell ya recortado/extendido) -- ver su docstring
-para el porque Fase 4 sola no alcanza para esas secuencias.
+``filter_self_tolerant`` (used in Phases 5/5b/7, not only Phase 4): it re-checks
+immunological tolerance over shorter FINAL sequences (``sequence_f5``
+of HTL/CTL, or an already trimmed/extended B-cell candidate). See its docstring
+for why Phase 4 alone is not sufficient for those sequences.
 """
 
 import shutil

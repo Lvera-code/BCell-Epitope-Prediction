@@ -1,129 +1,144 @@
 #!/usr/bin/env python3
-"""Orquestador CLI del pipeline de descubrimiento de epitopos vacunales.
+"""CLI orchestrator of the vaccine epitope discovery pipeline.
 
-Tres caminos de entrada, seleccionados automaticamente segun el tipo de
-archivo (``src.utils.input_router``) y, para input de estructura, segun
-``Settings.PDB_PROCESSING_MODE``/``--pdb-mode`` (ver
+Three input paths, selected automatically according to the file type
+(``src.utils.input_router``) and, for structure input, according to
+``Settings.PDB_PROCESSING_MODE``/``--pdb-mode`` (see
 ``src.engines.engine_registry.active_engines_for``):
 
-    Camino 1 (input FASTA):
-        Fase 1 (saneamiento) -> Fase 2 con BepiPred-3.0 + EpiDope.
-    Camino 2 (input PDB/mmCIF, PDB_PROCESSING_MODE='structure_only'):
-        Fase 1.5 (extraccion de estructura) -> Fase 2 con DiscoTope-3.0 +
-        ScanNet UNICAMENTE. BepiPred-3.0/EpiDope nunca se invocan.
-    Camino 3 (input PDB/mmCIF, PDB_PROCESSING_MODE='structure_and_sequence'):
-        Fase 1.5 -> Fase 2 con los 4 motores. El FASTA canonico (ATMSEQ)
-        derivado en Fase 1.5 se pasa tambien a BepiPred-3.0/EpiDope, EXCEPTO
-        si contiene residuos no canonicos (ver ``is_bepipred_compatible``):
-        en ese caso se omiten solo esos dos motores para esta corrida (con
-        aviso claro), sin frenar los motores estructurales ni el resto del
-        pipeline (BepiPred-3.0 rechaza en bloque, exit code 1, cualquier
-        caracter fuera de los 20 aminoacidos estandar -ver
-        ``src.utils.fasta_parser``-).
+    Path 1 (FASTA input):
+        Phase 1 (sanitation) -> Phase 2 with BepiPred-3.0 + EpiDope.
+    Path 2 (PDB/mmCIF input, PDB_PROCESSING_MODE='structure_only'):
+        Phase 1.5 (structure extraction) -> Phase 2 with DiscoTope-3.0 +
+        ScanNet ONLY. BepiPred-3.0/EpiDope are never invoked.
+    Path 3 (PDB/mmCIF input, PDB_PROCESSING_MODE='structure_and_sequence'):
+        Phase 1.5 -> Phase 2 with all 4 engines. The canonical FASTA (ATMSEQ)
+        derived in Phase 1.5 is also passed to BepiPred-3.0/EpiDope, EXCEPT
+        when it contains non-canonical residues (see ``is_bepipred_compatible``):
+        in that case only those two engines are skipped for this run (with a
+        clear warning), without stopping the structural engines or the rest of the
+        pipeline (BepiPred-3.0 rejects wholesale, exit code 1, any
+        character outside the 20 standard amino acids, see
+        ``src.utils.fasta_parser``).
 
-A partir de Fase 2, el resto del flujo es identico para los 3 caminos:
+From Phase 2 onwards, the rest of the flow is identical for all 3 paths:
 
-    2. Prediccion de antigenicidad por residuo via los motores activos para
-       este camino, EJECUTADOS EN LOCAL (subprocess). Cada motor tiene
-       auto-cache propio en ``outputs/``.
+    2. Per-residue antigenicity prediction via the engines active for
+       this path, EXECUTED LOCALLY (subprocess). Each engine has its own
+       auto-cache in ``outputs/``.
 
-    Checkpointing (Fases 4/4b/4c/5/5b/6): igual que el auto-cache de Fase 2,
-    cada una de estas fases guarda un sidecar ``.inputhash`` junto a su CSV
-    final. Si una corrida se interrumpe (p. ej. un OOM en Fase 4c) y se
-    relanza con el MISMO input y los mismos parametros, cada fase ya
-    completada se detecta por hash y se salta directo a la que fallo, en vez
-    de recomputar todo desde el principio (ver ``_load_phase_checkpoint``/
-    ``_write_phase_checkpoint``). El pico de memoria residente del proceso se
-    loggea despues de las fases mas pesadas (ver ``_log_peak_memory``), para
-    diagnosticar en cual ocurrio un OOM sin depender de herramientas externas.
-    3. Mapeo local de regiones de epitopo contiguas por encima de un umbral
-       para cada motor activo (``src.engines.epitope_mapping``), y UNION
-       LOGICA ANOTADA entre todos ellos (``src.engines.consensus``): TODA
-       region detectada por CUALQUIER motor activo avanza a la Fase 4; las
-       regiones que solapan entre motores se FUSIONAN (start minimo, end
-       maximo, sin recortar a la interseccion) y quedan etiquetadas en
-       ``origen`` con TODOS los motores contribuyentes. Filtro de longitud
-       inquebrantable: se descarta cualquier region final menor a 9 aa antes
-       de la Fase 4.
-    3b. Anotacion transmembrana/peptido senal/intracelular (TMbed LOCAL,
-       ``src.engines.tmbed_engine``): corre sobre la secuencia COMPLETA de
-       cada accession (no por peptido candidato) y ANOTA en la union
-       anotada de Fase 3 (columnas ``tmbed_masked``/``tmbed_mask_type``)
-       que regiones caen dentro de una helice/tira transmembrana, del
-       peptido senal N-terminal o de un tramo citoplasmatico -- en
-       principio no accesibles a anticuerpos en la proteina madura/anclada
-       a membrana. Topologia completa por residuo ('i'/'o', dentro/fuera)
-       sale directo de TMbed (``--out-format 1``), sin herramienta de
-       localizacion subcelular aparte. Esta fase ya NO
-       excluye candidatos (antes descartaba de punta a punta cualquier
-       accession 100% citoplasmatica como PSMD7) -- la validacion de
-       publicacion sobre 17 estructuras PDB reales encontro que TMbed, sin
-       contexto de proteina completa/membrana real, se equivoca con
-       frecuencia verificable en fragmentos aislados (marca "intracellular"
-       dominios genuinamente extracelulares con epitopo ya corroborado en
-       literatura). Reusa el venv/pesos ya instalados para el plugin
-       Scipion ``scipion-chem-tmbed`` (repo hermano), sin importar codigo
-       de ese plugin.
-    4. Filtro de tolerancia inmunologica: BLASTp local contra el proteoma
-       humano, descarta homologos de alta identidad (``src.engines.blast_engine``).
-       Los peptidos 'Segura' resultantes alimentan, en paralelo y sin
-       depender entre si, TODAS las fases siguientes (4b, 4c, 5, 5b, 6).
-    4b. Alergenicidad (AlgPred 2.0 LOCAL, ``src.engines.algpred_engine``):
-       señal de seguridad de la secuencia en si. Ya NO
-       filtra el constructo final (antes excluia del bloque B-cell de Fase 7
-       cualquier secuencia marcada 'Allergen') -- ahora es puramente
-       informativa, igual que 4c/6/6c, anotada en la columna ``allergen``.
-    4c. N-glicosilacion (StackGlyEmbed LOCAL, ``src.engines.stackglyembed_engine``):
-       escanea sequones N-X-[S/T] propios (X != Prolina) y evalua cada uno
-       con un stack ProteinBERT+ESM-2+ProtT5 ya entrenado; informativa,
-       igual que 4b.
-    5. Prediccion de presentacion T-helper (MHC-II) via NetMHCIIpan-4.3 LOCAL
-       contra un panel de 27 alelos HLA-DR/DQ/DP de referencia
-       (IEDB_REFERENCE_PANEL); reporta como candidato final solo los
-       peptidos "promiscuos" (SB/WB en >= 3 alelos del panel EN ORIENTACION
-       DE UNION NORMAL -los alelos que solo aglutinan via un registro
-       invertido, de menor confianza, no cuentan para el veredicto pero se
-       reportan aparte, pensado para minimizar falsos positivos que lleguen
-       a sintesis/validacion experimental-), enriquecidos con su nucleo de
-       union de 9 aa y su traceback de coordenadas/origen a la region de la
-       Fase 3 de la que provienen (``src.engines.netmhciipan_engine``).
-    5b. Promiscuidad T-citotoxica (MHC-I, NetMHCpan-4.2 LOCAL,
-       ``src.engines.netmhcpan_engine``), paralela e independiente de la
-       Fase 5 (MHC-II), anotada ademas con evidencia de corte proteasomal
-       C-terminal (NetCleave LOCAL, ``src.engines.netcleave_engine``).
-    6. Cruce con bnAb conocidos (LANL Immunology DB + CATNAP LOCAL,
-       ``src.engines.lanl_catnap_engine``): puramente informativo, solo
-       produce matches reales para entradas de la familia HIV Env.
-    6c. Regiones con proteccion/neutralizacion documentada (IEDB LOCAL,
-       ``src.engines.iedb_engine``): generalizacion de la Fase 6 a
-       CUALQUIER patogeno estudiado (561 organismos en el subconjunto
-       local), mismo mecanismo de solapamiento de subcadena sin filtro por
-       organismo. Puramente informativa, siempre corre. Solo aplica a
-       candidatos B-cell (no HTL/CTL, mecanismo de reconocimiento distinto).
-    7. Ensamblaje automatico del constructo multi-epitopo
-       (``src.engines.construct_assembly``): selecciona los mejores
-       ``Settings.CONSTRUCT_TOP_N_PER_CLASS`` candidatos B-cell/HTL/CTL
-       (Fases 4/4b/4c, 5, 5b) y los concatena con los linkers estandar del
-       campo (AAY intra-CTL, GPGPG intra-HTL/inter-bloque, KK intra-B-cell)
-       en un unico FASTA, con metadata 100% trazable de que peptido/linker
-       fue a cada posicion.
-    8. Chequeo del constructo ensamblado (alergenicidad -AlgPred2, reusa
-       Fase 4b-, toxicidad -ToxinPred2 LOCAL-, antigenicidad intrinseca
-       -IApred LOCAL, reemplaza a VaxiJen, descartado por no ser local/open
-       source-, peptido senal -SignalP-6.0 LOCAL-): a diferencia de Fase
-       4b/4c (por peptido individual), estas 4 corren sobre la secuencia
-       COMPLETA del constructo de Fase 7.
+    Checkpointing (Phases 3b/4/4b/4c/5/5b/6/6b/6c/7/8): like the Phase 2
+    auto-cache, each of these phases saves an ``.inputhash`` sidecar next to its
+    final CSV. If a run is interrupted (for example an OOM in Phase 4c) and is
+    relaunched with the SAME input and the same parameters, each already
+    completed phase is detected by hash and skipped directly to the one that
+    failed, instead of recomputing everything from the beginning (see
+    ``_load_phase_checkpoint``/``_write_phase_checkpoint``). The process's peak
+    resident memory is logged after the heaviest phases (see
+    ``_log_peak_memory``), to diagnose in which one an OOM occurred without
+    depending on external tools.
+    3. Continuous fusion of the per-residue scores of the active engines
+       (``src.engines.score_fusion``): the scores are normalized min-max per
+       engine (``FUSION_BOUNDS``, clipped to [0,1]) and summed WITHOUT
+       weighting, and the regions are extracted from that fused signal using a
+       threshold calibrated INDEPENDENTLY for each supported engine
+       combination (``FUSION_THRESHOLDS``). Positive residues are grouped by
+       pure adjacency and any region shorter than
+       ``MIN_FINAL_PEPTIDE_LENGTH`` (9 aa) is discarded. Fusing BEFORE
+       thresholding is what lets disagreement between engines count, which the
+       previous mechanism (independent per-engine thresholds and a subsequent
+       annotated logical union, ``src.engines.consensus``, no longer invoked)
+       could not do. The per-engine thresholds are kept as INFORMATIONAL
+       arguments only: each engine still reports what it would have called in
+       isolation, without that building the fused result. When an antigen does
+       not reach ``TARGET_CANDIDATES`` regions above threshold, the result is
+       topped up with the best non-overlapping ``FALLBACK_WINDOW`` windows plus
+       a reserve of ``RESERVE_EXTRA`` more (column ``candidate_source``), so
+       that a candidate later discarded by Phase 4 does not leave the antigen
+       without a B-cell block.
+    3b. Transmembrane/signal-peptide/intracellular annotation (LOCAL TMbed,
+       ``src.engines.tmbed_engine``): it runs on the COMPLETE sequence of
+       each accession (not per candidate peptide) and ANNOTATES on the Phase 3
+       result (columns ``tmbed_masked``/``tmbed_mask_type``)
+       which regions fall inside a transmembrane helix/strand, the
+       N-terminal signal peptide or a cytoplasmic stretch, which are in
+       principle not accessible to antibodies in the mature, membrane-anchored
+       protein. Complete per-residue topology ('i'/'o', inside/outside)
+       comes directly from TMbed (``--out-format 1``), without a separate
+       subcellular localization tool. This phase NO longer
+       excludes candidates (it used to discard end to end any
+       accession that is 100% cytoplasmic, such as PSMD7): the publication
+       validation over 17 real PDB structures found that TMbed, without
+       full-protein/real-membrane context, errs with verifiable frequency on
+       isolated fragments (it marks as "intracellular" genuinely
+       extracellular domains whose epitope is already corroborated in the
+       literature). It reuses the venv/weights already installed for the
+       Scipion plugin ``scipion-chem-tmbed`` (sibling repo), without importing
+       code from that plugin.
+    4. Immunological tolerance filter: local BLASTp against the human
+       proteome, discarding high-identity homologues (``src.engines.blast_engine``).
+       The resulting 'Segura' peptides feed, in parallel and without
+       depending on each other, ALL the following phases (4b, 4c, 5, 5b, 6).
+    4b. Allergenicity (LOCAL AlgPred 2.0, ``src.engines.algpred_engine``):
+       a safety signal of the sequence itself. It NO longer
+       filters the final construct (it used to exclude from the Phase 7 B-cell block
+       any sequence marked 'Allergen'): it is now purely
+       informative, like 4c/6/6c, annotated in the ``allergen`` column.
+    4c. N-glycosylation (LOCAL StackGlyEmbed, ``src.engines.stackglyembed_engine``):
+       it scans its own N-X-[S/T] sequons (X != Proline) and evaluates each one
+       with an already trained ProteinBERT+ESM-2+ProtT5 stack; informative,
+       like 4b.
+    5. T-helper (MHC-II) presentation prediction via LOCAL NetMHCIIpan-4.3
+       against a panel of 27 reference HLA-DR/DQ/DP alleles
+       (IEDB_REFERENCE_PANEL); it reports as a final candidate only the
+       "promiscuous" peptides (SB/WB in >= 3 panel alleles IN NORMAL BINDING
+       ORIENTATION; alleles that bind only via an inverted register, of lower
+       confidence, do not count towards the verdict and are reported
+       separately, which is intended to minimize false positives reaching
+       synthesis/experimental validation), enriched with their 9 aa binding
+       core and their coordinate/origin traceback to the Phase 3 region they
+       come from (``src.engines.netmhciipan_engine``).
+    5b. Cytotoxic T-cell promiscuity (MHC-I, LOCAL NetMHCpan-4.2,
+       ``src.engines.netmhcpan_engine``), parallel to and independent of
+       Phase 5 (MHC-II), additionally annotated with C-terminal proteasomal
+       cleavage evidence (LOCAL NetCleave, ``src.engines.netcleave_engine``).
+    6. Cross-reference with known bnAbs (LOCAL LANL Immunology DB + CATNAP,
+       ``src.engines.lanl_catnap_engine``): purely informative, it only
+       produces real matches for inputs from the HIV Env family.
+    6b. Conservation breadth against a local reference panel (OPTIONAL,
+       ``src.engines.conservation_engine``): it only runs when
+       ``--panel-conservacion`` is passed, and measures how many DISTINCT
+       sequences of the panel match each candidate. Purely informative.
+    6c. Regions with documented protection/neutralization (LOCAL IEDB,
+       ``src.engines.iedb_engine``): a generalization of Phase 6 to
+       ANY studied pathogen (561 organisms in the local subset), with the
+       same substring overlap mechanism and no filter by
+       organism. Purely informative, it always runs. It only applies to
+       B-cell candidates (not HTL/CTL, a different recognition mechanism).
+    7. Automatic assembly of the multi-epitope construct
+       (``src.engines.construct_assembly``): it selects the best
+       ``Settings.CONSTRUCT_TOP_N_PER_CLASS`` B-cell/HTL/CTL candidates
+       (Phases 4/4b/4c, 5, 5b) and concatenates them with the standard linkers
+       of the field (AAY intra-CTL, GPGPG intra-HTL/inter-block, KK intra-B-cell)
+       into a single FASTA, with 100% traceable metadata of which peptide/linker
+       went to each position.
+    8. Check of the assembled construct (allergenicity, AlgPred2, reusing
+       Phase 4b; toxicity, LOCAL ToxinPred2; intrinsic antigenicity,
+       LOCAL IApred, which replaces VaxiJen, discarded for not being
+       local/open source; signal peptide, LOCAL SignalP-6.0): unlike Phases
+       4b/4c (per individual peptide), these 4 run on the COMPLETE
+       sequence of the Phase 7 construct.
 
-Todos los artefactos intermedios y el reporte final se guardan en
-``outputs/``. Requiere, segun los motores que active cada camino:
-instalacion local de BepiPred-3.0 en ``bepipred-3.0b.src/`` y de EpiDope en
-``.conda-epidope/``, DiscoTope-3.0 en ``DiscoTope-3.0/`` (entorno
-``.venv-discotope``) y ScanNet (``.venv-scannet`` o Docker), NCBI BLAST+ con
-el proteoma humano indexado en ``reference_db/``, y NetMHCIIpan-4.3 instalado
-localmente en ``netMHCIIpan-4.3/`` (descarga manual bajo licencia academica
-DTU Health Tech). Ver README.md - Seccion de Instalacion.
+All intermediate artifacts and the final report are saved in
+``outputs/``. Depending on the engines each path activates, it requires:
+a local installation of BepiPred-3.0 in ``bepipred-3.0b.src/`` and of EpiDope in
+``.conda-epidope/``, DiscoTope-3.0 in ``DiscoTope-3.0/`` (environment
+``.venv-discotope``) and ScanNet (``.venv-scannet`` or Docker), NCBI BLAST+ with
+the human proteome indexed in ``reference_db/``, and NetMHCIIpan-4.3 installed
+locally in ``netMHCIIpan-4.3/`` (manual download under a DTU Health Tech
+academic licence). See README.md, the Installation section.
 
-Ejemplo:
+Example:
     python pipeline.py --input inputs/secuencia.fasta
     python pipeline.py --input inputs/estructura.pdb --pdb-mode structure_only
 """

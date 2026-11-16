@@ -1,66 +1,66 @@
-"""Extraccion de features + prediccion de N-glicosilacion (StackGlyEmbed), 100% local/offline.
+"""Feature extraction + N-glycosylation prediction (StackGlyEmbed), 100% local/offline.
 
-Adaptacion de ``extractFeatures.py`` + ``predict.py`` del repo original
-(github.com/GaryChan-lab/StackGlyEmbed, clonado en ``StackGlyEmbed/`` --
-ignorado por git, ver ``.gitignore``) para uso desde
-``src/engines/stackglyembed_engine.py``. Este script vive en el arbol
-versionado del proyecto (NO dentro del clon ignorado) porque es codigo
-propio, no parte del repo original: ``StackGlyEmbed/`` tiene su propio
-``.git`` (es un repo anidado), y git no permite "des-ignorar" un archivo
-dentro de un repo anidado con ningun patron de ``.gitignore``. Los
-pickles del clasificador (``power_transformer_*.sav``,
-``base_layer_pickle_files/``) SI viven dentro del clon ignorado y se
-referencian por ``--models-dir`` (nunca hardcodeados).
+An adaptation of ``extractFeatures.py`` + ``predict.py`` from the original repo
+(github.com/GaryChan-lab/StackGlyEmbed, cloned in ``StackGlyEmbed/``,
+ignored by git, see ``.gitignore``) for use from
+``src/engines/stackglyembed_engine.py``. This script lives in the project's
+versioned tree (NOT inside the ignored clone) because it is our own
+code, not part of the original repo: ``StackGlyEmbed/`` has its own
+``.git`` (it is a nested repo), and git does not allow "un-ignoring" a file
+inside a nested repo with any ``.gitignore`` pattern. The
+classifier pickles (``power_transformer_*.sav``,
+``base_layer_pickle_files/``) DO live inside the ignored clone and are
+referenced via ``--models-dir`` (never hardcoded).
 
-Cambios respecto al original:
+Changes with respect to the original:
 
-1. **ESM-2 via ``transformers.EsmModel`` en vez de ``torch.hub.load``**: el
-   original llama a ``torch.hub.load("facebookresearch/esm:main", ...)``, que
-   golpea red EN CADA CORRIDA (el hub de torch no cachea el codigo de forma
-   reutilizable sin red de la misma manera que HF Hub). ``facebook/esm2_t33_650M_UR50D``
-   via ``transformers`` es el mismo modelo (mismo autor, mismo checkpoint
-   original), soporta carga 100% offline una vez cacheado
-   (``HF_HUB_OFFLINE=1``, ver mas abajo), y produce las mismas
-   representaciones por capa (33 capas, dim 1280) que el codigo original
-   consume.
+1. **ESM-2 via ``transformers.EsmModel`` instead of ``torch.hub.load``**: the
+   original calls ``torch.hub.load("facebookresearch/esm:main", ...)``, which
+   accesses the network ON EVERY RUN (the torch hub does not cache the code in a
+   reusable offline way as HF Hub does). ``facebook/esm2_t33_650M_UR50D``
+   via ``transformers`` is the same model (same author, same original
+   checkpoint), supports 100% offline loading once cached
+   (``HF_HUB_OFFLINE=1``, see below), and produces the same
+   per-layer representations (33 layers, dim 1280) that the original code
+   consumes.
 
-2. **ProtT5 apunta a una ruta LOCAL** (por defecto, la carpeta de pesos ya
-   descargada para TMbed en ``scipion-chem-tmbed/tmbed_src/tmbed/models/t5/``,
-   modelo ``Rostlab/prot_t5_xl_half_uniref50-enc`` -- mismo encoder que
-   ``Rostlab/prot_t5_xl_uniref50`` que pedia el script original, solo que en
-   fp16/sin decoder-, en vez de descargarlo de nuevo) en vez del ID remoto
-   ``Rostlab/prot_t5_xl_uniref50`` que el original resolvia siempre contra el
+2. **ProtT5 points at a LOCAL path** (by default, the weights folder already
+   downloaded for TMbed in ``scipion-chem-tmbed/tmbed_src/tmbed/models/t5/``,
+   model ``Rostlab/prot_t5_xl_half_uniref50-enc``, the same encoder as
+   ``Rostlab/prot_t5_xl_uniref50`` that the original script asked for, only in
+   fp16/without decoder, instead of downloading it again) rather than the remote ID
+   ``Rostlab/prot_t5_xl_uniref50`` that the original always resolved against the
    Hub.
 
-3. **ProteinBERT sin cambios de fondo**: ``load_pretrained_model()`` ya es
-   offline-segura una vez que ``~/proteinbert_models/default.pkl`` existe (se
-   descarga una unica vez como paso de instalacion) -- solo se le
-   pasa ``download_model_dump_if_not_exists=False`` aqui para que *falle* con
-   un error claro en vez de intentar red si por alguna razon el dump no
-   esta, en lugar de descargar silenciosamente en medio de una corrida del
-   pipeline.
+3. **ProteinBERT unchanged in substance**: ``load_pretrained_model()`` is already
+   offline-safe once ``~/proteinbert_models/default.pkl`` exists (it is
+   downloaded once only as an installation step). It is merely
+   passed ``download_model_dump_if_not_exists=False`` here so that it *fails* with
+   a clear error instead of attempting the network if for some reason the dump is
+   not there, rather than downloading silently in the middle of a pipeline
+   run.
 
-4. **Rutas de entrada/salida/modelos por CLI** en vez de nombres de archivo
-   hardcodeados relativos al cwd (``dataset.txt``, ``features.csv``,
-   ``predicted_values.txt``, pickles en ``./base_layer_pickle_files/`` en el
-   original): permite correr multiples invocaciones concurrentes/sucesivas
-   sin pisarse y sin depender de que el cwd sea una carpeta especifica del
-   clon externo.
+4. **Input/output/model paths via CLI** instead of file names
+   hardcoded relative to the cwd (``dataset.txt``, ``features.csv``,
+   ``predicted_values.txt``, pickles in ``./base_layer_pickle_files/`` in the
+   original): this allows multiple concurrent/successive invocations to run
+   without overwriting each other and without depending on the cwd being a specific
+   folder of the external clone.
 
-5. **La embedding global de ProteinBERT se calcula UNA VEZ por proteina**
-   (fuera del loop de sitios), no una vez por cada sitio candidato como en el
-   original (``getRepresentation`` se llamaba dentro del loop de ``site_position``,
-   recalculando el mismo forward pass determinista N veces para N sitios de
-   la misma proteina). Resultado numerico identico, solo evita trabajo
-   redundante.
+5. **The global ProteinBERT embedding is computed ONCE per protein**
+   (outside the site loop), not once per candidate site as in the
+   original (``getRepresentation`` was called inside the ``site_position`` loop,
+   recomputing the same deterministic forward pass N times for N sites of
+   the same protein). The numerical result is identical, it merely avoids
+   redundant work.
 
-El formato de ``dataset.txt`` (``Protein_id,site_1,site_2,...`` seguido de la
-secuencia en la linea siguiente) y el orden/dimensionalidad de columnas de
-``features.csv`` (ProteinBERT global + ESM-2 promediado en ventana +
-ProtT5 residuo puntual, en ese orden) se mantienen EXACTOS respecto al
-original: los clasificadores de ``base_layer_pickle_files/`` y los
-``power_transformer_*.sav`` fueron entrenados contra ese orden preciso y no
-se tocan aqui.
+The format of ``dataset.txt`` (``Protein_id,site_1,site_2,...`` followed by the
+sequence on the next line) and the column order/dimensionality of
+``features.csv`` (global ProteinBERT + window-averaged ESM-2 +
+single-residue ProtT5, in that order) are kept EXACT with respect to the
+original: the classifiers of ``base_layer_pickle_files/`` and the
+``power_transformer_*.sav`` files were trained against that precise order and are
+not touched here.
 """
 
 import argparse

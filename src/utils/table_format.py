@@ -1,17 +1,17 @@
-"""Helper compartido para las tablas de ancho fijo que imprimen en consola los distintos
-motores del pipeline (``blast_engine.print_blast_report``, ``consensus.print_union_table``,
+"""Shared helper for the fixed-width tables that the pipeline's various engines print
+to the console (``blast_engine.print_blast_report``, ``consensus.print_union_table``,
 ``netmhciipan_engine.print_th_report``).
 
-Antes de este modulo, cada uno de esos 3 lugares reimplementaba a mano el mismo patron:
-calcular un ancho de columna, construir el header con f-strings alineados, imprimir una
-linea de guiones del mismo largo como separador, y volver a aplicar los mismos anchos en
-un loop de filas. Este helper extrae esa mecanica repetida sin imponer un formato fijo de
-columnas: cada llamador sigue decidiendo que columnas mostrar, sus anchos, alineacion y
-como se formatea cada valor (incluyendo casos especiales como NaN), via una lista de
+Before this module, each of those 3 places reimplemented the same pattern manually:
+computing a column width, building the header with aligned f-strings, printing a
+line of dashes of the same length as a separator, and applying the same widths again in
+a row loop. This helper extracts that repeated mechanics without imposing a fixed column
+format: each caller still decides which columns to show, their widths, alignment and
+how each value is formatted (including special cases such as NaN), via a list of
 ``Column``.
 
-No cambia ningun resultado visual: la migracion de los 3 usos existentes se verifico con
-un diff exacto contra la salida previa al refactor.
+It changes no visual result: the migration of the 3 existing uses was verified with
+an exact diff against the output prior to the refactor.
 """
 
 from dataclasses import dataclass

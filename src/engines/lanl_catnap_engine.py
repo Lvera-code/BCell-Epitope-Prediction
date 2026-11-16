@@ -1,30 +1,30 @@
-"""Cruce de candidatos contra epitopos de bnAb conocidos (LANL Immunology DB + CATNAP), 100% local.
+"""Cross-reference of candidates against known bnAb epitopes (LANL Immunology DB + CATNAP), 100% local.
 
-bNAber (fuente original de referencia para este cruce) esta muerta --
-dominio parqueado/hijackeado, confirmado via Wayback Machine desde antes de
-mayo 2025. Reemplazado por datos ya descargados en ``reference_db/``:
+bNAber (the original reference source for this cross-reference) is no longer
+available: the domain is parked/hijacked, confirmed via the Wayback Machine from before
+May 2025. It is replaced by data already downloaded into ``reference_db/``:
 
-- ``reference_db/lanl_immunology/ab_all.csv``: LANL HIV Molecular Immunology
-  Database, 1790+ registros de anticuerpos (mismo origen que alimentaba a
-  bNAber). Fuente PRIMARIA de este motor: su columna ``Epitope`` trae la
-  secuencia lineal del epitopo cuando se conoce (771 de 3799 registros --
-  el resto son epitopos conformacionales sin secuencia lineal reportable,
-  se omiten sin intentar adivinar una).
-- ``reference_db/catnap/`` (CATNAP): neutralizacion (IC50/IC80),
-  secuencias y germlines. Se usa aqui solo ``abs_2026-07-01.txt`` para
-  anexar potencia/amplitud de neutralizacion (``Mean panel IC50``, numero
-  de virus del panel) cuando el nombre del anticuerpo de un match en
-  ``ab_all.csv`` coincide (best-effort por nombre exacto normalizado, sin
-  fuzzy-matching: un miss silencioso es preferible a una potencia atribuida
-  al anticuerpo equivocado).
+- ``reference_db/lanl_immunology/ab_all.csv``: the LANL HIV Molecular Immunology
+  Database, 1790+ antibody records (the same origin that fed
+  bNAber). This is the engine's PRIMARY source: its ``Epitope`` column carries the
+  linear sequence of the epitope when it is known (771 of 3799 records;
+  the rest are conformational epitopes without a reportable linear sequence
+  and are skipped without attempting to guess one).
+- ``reference_db/catnap/`` (CATNAP): neutralization (IC50/IC80),
+  sequences and germlines. Only ``abs_2026-07-01.txt`` is used here, to
+  append neutralization potency/breadth (``Mean panel IC50``, the number
+  of viruses in the panel) when the antibody name of a match in
+  ``ab_all.csv`` coincides (best effort by exact normalized name, without
+  fuzzy matching: a silent miss is preferable to a potency attributed
+  to the wrong antibody).
 
-Este motor NO hace alineamiento estructural ni mapeo de coordenadas HXB2:
-compara directamente las secuencias lineales de los candidatos contra las
-de ``ab_all.csv`` por solapamiento de subcadena. Es deliberadamente simple
--- sin red, sin dependencias nuevas, sobre CSVs locales ya descargados
-(pandas puro) -- a costa de no capturar epitopos
-conformacionales (fuera de alcance: requeririan estructura 3D, no solo
-secuencia).
+This engine does NOT perform structural alignment or HXB2 coordinate mapping:
+it compares the candidates' linear sequences directly against those
+of ``ab_all.csv`` by substring overlap. It is deliberately simple
+(no network, no new dependencies, over already downloaded local CSVs
+with pure pandas) at the cost of not capturing conformational
+epitopes (out of scope: they would require 3D structure, not sequence
+alone).
 """
 
 import csv

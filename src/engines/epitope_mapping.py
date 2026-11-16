@@ -1,10 +1,10 @@
-"""Logica generica de Fase 3: mapeo de regiones de epitopo por ventana deslizante.
+"""Generic Phase 3 logic: epitope region mapping by sliding window.
 
-Extraido de ``bepipred_engine.py`` para reutilizarlo tal cual entre motores de
-antigenicidad distintos (BepiPred-3.0, EpiDope): ambos producen un DataFrame
-de scores crudos por residuo (una fila por residuo, agrupable por accession),
-y esta misma ventana deslizante tolerante a gaps se aplica sobre cualquiera de
-los dos, solo cambiando el nombre de columna de score/accession/residuo.
+Extracted from ``bepipred_engine.py`` so that it can be reused as-is across different
+antigenicity engines (BepiPred-3.0, EpiDope): both produce a DataFrame
+of raw per-residue scores (one row per residue, groupable by accession),
+and this same gap-tolerant sliding window applies to either of
+the two, changing only the score/accession/residue column name.
 """
 
 from typing import Dict, List, Optional, Sequence, Tuple

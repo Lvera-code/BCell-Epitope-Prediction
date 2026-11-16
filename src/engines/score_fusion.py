@@ -159,7 +159,7 @@ The following were tested and discarded, with real data from the complete panel 
 the problematic antigens): a lower secondary "rescue" threshold
 (with or without an agreement gate between engines) worsens the
 precision/recall trade-off because it does not move the region towards the real epitope, it only
-fattens the same wrong region, the same failure mode already discarded
+enlarges the same wrong region, the same failure mode already discarded
 for the adaptive percentile threshold; reusing the ALREADY calibrated
 2-engine thresholds as an OR rule reintroduces the excessive volume that the fusion
 removed; recombining the ranking signal (percentile rank, votes per engine,

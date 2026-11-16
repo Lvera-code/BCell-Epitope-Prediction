@@ -41,16 +41,16 @@ time.
 
 | Tool | Installation | Python engine (`src/engines/`) | Phase | Notes |
 |---|---|---|---|---|
-| TMbed (TM/signal/intracellular masking) | venv at `scipion-chem-tmbed/.venv-tmbed` (REUSED from the Scipion plugin, see Table B), ProtT5-XL-U50 weights at `scipion-chem-tmbed/tmbed_src/tmbed/models/t5` (REUSED by StackGlyEmbed, same encoder) | `tmbed_engine.py` | 3b, BEFORE BLASTp (Phase 4) -- it runs on the COMPLETE sequence of each accession, not per candidate peptide | Output format `--out-format 1`: 'B'/'H'/'S'/'i' (TM strand/helix, signal, intracellular) are collapsed into masking regions; only 'o' (extracellular, non-membrane) is left untouched. 'i' is masked just like TM/signal (it used to be ignored) -- an accession without TM and without a signal peptide but 100% cytoplasmic (e.g. PSMD7) ends up covered end to end by a single `intracellular` region and loses all its candidates, an effect equivalent to excluding it completely without a separate flag. Parsing reimplemented in pure form (without importing the Scipion plugin, which depends on `pwchem`, not installed in the main venv) -- verified byte-for-byte against VDAC1_P21796 (18 `TM_beta_strand` regions, the same coordinates as the plugin's test). Cache by hash of the complete sequences (not of `union_df`): a change of a Phase 3 threshold does not invalidate the TMbed cache. |
+| TMbed (TM/signal/intracellular annotation) | venv at `scipion-chem-tmbed/.venv-tmbed` (REUSED from the Scipion plugin, see Table B), ProtT5-XL-U50 weights at `scipion-chem-tmbed/tmbed_src/tmbed/models/t5` (REUSED by StackGlyEmbed, same encoder) | `tmbed_engine.py` | 3b, BEFORE BLASTp (Phase 4) -- it runs on the COMPLETE sequence of each accession, not per candidate peptide | Output format `--out-format 1`: 'B'/'H'/'S'/'i' (TM strand/helix, signal, intracellular) are collapsed into annotated regions; only 'o' (extracellular, non-membrane) is left unannotated. 'i' is annotated just like TM/signal (it used to be ignored) -- an accession without TM and without a signal peptide but 100% cytoplasmic (e.g. PSMD7) ends up covered end to end by a single `intracellular` region, so all of its candidates are annotated and none is removed: the overlap is reported, never used to exclude. Parsing reimplemented in pure form (without importing the Scipion plugin, which depends on `pwchem`, not installed in the main venv) -- verified byte-for-byte against VDAC1_P21796 (18 `TM_beta_strand` regions, the same coordinates as the plugin's test). Cache by hash of the complete sequences (not of `union_df`): a change of a Phase 3 threshold does not invalidate the TMbed cache. |
 | NetMHCpan-4.2 (MHC-I) | `B-Cell-Epitope-Prediction/netMHCpan-4.2/` | `netmhcpan_engine.py` | 5b, parallel to Phase 5 (MHC-II), NOT merged (different antigen presentation pathways) | **Panel of 23 alleles (12 HLA-A/B + 11 HLA-C, see below).** Buffer overflow of the binary in exact peptide mode for inputs >55aa (silent exit code 0, the limit does not change with the panel size) -- automatically routed to protein mode to avoid it. No `Inverted` column (unlike NetMHCIIpan, verified, not assumed). |
-| AlgPred 2.0 (allergenicity) | venv at `scipion-chem-algpred/.venv-algpred` | `algpred_engine.py` | 4b (per peptide) and reused in 8 (complete construct) | Real bug of the upstream script: it blows up with `ValueError` if the batch has exactly 1 sequence (an sklearn reshape bug). Workaround: the sequence is duplicated and the extra row discarded. In Phase 8 this is the NORMAL path (always 1 sequence per run), not an edge case. |
+| AlgPred 2.0 (allergenicity) | venv at `scipion-chem-algpred/.venv-algpred` | `algpred_engine.py` | 4b (per peptide) and reused in 8 (complete construct) | Real bug of the upstream script: it fails with `ValueError` if the batch has exactly 1 sequence (an sklearn reshape bug). Workaround: the sequence is duplicated and the extra row discarded. In Phase 8 this is the NORMAL path (always 1 sequence per run), not an edge case. |
 | NetCleave (MHC-I cleavage) | venv at `scipion-chem-netcleave/.venv-netcleave`, bundled pre-trained model | `netcleave_engine.py` | Annotation inside the Phase 5b report | It checks whether there is an EXACT proteasomal cleavage at the residue immediately after the candidate accepted by NetMHCpan (not just "there is some cleavage in the region"). A complementary signal, not a filter. The output .xlsx is named `<stem>_<primer-token-del-header-fasta>_NetCleave.xlsx`; the wrapper uses glob, not the exact name. |
-| StackGlyEmbed (N-glycosylation) | Repo cloned at `StackGlyEmbed/` (venv `.venv-stackglyembed`), `protein_bert` installed with `--no-deps`, ProteinBERT/ESM-2 650M/ProtT5 cached locally | `stackglyembed_engine.py` (its own sequon scanner) + `src/engines/stackglyembed_predict_local.py` (extraction+prediction, replaces the original scripts that called the network) | 4c (per peptide) | `StackGlyEmbed/` is a nested git repo (its own `.git`): git does NOT allow un-ignoring a file inside a nested repo with any `.gitignore` pattern -- that is why `stackglyembed_predict_local.py` lives in `src/engines/` (a normal versioned tree), not inside the clone. ESM-2 via `transformers.EsmModel` (really offline) instead of the original script's `torch.hub.load(...)` (which always hits the network). ProtT5 REUSES the TMbed weights (`Rostlab/prot_t5_xl_half_uniref50-enc`, same encoder). |
-| LANL Immunology DB + CATNAP (bnAb cross-ref) | Local CSVs in `reference_db/` | `lanl_catnap_engine.py` (pure pandas, no subprocess) | 6, informative (only relevant for HIV Env) | Replaces bNAber (dead/parked domain). Substring cross-reference (longest-common-substring) against the 771 linear epitopes of `ab_all.csv` with a reportable epitope (out of 3799 total records; the rest are conformational, out of scope). Configurable threshold `LANL_CATNAP_MIN_OVERLAP` (6 aa default). Validated with real bnAbs (10E8, 2F5, Z13e1, m66) with real IC50 cross-referenced from CATNAP. |
+| StackGlyEmbed (N-glycosylation) | Repo cloned at `StackGlyEmbed/` (venv `.venv-stackglyembed`), `protein_bert` installed with `--no-deps`, ProteinBERT/ESM-2 650M/ProtT5 cached locally | `stackglyembed_engine.py` (its own sequon scanner) + `src/engines/stackglyembed_predict_local.py` (extraction+prediction, replaces the original scripts that called the network) | 4c (per peptide) | `StackGlyEmbed/` is a nested git repo (its own `.git`): git does NOT allow un-ignoring a file inside a nested repo with any `.gitignore` pattern -- that is why `stackglyembed_predict_local.py` lives in `src/engines/` (a normal versioned tree), not inside the clone. ESM-2 via `transformers.EsmModel` (really offline) instead of the original script's `torch.hub.load(...)` (which always accesses the network). ProtT5 REUSES the TMbed weights (`Rostlab/prot_t5_xl_half_uniref50-enc`, same encoder). |
+| LANL Immunology DB + CATNAP (bnAb cross-ref) | Local CSVs in `reference_db/` | `lanl_catnap_engine.py` (pure pandas, no subprocess) | 6, informative (only relevant for HIV Env) | Replaces bNAber (domain no longer available). Substring cross-reference (longest-common-substring) against the 771 linear epitopes of `ab_all.csv` with a reportable epitope (out of 3799 total records; the rest are conformational, out of scope). Configurable threshold `LANL_CATNAP_MIN_OVERLAP` (6 aa default). Validated with real bnAbs (10E8, 2F5, Z13e1, m66) with real IC50 cross-referenced from CATNAP. |
 | IEDB (regions with documented protection/neutralization) | Local CSV in `reference_db/iedb/` | `iedb_engine.py` (pure pandas, no subprocess) | 6c, informative, ALWAYS runs, B-cell only | Generalization of Phase 6 to any pathogen. Same substring cross-reference mechanism (`_longest_common_substring_len` REUSED from `lanl_catnap_engine.py`, without duplicating it), without an organism filter (the match already filters implicitly). `reference_db/iedb/bcell_protective_epitopes.csv`: an ALREADY FILTERED subset (3429 rows / 561 organisms) of the IEDB B-cell bulk export (1,688,617 rows / 3.24 GB raw, NEVER distributed -- filtered once only as a SETUP step, see README.md Section 17). Filter: `Object Type == 'Linear peptide'` + `Response measured` in {neutralization, protection from *} + `Qualitative Measure` starts with 'Positive'. Does NOT apply to HTL/CTL (the export is of B-cell/antibody assays, a different mechanism from MHC presentation). |
 | Construct assembly | N/A (pure logic) | `construct_assembly.py` | 7 | See Table D. |
 | ToxinPred2 (construct toxicity) | `pip install toxinpred2` in a dedicated Python 3.10 venv (`.venv-toxinpred2/`) | `toxinpred_engine.py` | 8 | ONNX model + blastp + MERCI database EMBEDDED in the wheel, zero separate downloads. Python 3.10 venv + `pandas==1.5.3` + `numpy<2` pinned (the packaged script uses `to_csv(sep="\n")`, which pandas>=2 rejects; the numpy>=2 ABI breaks pandas 1.5.3). Same batch=1 bug as AlgPred2. |
-| IApred (intrinsic antigenicity of the construct) | `git clone github.com/sebamiles/IApred` + its own venv (`IApred/.venv-iapred/`) | `iapred_engine.py` | 8 | Replaces VaxiJen (not open-source, no local standalone/API). Pure SVM over physicochemical features. The repo's `requirements.txt` is incomplete (`imbalanced-learn`/`matplotlib`/`seaborn` are missing, installed by hand). `models_folder` is a path relative to the cwd: subprocess always with `cwd=IAPRED_HOME`. |
+| IApred (intrinsic antigenicity of the construct) | `git clone github.com/sebamiles/IApred` + its own venv (`IApred/.venv-iapred/`) | `iapred_engine.py` | 8 | Replaces VaxiJen (not open-source, no local standalone/API). Pure SVM over physicochemical features. The repo's `requirements.txt` is incomplete (`imbalanced-learn`/`matplotlib`/`seaborn` are missing, installed manually). `models_folder` is a path relative to the cwd: subprocess always with `cwd=IAPRED_HOME`. |
 | SignalP-6.0 (signal peptide of the construct) | DTU Health Tech package (academic licence), copied to `signalp-6.0/` (9.2GB) + a dedicated Python 3.10 venv (`.venv-signalp/`) | `signalp_engine.py` | 8 | `slow-sequential` mode (same RAM as `fast`, ~6x slower, for CPU without GPU). Weights referenced by `--model_dir` directly, without duplicating. Python 3.10 venv + `torch>1.7,<2` + `numpy<2`. Real parsing bug: `prediction_results.txt` carries 2 comment lines `#`, not 1 -- `comment="#"` is used in `pd.read_csv`, not a fixed `skiprows`. |
 
 ## Table D: Phase 7 (construct assembly) + Phase 8 (construct check)
@@ -175,45 +175,47 @@ signal peptide) reproduces EXACTLY the 18 `TM_beta_strand` regions
 confirming that the parsing reimplemented in `tmbed_engine.py` (without importing the
 plugin, which depends on `pwchem`) is equivalent byte-for-byte.
 
-Masking verified in both directions with real end-to-end runs:
+Annotation verified in both directions with real end-to-end runs:
 on `GP120.fasta` (HIV-1 envelope, with a C-terminal cytoplasmic TM) and
 the ovalbumin record in `positive_controls_suite.fasta` (not
 transmembrane) TMbed detects the expected regions
-but no Phase 3 candidate overlaps with them, so the union
-passes unchanged to Phase 4. On `SLC8A1_P32418_AF.pdb` (a multi-pass
-transporter, 10 TM helices + signal peptide) the masking DOES discard
-real candidates: of 15 in `union_epitopes.csv`, 3 are removed in
+but no Phase 3 candidate overlaps with them, so every row reaches
+Phase 4 with `tmbed_masked=False`. On `SLC8A1_P32418_AF.pdb` (a multi-pass
+transporter, 10 TM helices + signal peptide) the annotation DOES mark
+real candidates: of 15 in `union_epitopes.csv`, 3 are marked in
 `union_epitopes_masked.csv` for overlapping with TM/signal regions (32-51 with the
 signal peptide 1-34; 251-325 and 924-941 with TM helices), confirming that Phase
-3b filters actively, not just detects without effect. In all 3 cases the rest
+3b discriminates actively rather than detecting without effect. All 15 rows
+continue to Phase 4, the 3 of them carrying `tmbed_masked=True`. In all 3 cases the rest
 of the phases (4b-8) completes without errors through to `PIPELINE COMPLETADO`.
 
 **Complete topology (intra/extracellular).** The
 previous validation of this paragraph was done with the original logic, which only
 masked B/H/S ('i'/'o' were ignored), so an accession without TM and without a signal
 peptide but entirely cytoplasmic (a real case: PSMD7, a subunit of the
-26S proteasome) had nothing to mask under that rule, and therefore its
-candidates passed intact to Phase 4 despite being inaccessible to antibodies.
+26S proteasome) had nothing to annotate under that rule, and therefore its
+candidates reached Phase 4 with no indication that they are inaccessible to
+antibodies.
 Research prior to implementing:
 TMbed with `--out-format 1` ALREADY reports complete per-residue topology ('i'
 cytoplasmic / 'o' extracellular in addition to B/H/S), so there was no need
 to add DeepLoc/DeepTMHMM. `_MASKED_CLASS_TYPES` was corrected to treat
-'i' as one more maskable region (`intracellular`), the same mechanism as
+'i' as one more annotatable region (`intracellular`), the same mechanism as
 TM/signal, without a new flag at the protein level. A desired side effect,
-confirmed with Enzo before implementing: the cytoplasmic loops of
+confirmed before implementing: the cytoplasmic loops of
 multi-pass proteins (e.g. SLC8A1, 199 'i' residues between its 11 TM helices)
-are now also masked, correcting the same bug in its most
+are now also annotated, correcting the same gap in its most
 subtle form. Validated by reprocessing the raw `.pred` files ALREADY cached from real
 runs (without re-executing TMbed): PSMD7 (`iiii...i`, 325/325 residues)
-produces a single `intracellular` region 1-324 that discards the 3
-candidate rows of `union_epitopes.csv` (kept=0), a complete exclusion
-confirmed; THBS2 (signal 1-18 + 'o' in the rest) produces only
+produces a single `intracellular` region 1-324 that marks all 3
+candidate rows of `union_epitopes.csv` (`tmbed_masked=True`, none removed, all
+3 still reaching Phase 4); THBS2 (signal 1-18 + 'o' in the rest) produces only
 `signal_peptide` 1-18, and of 19 candidate rows only the one that
-already overlapped with the signal peptide is discarded (pre-existing behaviour, not new),
-the remaining 18 pass intact, without undue exclusion. 2 new dedicated
-tests (`test_psmd7_intracelular_sin_tm_ni_senal_se_excluye_por_completo`,
-`test_thbs2_secretada_pasa_integra_sin_exclusion_indebida`) in
-`tests/test_tmbed_engine.py`, 221/221 tests of the complete suite pass.
+already overlapped with the signal peptide is marked (pre-existing behaviour, not new),
+the remaining 18 passing unmarked, without undue annotation. 2 new dedicated
+tests (`test_psmd7_intracelular_sin_tm_ni_senal_queda_marcada_pero_no_excluida`,
+`test_thbs2_secretada_pasa_sin_marcar`) in
+`tests/test_tmbed_engine.py`, and the complete suite passes.
 
 **Test suite** (`pytest tests/`): it includes dedicated coverage of
 `tmbed_engine.py`, without depending on any external venv/binary being installed
@@ -228,7 +230,7 @@ but passed it as an output argument `output_dir / archivo` WITHOUT
 resolving to absolute. With the default relative `output_dir`
 (`Settings.FASTA_OUTPUT_DIR = 'outputs'`), the child process
 interpreted that relative path against ITS OWN cwd (not that of
-`pipeline.py`), blowing up with `OSError: Cannot save file into a
+`pipeline.py`), failing with `OSError: Cannot save file into a
 non-existent directory: 'outputs'`. It never fired before because (a)
 the unit tests of these 3 engines always pass `tmp_path` (already
 absolute) as `output_dir`, and (b) no previous real run with
@@ -347,7 +349,7 @@ functional on the happy path):
 of 20 aa (verified by reading `IApred.py`). For shorter sequences it
 writes the literal text `'Sequence too short'` in the score column (not
 a number). `iapred_engine.py` did not handle it: `print_iapred_report`
-formats the score with `:.4f`, which blows up with `TypeError` over a string.
+formats the score with `:.4f`, which fails with `TypeError` over a string.
 This is a REAL scenario, not hypothetical: a construct with a single short
 B-cell candidate (Phase 3 allows regions from 9 aa) falls below that
 threshold, confirmed by reproducing it with `fase_8_chequeo_constructo`
@@ -357,7 +359,7 @@ string mixed into the column) with an informative category
 (`'No evaluado (secuencia < 20 aa)'`), and the table formatter tolerates
 `NaN`. 3 regression tests added (`test_iapred_engine.py`).
 
-Complete suite: **248 tests**, without regressions (it includes `test_iedb_engine.py`
+Complete suite passing, without regressions (it includes `test_iedb_engine.py`
 and the extension of `test_construct_assembly.py` for Phase 6c).
 
 ## Scipion-readiness audit

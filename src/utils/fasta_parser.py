@@ -1,12 +1,12 @@
-"""Fase 1: Saneamiento de FASTA crudo.
+"""Phase 1: raw FASTA sanitation.
 
-Responsabilidad exclusiva: leer un FASTA tal como llega del usuario, separarlo
-en registros (cabecera, secuencia) y producir una version saneada -mayusculas,
-sin saltos de linea internos- que sea segura para enviar a BepiPred (Fase 2),
-a BLASTp (Fase 4) y a los motores de inmunogenicidad (Fase 5). El descarte de
-un registro individual genuinamente vacio es recuperable (ver
-``InvalidSequenceError``); un FASTA sin ningun '>', un registro con residuos
-no canonicos o dos registros con el mismo accession son errores fatales (ver
+Its exclusive responsibility: to read a FASTA exactly as it arrives from the user, split it
+into records (header, sequence) and produce a sanitized version (upper case,
+without internal line breaks) that is safe to send to BepiPred (Phase 2),
+to BLASTp (Phase 4) and to the immunogenicity engines (Phase 5). Discarding
+a genuinely empty individual record is recoverable (see
+``InvalidSequenceError``); a FASTA without any '>', a record with non-canonical
+residues, or two records with the same accession are fatal errors (see
 ``FastaFormatError``).
 """
 

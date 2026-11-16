@@ -1,34 +1,34 @@
-"""Paso de SETUP (correr UNA SOLA VEZ, no en runtime): genera
-``reference_db/allele_frequencies/world_pooled_afnd.csv`` a partir de la
-Allele Frequency Net Database (AFND, allelefrequencies.net), via el mirror
-tab-delimited MIT-licenciado ``github.com/slowkow/allelefrequencies``
-(``afnd.tsv``, no requiere scraping en vivo del sitio de AFND).
+"""SETUP step (to be run ONCE ONLY, not at runtime): it generates
+``reference_db/allele_frequencies/world_pooled_afnd.csv`` from the
+Allele Frequency Net Database (AFND, allelefrequencies.net), via the
+MIT-licensed tab-delimited mirror ``github.com/slowkow/allelefrequencies``
+(``afnd.tsv``, which requires no live scraping of the AFND site).
 
-Mismo patron que ``reference_db/iedb/bcell_protective_epitopes.csv`` (ver
-``src/engines/iedb_engine.py``, seccion "paso de SETUP" del docstring del
-modulo): ``reference_db/`` esta gitignored (binario/regenerable, no codigo
-fuente), asi que este script reconstruye el CSV pequeno y curado que SI usa
-el pipeline (``src.engines.population_coverage``), a partir de la fuente
-publica cruda.
+The same pattern as ``reference_db/iedb/bcell_protective_epitopes.csv`` (see
+``src/engines/iedb_engine.py``, the "SETUP step" section of the module's
+docstring): ``reference_db/`` is gitignored (binary/regenerable, not source
+code), so this script reconstructs the small, curated CSV that the
+pipeline does use (``src.engines.population_coverage``) from the raw
+public source.
 
-Uso:
+Usage:
     curl -sL -o /tmp/afnd.tsv https://raw.githubusercontent.com/slowkow/allelefrequencies/master/afnd.tsv
     python -m src.engines.build_allele_frequency_reference /tmp/afnd.tsv
 
-Metodologia (ver docstring completo de ``population_coverage.py`` para el
-porque de cada simplificacion):
-* Frecuencia por alelo = promedio ponderado por tamano de muestra (``n``)
-  entre TODAS las poblaciones/estudios de AFND que reportan ese alelo --
-  promedio mundial agrupado, no estratificado por region/etnia.
-* Alelos DQ/DP del panel (combos alfa-beta, ej. 'HLA-DQA10501-DQB10201'):
-  AFND reporta frecuencias de gen por separado (DQA1, DQB1), no del
-  heterodimero conjunto -- se aproxima como el PRODUCTO de ambas frecuencias
-  de gen (asuncion de independencia, no corregida por desequilibrio de
-  ligamiento real entre DQA1/DQB1).
-* DRB3_0101/DRB3_0202/DRB4_0101/DRB5_0101: sin datos en este dataset (genes
-  DR secundarios, ligados a haplotipos DRB1 especificos, reportados con
-  mucha menos consistencia entre estudios) -- quedan con ``frequency`` vacio,
-  EXCLUIDOS del calculo de cobertura en vez de asumir frecuencia 0.
+Methodology (see the full docstring of ``population_coverage.py`` for the
+reason behind each simplification):
+* Frequency per allele = the sample-size-weighted average (``n``)
+  across ALL the AFND populations/studies that report that allele, a
+  pooled worldwide average, not stratified by region/ethnicity.
+* The panel's DQ/DP alleles (alpha-beta combos, e.g. 'HLA-DQA10501-DQB10201'):
+  AFND reports gene frequencies separately (DQA1, DQB1), not those of the
+  joint heterodimer, so it is approximated as the PRODUCT of both gene
+  frequencies (an independence assumption, not corrected for the real
+  linkage disequilibrium between DQA1/DQB1).
+* DRB3_0101/DRB3_0202/DRB4_0101/DRB5_0101: no data in this dataset (secondary
+  DR genes, linked to specific DRB1 haplotypes, reported with
+  far less consistency between studies), so they are left with an empty ``frequency``
+  and EXCLUDED from the coverage calculation rather than assuming frequency 0.
 """
 
 import re

@@ -1,42 +1,42 @@
-"""Enmascarado transmembrana/peptido senal via TMbed LOCAL (venv dedicado, subprocess puro).
+"""Transmembrane/signal-peptide annotation via LOCAL TMbed (dedicated venv, pure subprocess).
 
-Wrapper 100% local sobre el CLI de ``tmbed`` (Bernhofer & Rost, 2022,
-Apache-2.0), mismo patron de subprocess que el resto de motores. Reusa el
-mismo venv/pesos ya instalados para el plugin Scipion ``scipion-chem-tmbed``
-(repo hermano, ``TMBED_PYTHON_BIN``/``TMBED_MODEL_DIR``), pero SIN importar
-ningun modulo de ese plugin (depende de ``pwchem``, no instalado en el venv
-principal de este pipeline) -- el parseo del formato de salida de TMbed
-(``extract_masking_regions``/``parse_predictions`` de
-``scipion-chem-tmbed/tmbed/utils/tmbed.py``) se reimplementa aqui en forma
-pura de pandas/stdlib, misma logica verificada por los tests de ese plugin.
+A 100% local wrapper over the ``tmbed`` CLI (Bernhofer & Rost, 2022,
+Apache-2.0), with the same subprocess pattern as the other engines. It reuses the
+same venv/weights already installed for the Scipion plugin ``scipion-chem-tmbed``
+(sibling repo, ``TMBED_PYTHON_BIN``/``TMBED_MODEL_DIR``), but WITHOUT importing
+any module of that plugin (it depends on ``pwchem``, which is not installed in this
+pipeline's main venv). The parsing of TMbed's output format
+(``extract_masking_regions``/``parse_predictions`` of
+``scipion-chem-tmbed/tmbed/utils/tmbed.py``) is reimplemented here in pure
+pandas/stdlib form, with the same logic verified by that plugin's tests.
 
-Proposito en Fase 3b (ver ``pipeline.py``): correr sobre la secuencia
-COMPLETA de cada accession (no por peptido candidato, a diferencia de
-Fase 4b/4c) y ANOTAR en la union anotada de Fase 3 que regiones caen
-dentro de una helice/tira transmembrana, del peptido senal N-terminal o
-de un tramo intracelular (citoplasmatico) -- residuos que, en principio,
-no serian accesibles a anticuerpos en la proteina madura/anclada a
-membrana. TMbed con ``--out-format 1`` ya reporta topologia completa por
-residuo, no solo las 3 clases enmascaradas historicamente: junto a
-'B'/'H'/'S' devuelve 'i'/'o' para distinguir el lado citoplasmatico
-(dentro) del extracelular (fuera) de cada residuo sin membrana --
-suficiente para inferir topologia completa (incluida una proteina
-enteramente citoplasmatica, sin TM ni peptido senal, como PSMD7) sin
-sumar ninguna herramienta de localizacion subcelular aparte.
+Purpose in Phase 3b (see ``pipeline.py``): to run on the COMPLETE sequence of
+each accession (not per candidate peptide, unlike
+Phases 4b/4c) and to ANNOTATE on the Phase 3 result which regions fall
+inside a transmembrane helix/strand, the N-terminal signal peptide or
+an intracellular (cytoplasmic) stretch, that is, residues that would in
+principle not be accessible to antibodies in the mature, membrane-anchored
+protein. TMbed with ``--out-format 1`` already reports complete per-residue
+topology, not only the 3 classes historically masked: alongside
+'B'/'H'/'S' it returns 'i'/'o' to distinguish the cytoplasmic side
+(inside) from the extracellular side (outside) of each non-membrane residue,
+which is sufficient to infer complete topology (including an entirely
+cytoplasmic protein, with neither TM nor signal peptide, such as PSMD7) without
+adding any separate subcellular localization tool.
 
-Esta fase paso de EXCLUIR candidatos a solo
-ANOTARLOS (misma logica que Fase 4c/6/6c). Motivo: la validacion de
-publicacion sobre 17 estructuras PDB reales encontro que TMbed, corriendo
-sobre fragmentos/dominios aislados (sin la proteina completa ni contexto
-de membrana real), se equivoca con frecuencia real y verificable en
-ambas direcciones -- p. ej. marca "intracellular" dominios genuinamente
-extracelulares (toxina tetanica Fragment C, MPER de gp41, region
-juncional de CSP), vaciando por completo candidatos con epitopos ya
-corroborados de forma independiente en literatura. Excluir automatica-
-mente en base a ese veredicto descartaba senal real. La decision de
-excluir un candidato por su topologia queda ahora para una revision
-informada (o una etapa posterior), no automatica -- mismo principio ya
-aplicado a la glicosilacion en Fase 4c.
+This phase moved from EXCLUDING candidates to only
+ANNOTATING them (the same logic as Phases 4c/6/6c). The reason: the publication
+validation over 17 real PDB structures found that TMbed, running
+on isolated fragments/domains (without the complete protein or real membrane
+context), errs with real and verifiable frequency in
+both directions. For example it marks as "intracellular" genuinely
+extracellular domains (tetanus toxin Fragment C, the gp41 MPER, the CSP
+junctional region), completely emptying candidates whose epitopes are already
+independently corroborated in the literature. Excluding automatically
+on the basis of that verdict discarded real signal. The decision to
+exclude a candidate for its topology is now left to an informed
+review (or to a later stage), not automatic, the same principle already
+applied to glycosylation in Phase 4c.
 """
 
 import subprocess

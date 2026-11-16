@@ -1,4 +1,5 @@
-"""Interfaz abstracta comun para los motores computacionales del pipeline."""
+"""Common abstract interface for the pipeline's computational engines.
+"""
 
 from abc import ABC, abstractmethod
 from typing import Generic, List, Sequence, TypeVar

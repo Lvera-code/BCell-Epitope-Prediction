@@ -1,57 +1,57 @@
-"""Fase 1.5: extraccion de secuencia (ATMSEQ) y mapeo de posiciones desde una estructura.
+"""Phase 1.5: sequence extraction (ATMSEQ) and position mapping from a structure.
 
-Se invoca UNICAMENTE para archivos que ``src.utils.input_router`` clasifico
-como ``"structure"`` (PDB o mmCIF). Ocurre siempre que el input sea una
-estructura, sin importar ``Settings.PDB_PROCESSING_MODE``: lo que varia entre
-los caminos 'structure_only' y 'structure_and_sequence' es si el FASTA
-derivado aqui se le pasa o no a Fase 2 para BepiPred/EpiDope (ver
-``pipeline.py``/``src/engines/engine_registry.py``), no si esta fase corre.
+It is invoked ONLY for files that ``src.utils.input_router`` classified
+as ``"structure"`` (PDB or mmCIF). It happens whenever the input is a
+structure, regardless of ``Settings.PDB_PROCESSING_MODE``: what varies between
+the 'structure_only' and 'structure_and_sequence' paths is whether the FASTA
+derived here is passed to Phase 2 for BepiPred/EpiDope (see
+``pipeline.py``/``src/engines/engine_registry.py``), not whether this phase runs.
 
-Responsabilidad exclusiva: parsear la estructura con ``gemmi`` (100% local,
-sin llamadas de red), elegir UNA cadena de referencia, extraer su secuencia
-realmente resuelta en los registros ATOM/HETATM (ATMSEQ, NO SEQRES: es la
-secuencia que los motores estructurales van a puntuar de verdad y la que debe
-coincidir con lo que se muestra en el output final) y construir la tabla de
-mapeo de posiciones PDB <-> FASTA derivado.
+Its exclusive responsibility: to parse the structure with ``gemmi`` (100% local,
+without network calls), choose ONE reference chain, extract its sequence
+as actually resolved in the ATOM/HETATM records (ATMSEQ, NOT SEQRES: it is the
+sequence that the structural engines will genuinely score and the one that must
+match what is shown in the final output) and build the table of
+PDB <-> derived FASTA position mapping.
 
-Ademas de la secuencia y el mapeo, se escribe un PDB de una sola cadena (solo
-la elegida) que es lo que reciben los motores estructurales en Fase 2 (ver
-``StructureRecord.chain_pdb_path``): DiscoTope-3.0 emite un CSV de salida POR
-CADENA cuando el PDB de entrada tiene varias, asi que pasarle directamente el
-PDB original (potencialmente multi-cadena) obligaria a adivinar cual de esos
-CSV corresponde a la cadena que aqui se eligio. Aislarla de antemano elimina
-esa ambiguedad de raiz.
+In addition to the sequence and the mapping, a single-chain PDB is written (only
+the chosen chain), which is what the structural engines receive in Phase 2 (see
+``StructureRecord.chain_pdb_path``): DiscoTope-3.0 emits one output CSV PER
+CHAIN when the input PDB has several, so passing it the original
+(potentially multi-chain) PDB directly would force guessing which of those
+CSVs corresponds to the chain chosen here. Isolating it beforehand removes
+that ambiguity at the root.
 
-Resolucion de residuos via CCD (``gemmi.find_tabulated_residue``): esto
-resuelve automaticamente residuos modificados (MSE->M, SEP->S, TPO->T,
-PTR->Y, CSO->C, etc. -- ``one_letter_code`` viene en MINUSCULA para residuos
-no estandar con padre canonico, de ahi el ``.upper()``). Un residuo sin
-codigo de una sola letra resoluble usa 'X'.
+Residue resolution via the CCD (``gemmi.find_tabulated_residue``): this
+automatically resolves modified residues (MSE->M, SEP->S, TPO->T,
+PTR->Y, CSO->C, etc.; ``one_letter_code`` comes in LOWER CASE for
+non-standard residues with a canonical parent, hence the ``.upper()``). A residue without
+a resolvable single-letter code uses 'X'.
 
-Deliberadamente NO se usa ``ResidueSpan.make_one_letter_sequence()``: ante
-un nombre de residuo no reconocido por el CCD, esa funcion puede insertar
-caracteres extra (p. ej. un '-' de relleno)
-que desalinean el conteo de caracteres respecto al numero real de residuos
-del polimero -- inviable para construir un mapeo de posiciones 1:1. En su
-lugar se itera ``Chain.get_polymer()`` residuo por residuo, resolviendo cada
-uno individualmente y garantizando exactamente 1 caracter por residuo.
+``ResidueSpan.make_one_letter_sequence()`` is deliberately NOT used: when faced with
+a residue name not recognized by the CCD, that function can insert
+extra characters (for example a '-' filler)
+that misalign the character count with respect to the real number of residues
+of the polymer, which makes it unusable for building a 1:1 position mapping. Instead
+``Chain.get_polymer()`` is iterated residue by residue, resolving each
+one individually and guaranteeing exactly 1 character per residue.
 
-``label_seq_id`` (columna ``label_seq_id`` de ``position_mapping``): indice
-mmCIF canonico (``gemmi.Residue.label_seq``, via ``Structure.assign_label_seq_id()``),
-NO igual a ``fasta_position`` en general. ``fasta_position`` es secuencial
-sobre ATMSEQ (solo residuos con coordenadas); ``label_seq_id`` es secuencial
-sobre la entidad completa declarada en SEQRES/``entity_poly_seq`` (incluye
-huecos de densidad no resuelta) -- verificado con estructuras reales del
-panel de validacion con huecos (p. ej. 7OH1: fasta_position salta 440->441
-mientras que auth_seqid/label_seq_id saltan 440->466 juntos). Si el archivo
-de entrada no trae SEQRES/``entity_poly_seq`` (p. ej. un modelo predicho sin
-cabecera), ``assign_label_seq_id()`` no tiene de donde derivar la
-numeracion y deja ``label_seq`` en ``None`` para todos los residuos; para
-evitarlo se rellena ``Entity.full_sequence`` con los residuos realmente
-observados (fallback seguro: declara la entidad completa como "exactamente
-lo que se ve", sin huecos) antes de asignar. Necesario para Proyecto 3
-(BoltzGen): su especificacion de diseño (``binding_types``) indexa
-residuos por ``label_asym_id``/``label_seq_id`` mmCIF, no por
+``label_seq_id`` (the ``label_seq_id`` column of ``position_mapping``): the canonical
+mmCIF index (``gemmi.Residue.label_seq``, via ``Structure.assign_label_seq_id()``),
+NOT equal to ``fasta_position`` in general. ``fasta_position`` is sequential
+over ATMSEQ (only residues with coordinates); ``label_seq_id`` is sequential
+over the complete entity declared in SEQRES/``entity_poly_seq`` (including
+gaps of unresolved density), verified with real structures of the validation
+panel that have gaps (for example 7OH1: fasta_position jumps 440->441
+while auth_seqid/label_seq_id jump 440->466 together). If the input
+file does not carry SEQRES/``entity_poly_seq`` (for example a predicted model without
+a header), ``assign_label_seq_id()`` has nothing from which to derive the
+numbering and leaves ``label_seq`` as ``None`` for every residue; to
+avoid that, ``Entity.full_sequence`` is filled with the residues actually
+observed (a safe fallback: it declares the complete entity as "exactly
+what is seen", without gaps) before assigning. This is necessary for Project 3
+(BoltzGen): its design specification (``binding_types``) indexes
+residues by mmCIF ``label_asym_id``/``label_seq_id``, not by
 ``auth_asym_id``/``auth_seq_id``.
 """
 

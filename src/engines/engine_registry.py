@@ -1,17 +1,17 @@
-"""Registro de motores de Fase 2 y resolucion del subconjunto activo por camino de entrada.
+"""Registry of Phase 2 engines and resolution of the active subset per input path.
 
-Punto unico de verdad sobre que motor consume que tipo de input (``'fasta'``
-o ``'pdb'``) y sobre que motores corren para cada uno de los 3 caminos que
-soporta el pipeline (ver ``pipeline.py``):
+The single source of truth about which engine consumes which input type (``'fasta'``
+or ``'pdb'``) and about which engines run for each of the 3 paths that
+the pipeline supports (see ``pipeline.py``):
 
-    Camino 1 (input FASTA)                                -> bepipred + epidope
-    Camino 2 (input PDB, PDB_PROCESSING_MODE='structure_only')       -> discotope + scannet
-    Camino 3 (input PDB, PDB_PROCESSING_MODE='structure_and_sequence') -> los 4
+    Path 1 (FASTA input)                                  -> bepipred + epidope
+    Path 2 (PDB input, PDB_PROCESSING_MODE='structure_only')       -> discotope + scannet
+    Path 3 (PDB input, PDB_PROCESSING_MODE='structure_and_sequence') -> all 4
 
-``pipeline.py`` es el unico consumidor: usa ``active_engines_for`` para
-decidir que corre en Fase 2, y ``ENGINE_REGISTRY`` para saber si cada motor
-activo necesita un FASTA (``clean_fasta``) o un PDB de una sola cadena
-(``StructureRecord.chain_pdb_path``) como input.
+``pipeline.py`` is the only consumer: it uses ``active_engines_for`` to
+decide what runs in Phase 2, and ``ENGINE_REGISTRY`` to know whether each active
+engine needs a FASTA (``clean_fasta``) or a single-chain PDB
+(``StructureRecord.chain_pdb_path``) as input.
 """
 
 from typing import Dict, List, Optional, Tuple, Type

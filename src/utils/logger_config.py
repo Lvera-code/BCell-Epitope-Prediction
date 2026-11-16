@@ -1,7 +1,7 @@
-"""Configuracion centralizada del sistema de logging del pipeline.
+"""Centralized configuration of the pipeline's logging system.
 
-Provee un logger formal (consola + archivo rotativo) para cada modulo, evitando
-handlers duplicados en ejecuciones repetidas dentro del mismo proceso.
+It provides a formal logger (console + rotating file) for each module, avoiding
+duplicated handlers on repeated executions within the same process.
 """
 
 import logging

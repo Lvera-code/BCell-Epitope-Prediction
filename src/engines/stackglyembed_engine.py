@@ -1,18 +1,18 @@
-"""N-glicosilacion via StackGlyEmbed LOCAL (venv dedicado, subprocess puro).
+"""N-glycosylation via LOCAL StackGlyEmbed (dedicated venv, pure subprocess).
 
-Wrapper 100% local sobre ``StackGlyEmbed/prediction/predict_local.py`` (venv
-propio ``.venv-stackglyembed`` con torch/xgboost/sklearn/transformers/
-tensorflow + ProteinBERT), mismo patron que ``bepipred_engine.py``/
-``algpred_engine.py``/``netcleave_engine.py``: invoca el interprete de un
-venv dedicado contra un script, nunca red en runtime (los 3 embedders que
-consume -- ProteinBERT, ESM-2 650M, ProtT5 -- cargan offline una vez
-cacheados, ver docstring de ``predict_local.py``).
+A 100% local wrapper over ``StackGlyEmbed/prediction/predict_local.py`` (its own
+``.venv-stackglyembed`` venv with torch/xgboost/sklearn/transformers/
+tensorflow + ProteinBERT), the same pattern as ``bepipred_engine.py``/
+``algpred_engine.py``/``netcleave_engine.py``: it invokes the interpreter of a
+dedicated venv against a script, never the network at runtime (the 3 embedders it
+consumes, ProteinBERT, ESM-2 650M and ProtT5, load offline once
+cached, see the docstring of ``predict_local.py``).
 
-El repo original de StackGlyEmbed (github.com/GaryChan-lab/StackGlyEmbed) no
-trae un scanner de secuones: espera que el usuario le pase manualmente las
-posiciones candidatas en ``dataset.txt``. ``scan_sequons`` implementa la
-regla estandar de N-glicosilacion (Asn-X-Ser/Thr, X != Prolina) para derivar
-esas posiciones automaticamente de cada peptido/secuencia candidato.
+The original StackGlyEmbed repo (github.com/GaryChan-lab/StackGlyEmbed) does not
+ship a sequon scanner: it expects the user to pass the candidate
+positions manually in ``dataset.txt``. ``scan_sequons`` implements the
+standard N-glycosylation rule (Asn-X-Ser/Thr, X != Proline) to derive
+those positions automatically from each candidate peptide/sequence.
 """
 
 import os

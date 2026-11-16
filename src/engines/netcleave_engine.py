@@ -1,21 +1,21 @@
-"""Prediccion de cleavage MHC-I (NetCleave LOCAL, venv dedicado, subprocess puro).
+"""MHC-I cleavage prediction (LOCAL NetCleave, dedicated venv, pure subprocess).
 
-Wrapper 100% local sobre ``NetCleave.py`` (Amengual-Rigo & Guallar, MIT),
-mismo patron que ``bepipred_engine.py``. Usa el modelo pre-entrenado
-localmente ya incluido en el repo (``data/models/I_mass-spectrometry_HLA/``,
-entrenado sobre datos de IEDB/UniProt/UniParc descargados una sola vez, ver
-``scipion-chem-netcleave/netcleave_src/data/databases/``): NUNCA se
-reentrena en runtime del pipeline, solo se usa ``--score_fasta`` contra el
-modelo ya existente en disco.
+A 100% local wrapper over ``NetCleave.py`` (Amengual-Rigo & Guallar, MIT),
+the same pattern as ``bepipred_engine.py``. It uses the locally pre-trained
+model already included in the repo (``data/models/I_mass-spectrometry_HLA/``,
+trained on IEDB/UniProt/UniParc data downloaded once only, see
+``scipion-chem-netcleave/netcleave_src/data/databases/``): it is NEVER
+retrained at pipeline runtime, only ``--score_fasta`` is used against the
+model already present on disk.
 
-Detalle no obvio verificado empiricamente: ``NetCleave.py`` resuelve la ruta
-del modelo a cargar como ``data/models/{mhc_class}_{technique}_{mhc_family}``,
-RELATIVA al directorio de trabajo del proceso (no a ``package_dir``), asi que
-el subprocess se invoca siempre con ``cwd=<carpeta de NetCleave.py>``. El
-modelo bundled localmente fue entrenado con ``--mhc_family HLA`` (generico,
-no ``HLA-A*02:01`` que es el default del script): hay que pasar
-``--mhc_family HLA`` explicitamente o el path resuelto no encuentra el
-modelo bundled.
+A non-obvious detail verified empirically: ``NetCleave.py`` resolves the path
+of the model to load as ``data/models/{mhc_class}_{technique}_{mhc_family}``,
+RELATIVE to the process working directory (not to ``package_dir``), so
+the subprocess is always invoked with ``cwd=<folder of NetCleave.py>``. The
+locally bundled model was trained with ``--mhc_family HLA`` (generic,
+not the ``HLA-A*02:01`` that is the script's default), so
+``--mhc_family HLA`` has to be passed explicitly or the resolved path does not find the
+bundled model.
 """
 
 import subprocess

@@ -1,32 +1,32 @@
-"""Peptido senal del constructo via SignalP-6.0 LOCAL (venv dedicado, subprocess puro).
+"""Signal peptide of the construct via LOCAL SignalP-6.0 (dedicated venv, pure subprocess).
 
-Wrapper 100% local sobre ``signalp6`` (DTU Health Tech, licencia academica,
-descarga manual obligatoria -- mismo patron que BepiPred-3.0/NetMHCIIpan-4.3/
-NetMHCpan-4.2), mismo criterio de subprocess que el resto de motores.
+A 100% local wrapper over ``signalp6`` (DTU Health Tech, academic licence,
+mandatory manual download, the same pattern as BepiPred-3.0/NetMHCIIpan-4.3/
+NetMHCpan-4.2), with the same subprocess criterion as the other engines.
 
-Proposito en Fase 8: confirmar que el constructo multi-epitopo final
-ensamblado NO tenga un peptido senal predicho en su extremo N-terminal. Un
-constructo de fusion sintetico pensado para expresion recombinante estandar
-no deberia tener uno -- si SignalP predice uno, es señal de que la union de
-fragmentos (o el propio primer epitopo B-cell) genero por accidente un
-motivo con esa forma, y vale la pena revisarlo antes de dar el constructo
-por valido. Es puramente informativo aqui, no un filtro automatico.
+Purpose in Phase 8: to confirm that the final assembled multi-epitope
+construct does NOT have a predicted signal peptide at its N-terminus. A
+synthetic fusion construct intended for standard recombinant expression
+should not have one. If SignalP predicts one, it indicates that the junction
+of fragments (or the first B-cell epitope itself) accidentally generated a
+motif of that shape, and it is worth reviewing before considering the construct
+valid. It is purely informative here, not an automatic filter.
 
-Modo ``slow-sequential`` (~9.2GB de pesos): corre el modelo completo (no la
-aproximacion rapida) de forma secuencial en vez de en paralelo, mismo
-footprint de RAM que el modo ``fast`` pero ~6x mas lento -- pensado para
-maquinas CPU-only con RAM limitada (el modo ``slow`` en paralelo requiere
->14GB libres).
+The ``slow-sequential`` mode (~9.2GB of weights) runs the complete model (not the
+fast approximation) sequentially rather than in parallel, with the same
+RAM footprint as the ``fast`` mode but roughly 6x slower, intended for
+CPU-only machines with limited RAM (the ``slow`` mode in parallel requires
+>14GB free).
 
-Detalle de instalacion (no documentado en el README oficial de DTU): los
-pesos se referencian por ``--model_dir`` apuntando DIRECTO a la carpeta
-que ya contiene ``sequential_models_signalp6/`` (``Settings.SIGNALP_MODEL_DIR``),
-en vez de copiarlos dentro del paquete instalado (paso "4" del README
-oficial) -- evita duplicar ~9.2GB. Venv con Python 3.10 + ``torch>1.7,<2``
-(pin del propio ``requirements.txt``) + ``numpy<2`` (ABI: sin este pin,
-``pip install`` arrastra numpy 2.x via otra dependencia -matplotlib- que
-rompe contra el torch 1.13 compilado con ABI de numpy 1.x, mismo tipo de
-bug que ``toxinpred_engine.py``).
+An installation detail (not documented in DTU's official README): the
+weights are referenced with ``--model_dir`` pointing DIRECTLY at the folder
+that already contains ``sequential_models_signalp6/`` (``Settings.SIGNALP_MODEL_DIR``),
+instead of copying them inside the installed package (step "4" of the official
+README), which avoids duplicating ~9.2GB. A venv with Python 3.10 + ``torch>1.7,<2``
+(the pin of its own ``requirements.txt``) + ``numpy<2`` (ABI: without this pin,
+``pip install`` pulls in numpy 2.x via another dependency, matplotlib, which
+breaks against torch 1.13 compiled with the numpy 1.x ABI, the same kind of
+bug as ``toxinpred_engine.py``).
 """
 
 import subprocess

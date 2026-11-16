@@ -1,38 +1,38 @@
-"""Fase 2 (motor estructural 1/2, local) de prediccion de antigenicidad via DiscoTope-3.0.
+"""Phase 2 (structural engine 1/2, local) antigenicity prediction via DiscoTope-3.0.
 
-Mismo patron arquitectonico que ``bepipred_engine.py``/``epidope_engine.py``:
-esta clase es un wrapper puro de ``subprocess`` sobre el CLI oficial de
+The same architectural pattern as ``bepipred_engine.py``/``epidope_engine.py``:
+this class is a pure ``subprocess`` wrapper over the official CLI of
 DiscoTope-3.0 (https://github.com/Magnushhoie/DiscoTope-3.0, DTU Health Tech,
-licencia Creative Commons de uso academico libre), sin ninguna llamada de red
-en tiempo de inferencia -salvo la descarga inicial, unica, de los pesos de
-ESM-IF1, cacheada fuera del repo (ver ``Settings.DISCOTOPE_WEIGHTS_CACHE_DIR``
-y ``_build_env`` mas abajo)-.
+Creative Commons licence for free academic use), without any network call
+at inference time, other than the initial, single download of the ESM-IF1
+weights, cached outside the repo (see ``Settings.DISCOTOPE_WEIGHTS_CACHE_DIR``
+and ``_build_env`` below).
 
-Diferencia clave frente a BepiPred-3.0/EpiDope: ``TIn`` es una ruta a PDB, no
-a FASTA (``src.utils.structure_parser.StructureRecord.chain_pdb_path`` -- UN
-PDB de una sola cadena, ya aislada por Fase 1.5, nunca el PDB original
-potencialmente multi-cadena).
+The key difference with respect to BepiPred-3.0/EpiDope: ``TIn`` is a path to a PDB, not
+to a FASTA (``src.utils.structure_parser.StructureRecord.chain_pdb_path``, a
+SINGLE-chain PDB, already isolated by Phase 1.5, never the potentially
+multi-chain original PDB).
 
-ADR -- por que un PDB de una sola cadena y no el original
+ADR: why a single-chain PDB and not the original
 -----------------------------------------------------------
-DiscoTope-3.0 separa el PDB de entrada en cadenas individuales y escribe UN
-CSV de salida POR CADENA (ver README oficial, seccion "DiscoTope-3.0
-output"). Si se le pasara el PDB original (potencialmente multi-cadena) no
-habria forma fiable de saber, desde este motor, cual de esos CSV corresponde
-a la cadena que Fase 1.5 eligio como referencia. Pasarle ya un PDB de una
-sola cadena elimina la ambiguedad de raiz: solo puede producir un CSV.
+DiscoTope-3.0 separates the input PDB into individual chains and writes ONE
+output CSV PER CHAIN (see the official README, section "DiscoTope-3.0
+output"). If it were given the original (potentially multi-chain) PDB there
+would be no reliable way to know, from this engine, which of those CSVs
+corresponds to the chain that Phase 1.5 chose as the reference. Giving it a
+single-chain PDB removes the ambiguity at the root: it can only produce one CSV.
 
-ADR -- reconciliacion de accession
+ADR: accession reconciliation
 -----------------------------------
-Este motor, como BepiPred/EpiDope, NO hace ningun ajuste de negocio sobre el
-accession: reporta ``Path(pdb_path).stem`` tal cual (p. ej.
-``'7C4S_chain_A'``, el nombre del PDB de una sola cadena que recibio), nunca
-la columna ``'pdb'`` cruda del CSV de DiscoTope (que trae su propio formato
-compuesto ``'{stem}_{cadena}'``, no comparable directamente). Reconciliar ese
-valor con el accession "real" (``StructureRecord.accession``, sin el sufijo
-``_chain_<id>``) es responsabilidad del orquestador (``pipeline.py``, Fase 2),
-que ya tiene el ``StructureRecord`` completo en mano -- mismo reparto de
-responsabilidades que ``consensus.accession_id()`` ya aplica para BepiPred/EpiDope.
+This engine, like BepiPred/EpiDope, makes NO business adjustment to the
+accession: it reports ``Path(pdb_path).stem`` as-is (for example
+``'7C4S_chain_A'``, the name of the single-chain PDB it received), never
+the raw ``'pdb'`` column of DiscoTope's CSV (which carries its own composite
+format ``'{stem}_{cadena}'``, not directly comparable). Reconciling that
+value with the "real" accession (``StructureRecord.accession``, without the
+``_chain_<id>`` suffix) is the orchestrator's responsibility (``pipeline.py``, Phase 2),
+which already has the complete ``StructureRecord`` in hand, the same division of
+responsibilities that ``consensus.accession_id()`` already applies for BepiPred/EpiDope.
 """
 
 import glob

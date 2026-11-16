@@ -1,42 +1,70 @@
-"""Toxicidad del constructo via ToxinPred 2.0 LOCAL (venv dedicado, subprocess puro).
+"""Toxicity of the construct via LOCAL ToxinPred 2.0 (dedicated venv, pure subprocess).
 
-Wrapper 100% local sobre ``toxinpred2`` (Raghava group, open source,
-``pip install toxinpred2``), mismo patron que ``algpred_engine.py``. A
-diferencia de ToxinPred 3.0 (pensado para peptidos cortos), el propio grupo
-que lo desarrolla recomienda ToxinPred2 para proteinas/constructos de
-longitud completa -- exactamente el caso de uso de Fase 8 (chequeo del
-constructo multi-epitopo ensamblado, no peptidos individuales).
+A 100% local wrapper over ``toxinpred2`` (Raghava group, open source,
+``pip install toxinpred2``), the same pattern as ``algpred_engine.py``. Unlike
+ToxinPred 3.0 (intended for short peptides), the group that develops it
+recommends ToxinPred2 for full-length proteins/constructs, which is
+exactly the Phase 8 use case (checking the assembled multi-epitope
+construct, not individual peptides).
 
-El modelo (Random Forest, exportado a ONNX) y el binario ``blastp`` (usado
-por el modo ``-m 2``, hibrido) vienen EMBEBIDOS en el paquete pip
+The model (Random Forest, exported to ONNX) and the ``blastp`` binary (used
+by the ``-m 2`` hybrid mode) come EMBEDDED in the pip package
 (``toxinpred2/model/RF_model.onnx.zip``, ``toxinpred2/blast_binaries/``):
-no hay ningun paso de descarga de pesos aparte, ni en setup ni en runtime.
+there is no separate weight download step, neither at setup nor at runtime.
 
-Venv dedicado con Python 3.10 (no 3.13, el default del sistema) + pandas
-``1.5.3`` + ``numpy<2`` pineados, por dos bugs reales verificados
-empiricamente al instalar:
+A dedicated venv with Python 3.10 (not 3.13, the system default) + pandas
+``1.5.3`` + ``numpy<2`` pinned, because of two real bugs verified
+empirically during installation:
 
-1. El script empaquetado escribe su FASTA intermedio con
-   ``CM.to_csv("Sequence_1", header=False, index=None, sep="\\n")`` -- un
-   separador de mas de 1 caracter, que ``pandas>=2`` rechaza de plano con
-   ``ValueError: bad delimiter value`` (pandas exige ``sep`` de longitud 1).
-   No hay ningun flag de CLI que evite este paso: se ejecuta siempre, antes
-   de cualquier rama de ``Model``/``Display``. Unica salida viable sin
-   parchear el paquete instalado: pinear una version de pandas anterior a
-   esa validacion estricta.
-2. ``pandas==1.5.3`` esta compilado contra la ABI de ``numpy<2``: con
-   ``numpy>=2`` (lo que trae por defecto ``pip install toxinpred2`` sin
-   pines) el import de pandas revienta con
+1. The packaged script writes its intermediate FASTA with
+   ``CM.to_csv("Sequence_1", header=False, index=None, sep="\n")``, a
+   separator of more than 1 character, which ``pandas>=2`` rejects outright with
+   ``ValueError: bad delimiter value`` (pandas requires a ``sep`` of length 1).
+   There is no CLI flag that avoids this step: it always executes, before
+   any ``Model``/``Display`` branch. The only viable way out without
+   patching the installed package: pin a version of pandas earlier than
+   that strict validation.
+2. ``pandas==1.5.3`` is compiled against the ``numpy<2`` ABI: with
+   ``numpy>=2`` (what ``pip install toxinpred2`` brings by default without
+   pins) the pandas import fails with
    ``ValueError: numpy.dtype size changed, may indicate binary incompatibility``.
 
-Bug de batch de tamano 1 (verificado empiricamente, mismo patron que
-``algpred_engine.py``): el modelo ONNX espera un tensor de rank 2
-(``(n_muestras, n_features)``); con una unica secuencia de entrada, el
-pipeline de features del script produce un array de rank 1 y ONNX Runtime
-revienta con ``INVALID_ARGUMENT: Invalid rank for input``. Esto NO es un
-caso de borde marginal aqui: Fase 8 evalua un unico constructo ensamblado
-por corrida, asi que este workaround (duplicar la secuencia, descartar la
-fila extra del resultado) se activa en el camino normal, no solo en tests.
+Model (``Settings.TOXINPRED2_MODEL``, 1 by default): the upstream script
+supports two modes with DIFFERENT output CSV formats, just like
+``algpred_engine.py``, which is why this wrapper parses each one separately:
+
+    Model 1 (pure ML, DEFAULT): columns ``ID,Sequence,ML_Score,Prediction``,
+        a Random Forest over amino acid composition only, without
+        any comparison against real toxins or motifs.
+    Model 2 (hybrid): columns ``Subject,ML Score,MERCI Score,BLAST Score,
+        Hybrid Score,Prediction``, the same RF plus BLAST against the embedded
+        toxin database and MERCI against documented motifs (``Hybrid
+        Score`` = the sum of the three). It does NOT carry a ``Sequence`` column: the
+        sequence is reconstructed BY POSITION, additionally verifying that the
+        identifiers returned match one to one with those sent.
+
+The default remains model 1 on purpose, so as not to alter already
+generated outputs. Changing it to 2 modifies ``*_constructo_chequeo.csv`` (three
+new evidence columns) and forces a re-run of the validation panel,
+which is exactly what was done at the time with AlgPred2.
+
+The hybrid mode is NOT invoked through the venv's ``toxinpred2``
+executable, but through the venv's interpreter against
+``src/engines/toxinpred2_hybrid_shim.py``, which fixes at run
+time a real upstream ``NameError`` (``seqid`` as a free variable
+in ``BLAST_processor``) that fails whenever BLAST returns no
+hit, that is, in the normal case of a short non-toxic peptide. See the
+docstring of that module for the detail and for why it is fixed there and not
+by patching the installed package.
+
+Batch-of-size-1 bug (verified empirically, the same pattern as
+``algpred_engine.py``): the ONNX model expects a rank 2 tensor
+(``(n_muestras, n_features)``); with a single input sequence, the
+script's feature pipeline produces a rank 1 array and ONNX Runtime
+fails with ``INVALID_ARGUMENT: Invalid rank for input``. This is NOT a
+marginal edge case here: Phase 8 evaluates a single assembled construct
+per run, so this workaround (duplicate the sequence, discard the extra
+row from the result) is activated on the normal path, not only in tests.
 """
 
 import subprocess

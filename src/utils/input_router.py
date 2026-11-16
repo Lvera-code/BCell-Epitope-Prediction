@@ -1,23 +1,23 @@
-"""Enrutador de input: clasifica cada archivo de entrada como FASTA o estructura.
+"""Input router: it classifies each input file as FASTA or structure.
 
-Corre ANTES de la Fase 1. Decide si un archivo del batch alimenta el flujo de
-secuencia existente (Fase 1: ``src.utils.fasta_parser``, sin cambios) o el
-nuevo flujo de estructura (Fase 1.5: ``src.utils.structure_parser``).
+It runs BEFORE Phase 1. It decides whether a file of the batch feeds the existing
+sequence flow (Phase 1: ``src.utils.fasta_parser``, unchanged) or the
+new structure flow (Phase 1.5: ``src.utils.structure_parser``).
 
-Estrategia de deteccion en dos capas, nunca confiando ciegamente en la
-extension:
+A two-layer detection strategy, never trusting the extension
+blindly:
 
-1. Heuristica primaria por extension (``.fasta``/``.fa``/``.faa`` -> FASTA;
+1. A primary heuristic by extension (``.fasta``/``.fa``/``.faa`` -> FASTA;
    ``.pdb``/``.ent`` -> PDB; ``.cif``/``.mmcif`` -> mmCIF).
-2. Validacion por contenido como respaldo/confirmacion: primera linea no
-   vacia empieza con ``'>'`` -> FASTA; primeras lineas contienen registros
-   tipo ``ATOM``/``HEADER``/``CRYST1`` (PDB legado) o un bloque ``data_``
-   (mmCIF) -> estructura.
+2. Validation by content as a backup/confirmation: the first non-empty
+   line starts with ``'>'`` -> FASTA; the first lines contain records
+   of type ``ATOM``/``HEADER``/``CRYST1`` (legacy PDB) or a ``data_`` block
+   (mmCIF) -> structure.
 
-Si ninguna de las dos capas permite determinar el tipo con confianza, se
-lanza ``InputRoutingError`` en vez de adivinar en silencio y enrutar mal (un
-FASTA enrutado como estructura, o viceversa, fallaria mas adelante con un
-error opaco y dificil de diagnosticar).
+If neither of the two layers allows the type to be determined with confidence,
+``InputRoutingError`` is raised instead of guessing silently and routing incorrectly (a
+FASTA routed as a structure, or vice versa, would fail later with an opaque
+error that is hard to diagnose).
 """
 
 from dataclasses import dataclass

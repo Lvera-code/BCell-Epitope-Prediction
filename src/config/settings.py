@@ -1,8 +1,8 @@
-"""Configuracion centralizada del pipeline: rutas, umbrales y credenciales externas.
+"""Centralized pipeline configuration: paths, thresholds and external credentials.
 
-Todos los parametros ajustables se resuelven desde variables de entorno con
-valores por defecto conservadores, para permitir reconfiguracion sin tocar
-codigo fuente ni comprometer credenciales al subir el repositorio a GitHub.
+Every adjustable parameter is resolved from environment variables with
+conservative defaults, so as to allow reconfiguration without touching
+source code and without exposing credentials when publishing the repository.
 """
 
 import os

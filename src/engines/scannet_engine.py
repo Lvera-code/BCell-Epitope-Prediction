@@ -1,42 +1,42 @@
-"""Fase 2 (motor estructural 2/2, local) de prediccion de antigenicidad via ScanNet.
+"""Phase 2 (structural engine 2/2, local) antigenicity prediction via ScanNet.
 
-Mismo patron arquitectonico que ``discotope_engine.py``: wrapper puro de
-``subprocess`` sobre el CLI oficial de ScanNet
-(https://github.com/jertubiana/ScanNet), sin ninguna llamada de red en
-tiempo de inferencia. ``TIn`` es una ruta a PDB de una sola cadena (ver
-``StructureRecord.chain_pdb_path`` en ``src.utils.structure_parser`` -- mismo
-motivo que DiscoTope-3.0: evitar ambiguedad sobre a que cadena corresponde
-cada archivo de salida).
+The same architectural pattern as ``discotope_engine.py``: a pure
+``subprocess`` wrapper over the official ScanNet CLI
+(https://github.com/jertubiana/ScanNet), without any network call at
+inference time. ``TIn`` is a path to a single-chain PDB (see
+``StructureRecord.chain_pdb_path`` in ``src.utils.structure_parser``, for the
+same reason as DiscoTope-3.0: to avoid ambiguity about which chain each
+output file corresponds to).
 
-Runtime dual (``Settings.SCANNET_RUNTIME``):
+Dual runtime (``Settings.SCANNET_RUNTIME``):
 
-* ``'venv'``: entorno aislado ``.venv-scannet`` (stack antiguo: Python
-  3.6.12, TensorFlow/Keras -- mismo motivo que EpiDope para requerir un
-  entorno dedicado), invocando ``predict_bindingsites.py`` directamente.
-* ``'docker'`` (default): invoca la imagen oficial ``jertubiana/scannet`` via
-  ``docker run``, montando el PDB de entrada y ``output_dir`` como volumenes.
-  Evita tener que resolver el stack antiguo a mano.
+* ``'venv'``: an isolated ``.venv-scannet`` environment (an old stack: Python
+  3.6.12, TensorFlow/Keras, the same reason as EpiDope for requiring a
+  dedicated environment), invoking ``predict_bindingsites.py`` directly.
+* ``'docker'`` (default): invokes the official ``jertubiana/scannet`` image via
+  ``docker run``, mounting the input PDB and ``output_dir`` as volumes.
+  It avoids having to resolve the old stack manually.
 
-ADR -- runtime Docker, validado contra un PDB real
+ADR: the Docker runtime, validated against a real PDB
 ------------------------------------------------
-Ambos runtimes fueron instalados y corridos contra un PDB real. Para
-Docker: ``docker pull jertubiana/scannet`` + ``docker inspect`` confirman
-que el ``WORKDIR`` de la imagen oficial es efectivamente ``/ScanNet``
-(default de ``Settings.SCANNET_DOCKER_WORKDIR``, sin necesidad de ajuste),
-que tanto ``python`` como ``python3`` resuelven al interprete correcto
-(3.6.12) dentro de la imagen, y ambos runtimes producen resultados
-IDENTICOS byte a byte sobre el mismo PDB. Si en el futuro la imagen oficial
-cambia de layout,
-``_validate_installation`` fallara de forma clara (contenedor no arranca /
-script no encontrado) en vez de silenciosamente producir un resultado
-incorrecto.
+Both runtimes were installed and run against a real PDB. For
+Docker: ``docker pull jertubiana/scannet`` + ``docker inspect`` confirm
+that the official image's ``WORKDIR`` is effectively ``/ScanNet``
+(the default of ``Settings.SCANNET_DOCKER_WORKDIR``, with no adjustment needed),
+that both ``python`` and ``python3`` resolve to the correct interpreter
+(3.6.12) inside the image, and that both runtimes produce results
+IDENTICAL byte for byte over the same PDB. If the official image changes its
+layout in the future,
+``_validate_installation`` will fail clearly (container does not start /
+script not found) instead of silently producing an
+incorrect result.
 
-Modo de prediccion: SIEMPRE ``--mode epitope --noMSA``. ``--noMSA`` es
-deliberado y no configurable: el modo con MSA requiere una base de datos de
-secuencias local (UniRef30) + HH-blits instalados, una dependencia pesada que
-rompe el ADR de este pipeline ("100% local, sin infraestructura adicional
-pesada"); ScanNet documenta el modo sin MSA como "less accurate, faster", un
-trade-off aceptado aqui a cambio de mantenerse dentro de ese ADR.
+Prediction mode: ALWAYS ``--mode epitope --noMSA``. ``--noMSA`` is
+deliberate and not configurable: the MSA mode requires a local sequence
+database (UniRef30) plus HH-blits installed, a heavy dependency that
+breaks this pipeline's ADR ("100% local, without additional heavy
+infrastructure"); ScanNet documents the mode without MSA as "less accurate, faster", a
+trade-off accepted here in exchange for staying within that ADR.
 """
 
 import glob

@@ -1,32 +1,32 @@
-"""Fase 2 (segundo motor, local) + Fase 3 de prediccion de antigenicidad via EpiDope.
+"""Phase 2 (second engine, local) + Phase 3 antigenicity prediction via EpiDope.
 
-Mismo patron arquitectonico que ``bepipred_engine.py`` (ver ADR alli): esta
-clase es un wrapper puro de ``subprocess`` sobre el CLI oficial de EpiDope
-(https://github.com/rnajena/EpiDope, fork activamente mantenido, licencia
-MIT), sin ninguna llamada de red en tiempo de inferencia: los pesos del
-modelo y los embeddings ELMo vienen empaquetados en el propio repo
+The same architectural pattern as ``bepipred_engine.py`` (see the ADR there): this
+class is a pure ``subprocess`` wrapper over the official EpiDope CLI
+(https://github.com/rnajena/EpiDope, an actively maintained fork, MIT
+licence), without any network call at inference time: the model weights
+and the ELMo embeddings come packaged in the repo itself
 (``epidope/epidope_weights``, ``epidope/elmo_settings``).
 
-Diferencia clave frente a BepiPred: EpiDope es codigo abierto e instalable
-via conda sin solicitud academica, pero fija un stack de dependencias muy
-antiguo (Python 3.6, TensorFlow 1.13, Keras 2.3, PyTorch 0.4, AllenNLP 0.7.2
-para embeddings ELMo) incompatible con el resto del pipeline. Requiere por
-tanto un entorno conda dedicado creado EXACTAMENTE con el ``epidope.yml``
-del repo oficial (``EPIDOPE_CONDA_PREFIX``, por defecto ``.conda-epidope/``
-en la raiz del proyecto, mismo rol que ``.venv-bepipred``), invocado via
-``conda run`` (o directamente via ``EPIDOPE_BIN`` si se prefiere apuntar a un
-ejecutable ya resuelto, saltandose conda).
+The key difference with respect to BepiPred: EpiDope is open source and installable
+via conda without an academic request, but it pins a very old dependency
+stack (Python 3.6, TensorFlow 1.13, Keras 2.3, PyTorch 0.4, AllenNLP 0.7.2
+for ELMo embeddings) that is incompatible with the rest of the pipeline. It therefore
+requires a dedicated conda environment created EXACTLY with the repo's
+official ``epidope.yml`` (``EPIDOPE_CONDA_PREFIX``, by default ``.conda-epidope/``
+at the project root, the same role as ``.venv-bepipred``), invoked via
+``conda run`` (or directly via ``EPIDOPE_BIN`` if one prefers to point at an
+already resolved executable, bypassing conda).
 
-Formato de salida de EpiDope confirmado leyendo su codigo fuente oficial
-(``epidope/epidope2.py::output_results``): por cada secuencia de entrada
-escribe un CSV propio en ``<outdir>/epidope/<accession>.csv`` con columnas
-``position``, ``aminoacid`` y ``score`` (scores crudos por residuo, 1
-indexados). Esta clase concatena esos CSV por-accession en un unico
-DataFrame crudo, IGNORANDO los ficheros de resumen que el propio EpiDope
-genera (``predicted_epitopes.csv``, ``predicted_epitopes_sliced.faa``,
-plots HTML): la Fase 3 (``extract_epitopes``) rehace el mapeo de regiones
-en local con la misma ventana deslizante que ``bepipred_engine.py``,
-reutilizada desde ``src.engines.epitope_mapping``.
+EpiDope's output format was confirmed by reading its official source code
+(``epidope/epidope2.py::output_results``): for each input sequence it
+writes its own CSV in ``<outdir>/epidope/<accession>.csv`` with the columns
+``position``, ``aminoacid`` and ``score`` (raw per-residue scores, 1-indexed).
+This class concatenates those per-accession CSVs into a single raw
+DataFrame, IGNORING the summary files that EpiDope itself
+generates (``predicted_epitopes.csv``, ``predicted_epitopes_sliced.faa``,
+HTML plots): Phase 3 (``extract_epitopes``) redoes the region mapping
+locally with the same sliding window as ``bepipred_engine.py``,
+reused from ``src.engines.epitope_mapping``.
 """
 
 import subprocess

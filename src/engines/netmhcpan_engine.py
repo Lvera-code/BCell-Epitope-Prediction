@@ -86,7 +86,7 @@ equivalent filter is needed here, confirmed by reading the real columns of the
 .xls (see ``_parse_xls``), not assumed by analogy with NetMHCIIpan.
 
 Buffer overflow of the binary in exact peptide mode: just like NetMHCIIpan,
-NetMHCpan-4.2 (Linux_x86_64) blows up with "*** buffer overflow detected ***"
+NetMHCpan-4.2 (Linux_x86_64) fails with "*** buffer overflow detected ***"
 (SIGABRT, core dump, exit code 0, the tcsh wrapper does NOT propagate the failure) for
 peptides that are too long in ``-p`` mode: 55 aa OK, 57 aa crash, verified
 both with the panel of 12 and with that of 23 alleles. The limit does NOT change with

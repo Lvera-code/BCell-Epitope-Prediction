@@ -1,33 +1,33 @@
-"""Fase 2 (local) + Fase 3 (local) de prediccion de antigenicidad via BepiPred-3.0.
+"""Phase 2 (local) + Phase 3 (local) antigenicity prediction via BepiPred-3.0.
 
-ADR — pivote a ejecucion 100% local
+ADR: pivot to 100% local execution
 ------------------------------------
-Se abandono definitivamente la estrategia via BioLib (API/nube): bajo carga
-publica, los cold-start de los contenedores ESM-2 subyacentes resultaron
-impracticos (peticiones que no completaban ni siquiera tras ~1h de espera).
-BepiPred-3.0 ahora se ejecuta como un subproceso local contra el codigo
-fuente oficial descargado manualmente por el usuario (licencia academica DTU
-Health Tech, ver ``Settings.BEPIPRED_DOWNLOAD_URL``). No se usa la libreria
-``requests`` ni ninguna llamada de red: este modulo es puramente un wrapper
-de ``subprocess.run`` sobre ``bepipred3_CLI.py``.
+The strategy via BioLib (API/cloud) was definitively abandoned: under public
+load, the cold starts of the underlying ESM-2 containers proved
+impractical (requests that did not complete even after roughly 1h of waiting).
+BepiPred-3.0 is now executed as a local subprocess against the official
+source code downloaded manually by the user (DTU Health Tech academic
+licence, see ``Settings.BEPIPRED_DOWNLOAD_URL``). Neither the ``requests``
+library nor any network call is used: this module is purely a
+``subprocess.run`` wrapper over ``bepipred3_CLI.py``.
 
-Division de responsabilidades resultante:
+The resulting division of responsibilities:
 
-* Fase 2 (``BepiPredEngine``, esta clase): invoca el CLI local de BepiPred-3.0
-  con ``subprocess.run``, sin aplicar ningun filtrado. Devuelve el DataFrame
-  crudo de scores por residuo leido desde ``raw_output.csv``.
-* Fase 3 (``extract_epitopes``): toda la logica de negocio (ventana
-  deslizante tolerante a gaps, umbral, longitud minima) corre en local sobre
-  ese DataFrame, sin depender de los propios ficheros de prediccion que
-  genera BepiPred (``Bcell_epitope_preds.fasta``, etc.), que se ignoran.
+* Phase 2 (``BepiPredEngine``, this class): invokes the local BepiPred-3.0 CLI
+  with ``subprocess.run``, without applying any filtering. It returns the raw
+  DataFrame of per-residue scores read from ``raw_output.csv``.
+* Phase 3 (``extract_epitopes``): all the business logic (gap-tolerant
+  sliding window, threshold, minimum length) runs locally over
+  that DataFrame, without depending on the prediction files that
+  BepiPred itself generates (``Bcell_epitope_preds.fasta``, etc.), which are ignored.
 
-Columnas del CSV crudo confirmadas leyendo el codigo fuente oficial
-(``bp3/bepipred3.py::create_csvfile``): ``Accession``, ``Residue`` y
-``BepiPred-3.0 score`` (mas una columna de score lineal que no se usa aqui).
+The raw CSV columns were confirmed by reading the official source code
+(``bp3/bepipred3.py::create_csvfile``): ``Accession``, ``Residue`` and
+``BepiPred-3.0 score`` (plus a linear score column that is not used here).
 
-Rutas configurables: ninguna ruta al paquete de BepiPred se hardcodea en este
-modulo. Todo se resuelve desde ``Settings`` (variables de entorno con
-defaults razonables), ver ``src/config/settings.py``.
+Configurable paths: no path to the BepiPred package is hardcoded in this
+module. Everything is resolved from ``Settings`` (environment variables with
+sensible defaults), see ``src/config/settings.py``.
 """
 
 import subprocess

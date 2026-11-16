@@ -1,59 +1,64 @@
-"""Fase 3 (tabla final): union logica anotada de regiones de epitopo entre N motores.
+"""Phase 3 (final table): annotated logical union of epitope regions across N engines.
 
-Generalizacion de la union original (BepiPred U EpiDope, 2 motores fijos) a
-un numero arbitrario de motores de antigenicidad (2, 3 o 4 segun el camino de
-entrada -- FASTA puro, PDB en modo 'structure_only', o PDB en modo
-'structure_and_sequence', ver ``pipeline.py``/``src.engines.engine_registry``).
+SUPERSEDED MECHANISM: since the move to continuous score fusion, the pipeline no
+longer invokes this module. Phase 3 is served by
+``src.engines.score_fusion`` (see the ADR in that module). This file is kept,
+together with its tests, as the reference for the previous mechanism.
 
-Directiva de "Union Logica Anotada" (sin cambios respecto al diseño
-original):
+A generalization of the original union (BepiPred U EpiDope, 2 fixed engines) to
+an arbitrary number of antigenicity engines (2, 3 or 4 according to the input
+path: pure FASTA, PDB in 'structure_only' mode, or PDB in
+'structure_and_sequence' mode, see ``pipeline.py``/``src.engines.engine_registry``).
 
-* Preservacion de datos: TODA region detectada por CUALQUIERA de los motores
-  avanza a la Fase 4, no solo las que coinciden entre varios.
-* Fusion de solapamientos: si regiones de motores distintos SOLAPAN
-  (comparten al menos un residuo), no se recortan a la interseccion: se
-  fusionan tomando el ``start`` minimo y el ``end`` maximo de todas,
-  preservando el peptido completo (incluye fusion transitiva: una cadena de
-  regiones A-B-C encadenadas por solapamientos sucesivos se fusiona en una
-  sola region final, aunque A y C por si solas no se solapen).
-* Etiquetado analitico: cada region final queda marcada en la columna
-  ``origen`` segun sus motores contribuyentes, usando abreviaturas de 2
-  letras (ver ``_origen_label``): ``Bp`` (BepiPred), ``Ed`` (EpiDope), ``Dt``
-  (DiscoTope-3.0), ``Sn`` (ScanNet). Un unico motor se reporta solo (p. ej.
-  ``'Bp'``); dos o tres motores se unen con ``'+'`` en el mismo orden en que
-  aparecen las claves de ``engine_dfs`` (p. ej. ``'Bp+Ed'``, ``'Dt+Sn'``,
-  ``'Bp+Dt'``, ``'Bp+Ed+Dt'``) -- esto permite distinguir CUALQUIER
-  combinacion parcial sin ambiguedad, independientemente de cuales sean.
-  Unica excepcion: cuando los 4 motores contribuyen a la vez, la etiqueta es
-  ``'Consenso total'`` en vez de ``'Bp+Ed+Dt+Sn'``.
+The "Annotated Logical Union" directive (unchanged with respect to the original
+design):
 
-Como la fusion transitiva puede extender una region final mas alla del span
-detectado por cualquiera de los motores por separado, la subsecuencia de
-cada region final se reconstruye desde un lookup de secuencia completa por
-accession (``sequence_lookup``, ver
-``src.engines.epitope_mapping.build_sequence_lookup`` para motores de
-secuencia y ``src.utils.structure_parser.StructureRecord.sequence`` para
-motores estructurales) en vez de recortar las subsecuencias individuales que
-ya trae cada motor.
+* Data preservation: EVERY region detected by ANY of the engines
+  advances to Phase 4, not only those that coincide between several.
+* Overlap merging: if regions from different engines OVERLAP
+  (sharing at least one residue), they are not trimmed to the intersection; they are
+  merged taking the minimum ``start`` and the maximum ``end`` of all of them,
+  preserving the complete peptide (this includes transitive merging: a chain of
+  regions A-B-C linked by successive overlaps is merged into a
+  single final region, even though A and C on their own do not overlap).
+* Analytical labelling: each final region is marked in the
+  ``origen`` column according to its contributing engines, using 2-letter
+  abbreviations (see ``_origen_label``): ``Bp`` (BepiPred), ``Ed`` (EpiDope), ``Dt``
+  (DiscoTope-3.0), ``Sn`` (ScanNet). A single engine is reported alone (for example
+  ``'Bp'``); two or three engines are joined with ``'+'`` in the same order in which
+  the keys of ``engine_dfs`` appear (for example ``'Bp+Ed'``, ``'Dt+Sn'``,
+  ``'Bp+Dt'``, ``'Bp+Ed+Dt'``), which allows ANY
+  partial combination to be distinguished unambiguously, whichever they are.
+  The only exception: when all 4 engines contribute at once, the label is
+  ``'Consenso total'`` instead of ``'Bp+Ed+Dt+Sn'``.
 
-ADR -- coordenadas de motores estructurales y ``position_mapping``
+Since transitive merging can extend a final region beyond the span
+detected by any of the engines separately, the subsequence of
+each final region is reconstructed from a complete per-accession sequence
+lookup (``sequence_lookup``, see
+``src.engines.epitope_mapping.build_sequence_lookup`` for sequence
+engines and ``src.utils.structure_parser.StructureRecord.sequence`` for
+structural engines) instead of trimming the individual subsequences that
+each engine already carries.
+
+ADR: structural engine coordinates and ``position_mapping``
 ----------------------------------------------------------------------
-DiscoTope-3.0 y ScanNet corren sobre el PDB de una sola cadena que escribe
-Fase 1.5 (``StructureRecord.chain_pdb_path``) y ambos re-numeran sus
-resultados desde 1 sobre esa misma cadena (documentado en el propio README de
-DiscoTope-3.0: "Relative residue index, re-numerado desde 1"). Esa numeracion
-es, por construccion, la MISMA convencion posicional que
-``StructureRecord.position_mapping.fasta_position`` (tambien secuencial desde
-1 sobre la cadena elegida): en el caso esperado, ``start``/``end`` de un
-motor estructural YA coinciden con la posicion en ``sequence_lookup`` sin
-necesitar ninguna transformacion aritmetica. ``position_mapping`` se usa aqui
-como una VERIFICACION de esa suposicion, no como una tabla de traduccion
-aritmetica: si algun motor reporta coordenadas mas alla de la longitud de la
-secuencia derivada (senal de que ese motor parseo un subconjunto de residuos
-distinto al que uso ``structure_parser``, p. ej. por una regla de backbone
-incompleto distinta), se loggea un WARNING explicito en vez de fallar en
-silencio o fabricar una traduccion no verificada. Si una estructura dispara
-este warning, este es el punto exacto del codigo a revisar.
+DiscoTope-3.0 and ScanNet run on the single-chain PDB that
+Phase 1.5 writes (``StructureRecord.chain_pdb_path``) and both renumber their
+results from 1 over that same chain (documented in DiscoTope-3.0's own README:
+"Relative residue index, re-numbered from 1"). That numbering
+is, by construction, the SAME positional convention as
+``StructureRecord.position_mapping.fasta_position`` (also sequential from
+1 over the chosen chain): in the expected case, a structural engine's
+``start``/``end`` ALREADY match the position in ``sequence_lookup`` without
+needing any arithmetic transformation. ``position_mapping`` is used here
+as a VERIFICATION of that assumption, not as an arithmetic translation
+table: if an engine reports coordinates beyond the length of the derived
+sequence (a signal that that engine parsed a different subset of residues
+from the one ``structure_parser`` used, for example because of a different
+incomplete-backbone rule), an explicit WARNING is logged instead of failing
+silently or fabricating an unverified translation. If a structure triggers
+this warning, this is the exact point in the code to review.
 """
 
 from typing import Dict, List, Optional, Sequence

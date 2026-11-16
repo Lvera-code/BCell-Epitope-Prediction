@@ -1,4 +1,5 @@
-"""Jerarquia de excepciones especificas del pipeline para control de flujo."""
+"""Hierarchy of pipeline-specific exceptions for flow control.
+"""
 
 
 class PipelineError(Exception):

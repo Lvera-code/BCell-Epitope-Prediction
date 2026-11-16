@@ -1,41 +1,42 @@
-"""Alergenicidad via AlgPred 2.0 LOCAL (venv dedicado, subprocess puro).
+"""Allergenicity via LOCAL AlgPred 2.0 (dedicated venv, pure subprocess).
 
-Wrapper 100% local sobre ``algpred2.py`` (Raghava group, open source), mismo
-patron que ``bepipred_engine.py``: invoca el interprete de un venv dedicado
-(``Settings.ALGPRED_PYTHON_BIN``) contra el script instalado
-(``Settings.ALGPRED_SCRIPT_PATH``), nunca red.
+A 100% local wrapper over ``algpred2.py`` (Raghava group, open source), the same
+pattern as ``bepipred_engine.py``: it invokes the interpreter of a dedicated venv
+(``Settings.ALGPRED_PYTHON_BIN``) against the installed script
+(``Settings.ALGPRED_SCRIPT_PATH``), never the network.
 
-Modelo (``Settings.ALGPRED_MODEL``, por defecto 2): el
-script upstream soporta dos modos con formatos de CSV de salida DISTINTOS,
-por eso este wrapper parsea cada uno por separado en vez de asumir un unico
-esquema:
+Model (``Settings.ALGPRED_MODEL``, 2 by default): the
+upstream script supports two modes with DIFFERENT output CSV formats,
+which is why this wrapper parses each one separately instead of assuming a single
+schema:
 
-    Modelo 1 (ML puro): columnas ``ID,Sequence,ML_Score,Prediction`` --
-        Random Forest sobre composicion de aminoacidos (AAC) unicamente, sin
-        ninguna comparacion contra alergenos/motivos IgE reales.
-    Modelo 2 (hibrido, default): columnas
-        ``Subject,ML Score,MERCI Score,BLAST Score,Hybrid Score,Prediction``
-        -- combina el mismo RF con BLAST contra una base real de alergenos
-        IgE y MERCI contra motivos IgE documentados (``Hybrid Score`` = suma
-        de los tres). NO trae columna ``Sequence``: la secuencia de cada fila
-        se reconstruye por POSICION contra la lista de entrada, verificado
-        que el orden se preserva end-to-end en el script upstream (misma
-        lista ``seqid``/``seq`` reutilizada en cada paso interno).
+    Model 1 (pure ML): columns ``ID,Sequence,ML_Score,Prediction``, a
+        Random Forest over amino acid composition (AAC) only, without
+        any comparison against real allergens/IgE motifs.
+    Model 2 (hybrid, default): columns
+        ``Subject,ML Score,MERCI Score,BLAST Score,Hybrid Score,Prediction``,
+        which combines the same RF with BLAST against a real database of IgE
+        allergens and MERCI against documented IgE motifs (``Hybrid Score`` = the sum
+        of the three). It does NOT carry a ``Sequence`` column: each row's sequence
+        is reconstructed BY POSITION against the input list, having verified
+        that the order is preserved end to end in the upstream script (the same
+        ``seqid``/``seq`` list reused at each internal step).
 
-Se eligio el modelo 2 como default tras verificar que el modelo 1 marca "Allergen" candidatos sin ninguna homologia o
-motivo IgE real detras -- artefacto de la composicion de aminoacidos, no
-evidencia biologica. El resultado siempre expone ``algpred_ml_score``/
-``algpred_merci_score``/``algpred_blast_score`` por separado (0 si el modelo
-1 no los calculo) para poder distinguir un veredicto respaldado por
-evidencia real de uno que es solo estadistica de composicion.
+Model 2 was chosen as the default after verifying that model 1 marks as
+"Allergen" candidates with no real homology or IgE motif behind them, an
+artifact of the amino acid composition, not biological
+evidence. The result always exposes ``algpred_ml_score``/
+``algpred_merci_score``/``algpred_blast_score`` separately (0 if model
+1 did not compute them) so as to be able to distinguish a verdict backed by
+real evidence from one that is only composition statistics.
 
-Bug conocido del script upstream (verificado empiricamente, no asumido):
-``algpred2.py`` revienta con ``ValueError: Expected 2D array, got 1D array``
-cuando el FASTA de entrada tiene EXACTAMENTE 1 secuencia (su propio codigo
-sklearn no reshapea un batch de tamano 1). Se evita duplicando la unica
-secuencia de entrada cuando ``len(sequences) == 1`` y descartando la fila
-duplicada del resultado -- workaround necesario porque no se puede parchear
-el script instalado sin romper la trazabilidad del paquete pip.
+A known bug of the upstream script (verified empirically, not assumed):
+``algpred2.py`` fails with ``ValueError: Expected 2D array, got 1D array``
+when the input FASTA has EXACTLY 1 sequence (its own sklearn code does not
+reshape a batch of size 1). This is avoided by duplicating the single input
+sequence when ``len(sequences) == 1`` and discarding the duplicated row
+from the result, a workaround that is necessary because the installed script
+cannot be patched without breaking the pip package's traceability.
 """
 
 import os
