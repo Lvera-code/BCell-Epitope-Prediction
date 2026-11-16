@@ -753,7 +753,25 @@ python3 -m venv .venv-toxinpred2
 
 Variables de entorno: `TOXINPRED2_PYTHON_BIN`, `TOXINPRED2_BINARY_NAME`
 (default `toxinpred2`), `TOXINPRED2_THRESHOLD` (0.6 por defecto, el mismo
-default del propio `toxinpred2`).
+default del propio `toxinpred2`), `TOXINPRED2_MODEL` (1 por defecto).
+
+> **Modo híbrido (`TOXINPRED2_MODEL=2`) y bug de upstream.** El modelo 1 es
+> un Random Forest sobre composición de aminoácidos y no compara contra
+> ninguna toxina real; el modelo 2 añade BLAST contra la base de toxinas
+> embebida y motivos MERCI, y expone los tres scores por separado, igual que
+> `ALGPRED_MODEL=2`. El modelo 2 de `toxinpred2` 1.1 está **roto de fábrica**:
+> `BLAST_processor()` itera sobre `seqid`, que solo existe como variable
+> local de `main()`, así que revienta con `NameError: name 'seqid' is not
+> defined` siempre que BLAST no devuelve ningún hit, que es el caso normal de
+> un péptido corto no tóxico. El proyecto lo arregla en tiempo de ejecución
+> con `src/engines/toxinpred2_hybrid_shim.py`, sin parchear el paquete
+> instalado (misma política que con AlgPred2), de modo que una reinstalación
+> no pierde el arreglo. No hace falta ningún paso de instalación extra.
+>
+> El default sigue siendo `1` **a propósito**: activar el 2 añade tres
+> columnas a `*_constructo_chequeo.csv` y cambia el significado de
+> `toxinpred_score` (pasa a ser `Hybrid Score`), así que obliga a re-correr
+> el panel de validación.
 
 ### 14. IApred (obligatorio para la Fase 8, antigenicidad intrínseca del constructo)
 
